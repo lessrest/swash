@@ -61,6 +61,10 @@
       background-color: #111;
       color: ivory;
     }
+
+    button {
+      color: inherit;
+    }
   }
 </style>
 <script>
@@ -199,7 +203,7 @@
       if (event.payload.type === "DeepgramMessage") {
         handleDeepgramMessage(event.payload.message)
       } else if (event.payload.type === "AudioBlob") {
-        appendAudioElement(event.payload.blob)
+        addAudioElement(event.payload.blob)
       }
     }
   })
@@ -233,7 +237,7 @@
       if (getLastParagraph().textContent.trim() !== "") {
         const blob = new Blob(chunks, { type: "audio/webm;codecs=opus" })
         eventStore.add({ type: "AudioBlob", blob })
-        appendAudioElement(blob)
+        addAudioElement(blob)
       }
 
       socket.close()
@@ -289,12 +293,9 @@
     return transcript.appendChild(tag("p", {}, [tag("span.foo")]))
   }
 
-  function appendAudioElement(blob) {
-    const audioUrl = URL.createObjectURL(blob)
-    const audio = new Audio(audioUrl)
-    audio.controls = false
-
-    const simplePlayer = tag("button.play", {
+  function addAudioElement(blob) {
+    const audio = new Audio(URL.createObjectURL(blob))
+    const player = tag("button.play", {
       onclick: (e) => {
         e.preventDefault()
         if (audio.paused) {
@@ -308,10 +309,40 @@
     })
 
     audio.onended = () => {
-      simplePlayer.className = "play"
+      player.className = "play"
     }
 
-    getLastParagraph().prepend(simplePlayer)
+    const paragraph = getLastParagraph()
+
+    const whisperButton = tag(
+      "button",
+      {
+        onclick: async (e) => {
+          e.preventDefault()
+          // fetch /whisper with form data file containing the blob
+          const formData = new FormData()
+          formData.append("file", blob, "audio.webm")
+
+          const response = await fetch("/whisper", {
+            method: "POST",
+            body: formData,
+          })
+
+          if (response.ok) {
+            const result = await response.json()
+            console.log(result.text)
+            paragraph
+              .querySelector(".foo")
+              .replaceChildren(tag("span.whisper", {}, [result.text]))
+          } else {
+            console.error("Error calling Whisper API:", response.statusText)
+          }
+        },
+      },
+      ["🪄"],
+    )
+
+    paragraph.prepend(player, whisperButton)
     appendParagraph()
     scrollToBottom()
   }

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -11,6 +14,7 @@ import (
 
 var upgrader = websocket.Upgrader{} // use default options
 var deepgramApiKey = getEnv("DEEPGRAM_API_KEY")
+var openaiApiKey = getEnv("OPENAI_API_KEY")
 
 var deepgramQueryParams = map[string]string{
 	"model":           "nova-2",
@@ -97,10 +101,107 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	log.Info("over", "from", browserConn.RemoteAddr())
 }
 
+func whisper(w http.ResponseWriter, r *http.Request) {
+	// curl -s https://api.openai.com/v1/audio/transcriptions \
+	//    -H "Authorization: Bearer $OPENAI_API_KEY" \
+	//    -H "Content-Type: multipart/form-data" \
+	//    -F file="@$file" \
+	//    -F model=whisper-1 \
+	//    -F response_format=json
+
+	// that's the curl command we want to replicate
+	// we need to read the file from the request
+	// and send it to the openai api
+	// and then send the response back to the client
+
+	// Read the audio file from the request
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		log.Error("Error retrieving the file", "error", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Create a new multipart writer
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+
+	// Create a new form file field and copy the uploaded file data to it
+	part, err := writer.CreateFormFile("file", header.Filename)
+	if err != nil {
+		log.Error("Error creating form file", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	_, err = io.Copy(part, file)
+	if err != nil {
+		log.Error("Error copying file data", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Add the model field
+	_ = writer.WriteField("model", "whisper-1")
+
+	// Add the response format field
+	_ = writer.WriteField("response_format", "json")
+
+	// Close the multipart writer to finalize the request body
+	err = writer.Close()
+	if err != nil {
+		log.Error("Error closing multipart writer", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Create a new HTTP request
+	req, err := http.NewRequest("POST", "https://api.openai.com/v1/audio/transcriptions", body)
+	if err != nil {
+		log.Error("Error creating request", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Set the request headers
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("OPENAI_API_KEY"))
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	// Send the request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error("Error sending request", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Error("Error reading response body", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Set the response headers
+	w.Header().Set("Content-Type", "application/json")
+
+	// Write the response body
+	_, err = w.Write(respBody)
+	if err != nil {
+		log.Error("Error writing response", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
 func main() {
 	port := getEnv("PORT")
 
 	http.HandleFunc("/transcribe", handler)
+	http.HandleFunc("/whisper", whisper)
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "index.html")
 	})
