@@ -59,7 +59,7 @@
     content: "⏺️";
   }
 
-  p:not(:hover) button {
+  p:not(:hover) button:not(.record) {
     opacity: 0;
   }
 
@@ -105,7 +105,7 @@
     document.location.origin.replace(/^http/, "ws") + "/transcribe"
 
   class IndexedDBEventStore {
-    constructor(dbName = "swash", storeName = "events") {
+    constructor(dbName = "swa.sh", storeName = "events") {
       this.dbName = dbName
       this.storeName = storeName
       this.db = null
@@ -116,8 +116,8 @@
         return
       }
 
-      this.db = await idb.openDB(this.dbName, 1, {
-        upgrade(db) {
+      this.db = await idb.openDB(this.dbName, 2, {
+        upgrade: (db) => {
           db.createObjectStore(this.storeName, { keyPath: "sequenceNumber" })
         },
       })
@@ -325,7 +325,9 @@
     const whisper = useCallback(async () => {
       const formData = new FormData()
       const blob = await fetch(audio).then((response) => response.blob())
-      formData.append("file", blob, "audio.webm")
+      const extension = blob.type === "audio/mp4" ? "mp4" : "webm"
+      console.log(extension, blob, blob.type)
+      formData.append("file", blob, `audio.${extension}`)
 
       const response = await fetch("/whisper", {
         method: "POST",
@@ -352,9 +354,13 @@
   async function startRecording() {
     await dial()
 
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/mp4"
+
     mediaRecorder = new MediaRecorder(stream, {
       audioBitsPerSecond: 128000,
-      mimeType: "audio/webm;codecs=opus",
+      mimeType,
     })
 
     let chunks = []
@@ -362,13 +368,15 @@
     mediaRecorder.ondataavailable = ({ data }) => {
       if (data.size > 0) {
         chunks.push(data)
-        socket.send(data)
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(data)
+        }
       }
     }
 
     mediaRecorder.onstop = () => {
       if (state.current.words.length > 0) {
-        const blob = new Blob(chunks, { type: "audio/webm;codecs=opus" })
+        const blob = new Blob(chunks, { type: mimeType })
         emit({ type: "AudioBlob", blob })
       }
 
