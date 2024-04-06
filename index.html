@@ -11,20 +11,56 @@
     padding: 0.5rem 0.5rem;
   }
 
+  kbd {
+    font: inherit;
+  }
+
   input {
     margin: 0;
   }
 
   p {
-    margin: 0;
-    padding: 0.25rem 0.5rem;
+    display: flex;
+    align-items: baseline;
+    margin: 0.25rem 0;
   }
 
   audio {
-    display: block;
     height: 2rem;
     width: 100%;
     margin-bottom: 0.5rem;
+  }
+
+  button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1rem;
+    margin: 0;
+    padding: 0 0.5rem 0 0;
+  }
+
+  button.stop::before {
+    content: "⏹️";
+  }
+
+  button.play::before {
+    content: "▶️";
+  }
+
+  button.record::before {
+    content: "⏺️";
+  }
+
+  button.play {
+    opacity: 0.5;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body {
+      background-color: #111;
+      color: ivory;
+    }
   }
 </style>
 <script>
@@ -72,6 +108,10 @@
     }
 
     async open() {
+      if (this.db) {
+        return
+      }
+
       return new Promise((resolve, reject) => {
         const request = indexedDB.open(this.dbName, 1)
 
@@ -113,6 +153,7 @@
     }
 
     async getAllEvents() {
+      await this.open()
       const transaction = this.db.transaction([this.storeName], "readonly")
       const request = transaction.objectStore(this.storeName).getAll()
       return new Promise((resolve, reject) => {
@@ -125,182 +166,159 @@
   let eventStore = new IndexedDBEventStore()
   let mediaRecorder = null
   let socket = null
-  let transcriptionTimeout = null
+  let silenceTimeout = null
   let stream = null
 
-  function initializeWebSocket() {
-    if (socket) {
-      socket.close()
-    }
-
-    return new Promise((ok, no) => {
+  const dial = () =>
+    new Promise((ok, no) => {
       socket = new WebSocket(apiUrl)
 
-      socket.onopen = () => {
-        console.log("WebSocket connection established")
-        ok(socket)
-      }
-
-      socket.onerror = (error) => {
-        console.error("WebSocket error:", error)
-        no(error)
-      }
-
+      socket.onopen = () => ok(socket)
+      socket.onerror = (error) => no(error)
       socket.onmessage = (event) => {
         const message = JSON.parse(event.data)
         eventStore.add({ type: "DeepgramMessage", message })
         handleDeepgramMessage(message)
       }
     })
-  }
 
-  function initialize() {
-    micToggle.addEventListener("change", () => {
+  document.addEventListener("DOMContentLoaded", async () => {
+    micToggle.addEventListener("click", () => {
       if (mediaRecorder && mediaRecorder.state === "recording") {
-        pause()
+        mediaRecorder.stop()
+        micToggle.className = "record"
       } else {
         start()
+        micToggle.className = "stop"
       }
     })
 
-    eventStore
-      .open()
-      .then(() => {
-        eventStore.getAllEvents().then((events) => {
-          console.log("Loaded events from IndexedDB:", events)
-          for (const event of events) {
-            if (event.payload.type === "DeepgramMessage") {
-              handleDeepgramMessage(event.payload.message)
-            } else if (event.payload.type === "AudioBlob") {
-              appendAudioElement(event.payload.blob)
-            }
-          }
-        })
-      })
-      .catch((error) => {
-        console.error("Failed to open IndexedDB event store:", error)
-        alert("Failed to open IndexedDB event store")
-      })
-  }
+    appendParagraph()
+
+    for (const event of await eventStore.getAllEvents()) {
+      if (event.payload.type === "DeepgramMessage") {
+        handleDeepgramMessage(event.payload.message)
+      } else if (event.payload.type === "AudioBlob") {
+        appendAudioElement(event.payload.blob)
+      }
+    }
+  })
 
   async function start() {
-    micToggle.disabled = true
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+    })
 
-    stream = await getUserMedia()
     await startRecording()
-
-    micToggle.checked = true
-    micToggle.disabled = false
-  }
-
-  function pause() {
-    mediaRecorder.pause()
-    micToggle.checked = false
-    clearTimeout(transcriptionTimeout)
   }
 
   async function startRecording() {
-    if (mediaRecorder) {
-      mediaRecorder.stop()
-    }
-
-    await initializeWebSocket()
+    await dial()
 
     mediaRecorder = new MediaRecorder(stream, {
       audioBitsPerSecond: 128000,
       mimeType: "audio/webm;codecs=opus",
     })
 
-    const chunks = []
+    let chunks = []
 
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        socket.send(event.data)
-        chunks.push(event.data)
+    mediaRecorder.ondataavailable = ({ data }) => {
+      if (data.size > 0) {
+        chunks.push(data)
+        socket.send(data)
       }
     }
 
     mediaRecorder.onstop = () => {
-      const paragraph = getLastParagraph()
-      if (paragraph.textContent.trim() !== "") {
+      if (getLastParagraph().textContent.trim() !== "") {
         const blob = new Blob(chunks, { type: "audio/webm;codecs=opus" })
         eventStore.add({ type: "AudioBlob", blob })
         appendAudioElement(blob)
       }
 
-      chunks.length = 0
-      mediaRecorder = null
       socket.close()
       socket = null
+      mediaRecorder = null
+      chunks = []
     }
 
     mediaRecorder.onerror = (error) =>
       console.error("MediaRecorder error:", error)
 
     mediaRecorder.start(100)
-    micToggle.textContent = "Pause"
-    resetTranscriptionTimeout()
+
+    resetSilence()
   }
 
   function handleDeepgramMessage(message) {
-    try {
-      console.log(message)
-      if (message.type === "Results") {
-        const alternative = message.channel.alternatives[0]
-        const { words } = alternative
-        const isFinal = message.is_final
+    if (message.type === "Results") {
+      const { words, transcript } = message.channel.alternatives[0]
+      const isFinal = message.is_final
 
-        if (alternative.transcript.trim() === "") {
-          return
-        }
+      if (transcript.trim() === "") return
 
-        resetTranscriptionTimeout()
+      const wordSpans = words.map(({ punctuated_word }) =>
+        tag("span.word", {}, [punctuated_word + " "]),
+      )
 
-        let paragraph = getLastParagraph()
-        if (!paragraph) {
-          paragraph = appendParagraph()
-        }
+      const span = tag("span", {}, wordSpans)
 
-        let interim = paragraph.querySelector("span.interim")
-        if (!interim) {
-          interim = tag("span.interim", {}, [])
-          paragraph.appendChild(interim)
-        }
+      const hasInterim = interim.children.length > 0
 
-        interim.textContent = ""
+      if (isFinal) {
+        console.log(transcript)
+        hasInterim && console.groupEnd()
 
-        for (const { punctuated_word } of words) {
-          interim.appendChild(tag("span.word", {}, [punctuated_word + " "]))
-        }
+        interim.replaceChildren()
+        getLastParagraph().querySelector(".foo").append(span)
+      } else {
+        !hasInterim && console.group("✏️")
+        console.log(transcript)
 
-        if (isFinal) {
-          interim.className = "final"
-        }
-
-        scrollToBottom()
+        interim.replaceChildren(span)
       }
-    } catch (error) {
-      console.error("Error parsing server message:", error)
+
+      mediaRecorder && resetSilence()
+      scrollToBottom()
     }
   }
 
   function appendParagraph() {
-    const paragraph = tag("p", {}, [])
-    document.body.appendChild(paragraph)
-    return paragraph
+    console.groupEnd()
+    console.group("❡")
+    return transcript.appendChild(tag("p", {}, [tag("span.foo")]))
   }
 
   function appendAudioElement(blob) {
     const audioUrl = URL.createObjectURL(blob)
     const audio = new Audio(audioUrl)
-    audio.controls = true
-    getLastParagraph().prepend(audio)
+    audio.controls = false
+
+    const simplePlayer = tag("button.play", {
+      onclick: (e) => {
+        e.preventDefault()
+        if (audio.paused) {
+          audio.play()
+          e.target.className = "stop"
+        } else {
+          audio.stop()
+          e.target.className = "play"
+        }
+      },
+    })
+
+    audio.onended = () => {
+      simplePlayer.className = "play"
+    }
+
+    getLastParagraph().prepend(simplePlayer)
     appendParagraph()
     scrollToBottom()
   }
 
   function getLastParagraph() {
-    return document.querySelector("p:last-of-type")
+    const p = transcript.querySelector("p:last-of-type")
+    return p ? p : appendParagraph()
   }
 
   function scrollToBottom() {
@@ -310,36 +328,25 @@
     })
   }
 
-  async function getUserMedia() {
-    try {
-      return await navigator.mediaDevices.getUserMedia({
-        audio: true,
-      })
-    } catch (error) {
-      console.error("getUserMedia error:", error)
-    }
+  function resetSilence() {
+    clearTimeout(silenceTimeout)
+    silenceTimeout = setTimeout(handleSilence, 3000)
   }
 
-  function resetTranscriptionTimeout() {
-    if (!mediaRecorder) {
-      return
+  function handleSilence() {
+    if (getLastParagraph().textContent.trim() !== "") {
+      mediaRecorder.stop()
+      setTimeout(startRecording, 0)
+    } else {
+      resetSilence()
     }
-
-    clearTimeout(transcriptionTimeout)
-    transcriptionTimeout = setTimeout(() => {
-      if (getLastParagraph().textContent.trim() !== "") {
-        console.log("Silence detected, flushing media recorder")
-        mediaRecorder.stop()
-        setTimeout(startRecording, 0)
-      } else {
-        console.log("Silence detected, but no audio recorded")
-        resetTranscriptionTimeout()
-      }
-    }, 3000)
   }
-
-  document.addEventListener("DOMContentLoaded", initialize)
 </script>
+
 <body>
-  <input type="checkbox" id="micToggle" />
+  <article id="transcript"></article>
+  <p>
+    <button id="micToggle" class="record"></button>
+    <kbd id="interim"></kbd>
+  </p>
 </body>
