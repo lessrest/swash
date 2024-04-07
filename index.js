@@ -404,10 +404,11 @@ function WhisperButton({ audio, timestamp, prefix }) {
   )
 
   useEffect(() => {
+    console.log("audio", audio, mediaRecorder)
     if (audio && mediaRecorder && mediaRecorder.state === "recording") {
       whisper()
     }
-  }, [])
+  }, [audio])
 
   return html` <button onClick=${whisper}>✨</button> `
 }
