@@ -22,6 +22,7 @@ var deepgramQueryParams = map[string]string{
 	"smart_format":    "true",
 	"vad_events":      "true",
 	"diarize":         "true",
+	"language":        "sv-SE",
 }
 
 func deepgramUrl() string {
@@ -114,6 +115,8 @@ func whisper(w http.ResponseWriter, r *http.Request) {
 	// and send it to the openai api
 	// and then send the response back to the client
 
+	prefix := r.FormValue("prefix")
+
 	// Read the audio file from the request
 	file, header, err := r.FormFile("file")
 	if err != nil {
@@ -145,7 +148,13 @@ func whisper(w http.ResponseWriter, r *http.Request) {
 	_ = writer.WriteField("model", "whisper-1")
 
 	// Add the response format field
-	_ = writer.WriteField("response_format", "json")
+	_ = writer.WriteField("response_format", "verbose_json")
+
+	_ = writer.WriteField("timestamp_granularities[]", "word")
+	_ = writer.WriteField("timestamp_granularities[]", "segment")
+
+	// Add the prefix field
+	_ = writer.WriteField("prompt", prefix)
 
 	// Close the multipart writer to finalize the request body
 	err = writer.Close()
@@ -164,7 +173,7 @@ func whisper(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Set the request headers
-	req.Header.Set("Authorization", "Bearer "+os.Getenv("OPENAI_API_KEY"))
+	req.Header.Set("Authorization", "Bearer "+openaiApiKey)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	// Send the request
@@ -202,8 +211,17 @@ func main() {
 
 	http.HandleFunc("/transcribe", handler)
 	http.HandleFunc("/whisper", whisper)
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "index.html")
+	})
+	http.HandleFunc("/index.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript")
+		http.ServeFile(w, r, "index.js")
+	})
+	http.HandleFunc("/index.css", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css")
+		http.ServeFile(w, r, "index.css")
 	})
 
 	log.Info("serve", "port", port)
