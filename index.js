@@ -408,7 +408,7 @@ function WhisperButton({ audio, timestamp, prefix }) {
     if (audio && mediaRecorder && mediaRecorder.state === "recording") {
       doWhisper({ audio, timestamp, prefix })
     }
-  }, [audio])
+  }, [audio, timestamp, prefix])
 
   return html` <button onClick=${whisper}>✨</button> `
 }
