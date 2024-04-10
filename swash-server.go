@@ -22,7 +22,7 @@ var deepgramQueryParams = map[string]string{
 	"smart_format":    "true",
 	"vad_events":      "true",
 	"diarize":         "true",
-	"language":        "sv-SE",
+	"language":        "en-US",
 }
 
 func deepgramUrl() string {
@@ -48,13 +48,13 @@ func startProxySession(serviceConn *websocket.Conn, browserConn *websocket.Conn)
 		defer serviceConn.Close()
 		defer browserConn.Close()
 		for {
-			_, message, err := browserConn.ReadMessage()
+			messageType, message, err := browserConn.ReadMessage()
 			if err != nil {
 				log.Error("read from browser", "error", err)
 				break
 			}
 
-			if err := serviceConn.WriteMessage(websocket.BinaryMessage, message); err != nil {
+			if err := serviceConn.WriteMessage(messageType, message); err != nil {
 				log.Error("send to Deepgram", "error", err)
 				break
 			}
@@ -65,12 +65,12 @@ func startProxySession(serviceConn *websocket.Conn, browserConn *websocket.Conn)
 		defer serviceConn.Close()
 		defer browserConn.Close()
 		for {
-			_, message, err := serviceConn.ReadMessage()
+			messageType, message, err := serviceConn.ReadMessage()
 			if err != nil {
 				log.Error("read from Deepgram", "error", err)
 				break
 			}
-			if err := browserConn.WriteMessage(websocket.TextMessage, message); err != nil {
+			if err := browserConn.WriteMessage(messageType, message); err != nil {
 				log.Error("send to browser", "error", err)
 				break
 			}
@@ -103,18 +103,6 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func whisper(w http.ResponseWriter, r *http.Request) {
-	// curl -s https://api.openai.com/v1/audio/transcriptions \
-	//    -H "Authorization: Bearer $OPENAI_API_KEY" \
-	//    -H "Content-Type: multipart/form-data" \
-	//    -F file="@$file" \
-	//    -F model=whisper-1 \
-	//    -F response_format=json
-
-	// that's the curl command we want to replicate
-	// we need to read the file from the request
-	// and send it to the openai api
-	// and then send the response back to the client
-
 	prefix := r.FormValue("prefix")
 
 	// Read the audio file from the request
@@ -206,11 +194,80 @@ func whisper(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
+	// Read the audio file from the request
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		log.Error("Error retrieving the file", "error", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Read the audio file content
+	audioData, err := io.ReadAll(file)
+	if err != nil {
+		log.Error("Error reading audio file", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Create a new HTTP request
+	req, err := http.NewRequest("POST", "https://api.deepgram.com/v1/listen", bytes.NewBuffer(audioData))
+	if err != nil {
+		log.Error("Error creating request", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Set the request headers
+	req.Header.Set("Authorization", "Token "+deepgramApiKey)
+	req.Header.Set("Content-Type", "audio/webm")
+
+	// Set the query parameters
+	q := req.URL.Query()
+	q.Set("model", "nova-2")
+	q.Set("diarize", "true")
+	q.Set("smart_format", "true")
+	q.Set("language", "en-US")
+	req.URL.RawQuery = q.Encode()
+
+	// Send the request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error("Error sending request", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Error("Error reading response body", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Set the response headers
+	w.Header().Set("Content-Type", "application/json")
+
+	// Write the response body
+	_, err = w.Write(respBody)
+	if err != nil {
+		log.Error("Error writing response", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
 func main() {
 	port := getEnv("PORT")
 
 	http.HandleFunc("/transcribe", handler)
 	http.HandleFunc("/whisper", whisper)
+	http.HandleFunc("/whisper-deepgram", whisperDeepgram)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "index.html")
@@ -218,6 +275,10 @@ func main() {
 	http.HandleFunc("/index.js", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/javascript")
 		http.ServeFile(w, r, "index.js")
+	})
+	http.HandleFunc("/audio.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript")
+		http.ServeFile(w, r, "audio.js")
 	})
 	http.HandleFunc("/index.css", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css")

@@ -22,9 +22,14 @@ input {
 
 p {
   display: grid;
-  grid-template-columns: auto auto auto 1fr auto;
+  grid-template-columns: auto 1fr auto;
   align-items: baseline;
   margin: 0.25rem 0 0 0;
+  gap: 0.5rem;
+}
+
+p nav {
+  display: flex;
   gap: 0.5rem;
 }
 
@@ -55,11 +60,12 @@ button.record::before {
   content: "⏺️";
 }
 
-/* button.play {
+button:not(.record) {
   display: none;
-} */
+}
 
-.whisper {
+.whisper,
+.words {
   font-family: "Big Caslon", "Book Antiqua", "Palatino Linotype", Georgia,
     serif;
 }
@@ -100,4 +106,11 @@ time {
   button {
     color: inherit;
   }
+}
+
+.interim .word {
+}
+
+.pause {
+  display: inline-block;
 }
