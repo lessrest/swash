@@ -60,7 +60,13 @@ button.record::before {
   content: "⏺️";
 }
 
-button:not(.record) {
+button.record,
+button.stop {
+  font-size: 1.5rem;
+  line-height: 3rem;
+}
+
+button:not(.record):not(.stop) {
   display: none;
 }
 
@@ -85,6 +91,8 @@ button:not(.record) {
   font-family: "Hoefler Text", "Baskerville Old Face", Garamond,
     "Times New Roman", serif;
   opacity: 0.7;
+  display: inline-block;
+  margin-right: 0.5rem;
 }
 
 time {

@@ -51,7 +51,12 @@ function Transcript({ transcript, current, interim }) {
         button=${false}
         index=${transcript.length}
       />
-      <button onClick=${start} className="record"></button>
+      <button
+        onClick=${startOrStop}
+        className=${recorderA && recorderA.state === "recording"
+          ? "stop"
+          : "record"}
+      ></button>
     </article>
   `
 }
@@ -79,6 +84,8 @@ function Interim({ interim }) {
   const delta = totalLength - lengthLimit
 
   useEffect(() => {
+    if (delta === 0) return
+
     const updateLengthLimit = () => {
       setLengthLimit((lengthLimit) => lengthLimit + 1)
       console.log("limit", lengthLimit)
@@ -476,7 +483,7 @@ async function startRecording() {
   recorderB.start()
 }
 
-async function start() {
+async function startOrStop() {
   if (recorderA && recorderA.state === "recording") {
     recorderA.stop()
   } else {
@@ -495,6 +502,12 @@ async function start() {
     }, 1000)
   }
 }
+
+window.addEventListener("beforeunload", () => {
+  if (recorderA && recorderA.state === "recording") {
+    recorderA.stop()
+  }
+})
 
 function show(state) {
   render(
