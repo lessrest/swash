@@ -270,6 +270,7 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	if path != "/v1/audio/transcriptions" && path != "/v1/chat/completions" {
+		log.Error("Unsupported OpenAI API endpoint", "path", path)
 		http.Error(w, "Unsupported OpenAI API endpoint", http.StatusBadRequest)
 		return
 	}
@@ -277,7 +278,7 @@ func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	// Create a new HTTP request
 	req, err := http.NewRequest(r.Method, "https://api.openai.com"+path, r.Body)
 	if err != nil {
-		log.Error("Error creating request", "error", err)
+		log.Error("Error creating request", "error", err, "method", r.Method, "url", "https://api.openai.com"+path)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -285,6 +286,7 @@ func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	// Set the request headers
 	req.Header.Set("Authorization", "Bearer "+openaiApiKey)
 	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+	log.Info("Sending request to OpenAI", "method", req.Method, "url", req.URL, "headers", req.Header)
 
 	// Send the request
 	client := &http.Client{}
@@ -295,6 +297,8 @@ func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	log.Info("Received response from OpenAI", "status", resp.Status)
 
 	// Copy the response headers
 	for key, values := range resp.Header {
