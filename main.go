@@ -17,20 +17,15 @@ var upgrader = websocket.Upgrader{} // use default options
 var deepgramApiKey = getEnv("DEEPGRAM_API_KEY")
 var openaiApiKey = getEnv("OPENAI_API_KEY")
 
-var deepgramQueryParams = map[string]string{
-	"model":           "nova-2",
-	"interim_results": "true",
-	"smart_format":    "true",
-	"vad_events":      "true",
-	"diarize":         "true",
-}
-
 func deepgramUrl(language string) string {
-	queryParams := url.Values{}
-	for key, value := range deepgramQueryParams {
-		queryParams.Add(key, value)
+	queryParams := url.Values{
+		"model":           {"nova-2"},
+		"interim_results": {"true"},
+		"smart_format":    {"true"},
+		"vad_events":      {"true"},
+		"diarize":         {"true"},
+		"language":        {language},
 	}
-	queryParams.Add("language", language)
 	return "wss://api.deepgram.com/v1/listen?" + queryParams.Encode()
 }
 
@@ -82,13 +77,12 @@ func startProxySession(serviceConn *websocket.Conn, browserConn *websocket.Conn)
 	select {}
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
+func handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	browserConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Error("upgrade", "error", err)
 		return
 	}
-
 	defer browserConn.Close()
 
 	language := r.URL.Query().Get("language")
@@ -105,7 +99,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	startProxySession(serviceConn, browserConn)
-	log.Info("over", "from", browserConn.RemoteAddr())
+	log.Info("session ended", "from", browserConn.RemoteAddr())
 }
 
 func whisper(w http.ResponseWriter, r *http.Request) {
@@ -196,7 +190,7 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 	handleResponse(w, resp)
 }
 
-func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
+func handleOpenAIProxy(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/openai")
 	if path != "/v1/audio/transcriptions" && path != "/v1/chat/completions" {
 		log.Error("Unsupported OpenAI API endpoint", "path", path)
@@ -204,20 +198,16 @@ func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a new HTTP request
 	req, err := http.NewRequest(r.Method, "https://api.openai.com"+path, r.Body)
 	if err != nil {
-		log.Error("Error creating request", "error", err, "method", r.Method, "url", "https://api.openai.com"+path)
+		log.Error("Error creating request", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Set the request headers
 	req.Header.Set("Authorization", "Bearer "+openaiApiKey)
 	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
-	log.Info("Sending request to OpenAI", "method", req.Method, "url", req.URL, "headers", req.Header)
 
-	// Send the request
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -227,34 +217,29 @@ func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	log.Info("Received response from OpenAI", "status", resp.Status)
-
-	// Copy the response headers
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-			log.Info("Added header", "key", key, "value", value)
-		}
-	}
-
-	// Copy the response body
-	log.Info("Copying response body")
-	written, err := io.Copy(w, resp.Body)
-	log.Info("Copied response body", "written", written)
+	copyHeaders(w, resp)
+	_, err = io.Copy(w, resp.Body)
 	if err != nil {
 		log.Error("Error copying response body", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	}
+}
+
+func copyHeaders(w http.ResponseWriter, resp *http.Response) {
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
 	}
 }
 
 func main() {
 	port := getEnv("PORT")
 
-	http.HandleFunc("/transcribe", handler)
-	http.HandleFunc("/whisper", whisper)
-	http.HandleFunc("/whisper-deepgram", whisperDeepgram)
-	http.HandleFunc("/openai/", proxyOpenAI)
+	http.Handle("/transcribe", http.HandlerFunc(handleTranscribe))
+	http.Handle("/whisper", http.HandlerFunc(whisper))
+	http.Handle("/whisper-deepgram", http.HandlerFunc(whisperDeepgram))
+	http.Handle("/openai/", http.HandlerFunc(handleOpenAIProxy))
 
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/", fs)
