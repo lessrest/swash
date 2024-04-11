@@ -356,14 +356,36 @@ func initDB() (*sql.DB, error) {
 }
 
 func saveEventToDB(db *sql.DB, key string, seq int, payload string) error {
-	_, err := db.Exec(`INSERT INTO events (key, seq, time, payload) VALUES (?, ?, ?, ?)`, key, seq, time.Now().Unix(), payload)
-	return err
+	result, err := db.Exec(`
+		INSERT INTO events (key, seq, time, payload)
+		SELECT ?, ?, ?, ?
+		WHERE (SELECT COALESCE(MAX(seq), 0) FROM events WHERE key = ?) = ?
+	`, key, seq, time.Now().Unix(), payload, key, seq)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("optimistic lock failed")
+	}
+
+	return nil
 }
 func appendEvent(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	key := r.FormValue("key")
+	seq, err := strconv.Atoi(r.FormValue("seq"))
+	if err != nil {
+		handleError(w, err)
+		return
+	}
 	payload := r.FormValue("payload")
 
-	err := saveEventToDB(db, key, 0, payload)
+	err = saveEventToDB(db, key, seq, payload)
 	if err != nil {
 		handleError(w, err)
 		return

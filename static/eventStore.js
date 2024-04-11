@@ -15,13 +15,27 @@ export async function createEventStore() {
   return eventStore
 }
 
-export async function saveEvent(eventStore, payload) {
-  const key = await eventStore.add(storeName, {
-    timestamp: Date.now(),
-    payload,
+export async function saveEvent(eventStore, key, payload) {
+  const events = await eventStore.getAll(storeName)
+  const lastEvent = events[events.length - 1]
+  const seq = lastEvent ? lastEvent.payload.seq + 1 : 0
+
+  const response = await fetch("/append-event", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: `key=${encodeURIComponent(key)}&seq=${seq}&payload=${encodeURIComponent(JSON.stringify(payload))}`,
   })
 
-  return await eventStore.get(storeName, key)
+  if (response.ok) {
+    const savedEvent = {
+      timestamp: Date.now(),
+      payload: { ...payload, seq },
+    }
+    await eventStore.add(storeName, savedEvent)
+    return savedEvent
+  } else {
+    throw new Error("Failed to save event")
+  }
 }
 
 export async function getAllEvents(eventStore) {
