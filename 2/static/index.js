@@ -1,4 +1,5 @@
 import { openDB } from "idb"
+import "grapheme-splitter"
 import { render } from "preact"
 import {
   useState,

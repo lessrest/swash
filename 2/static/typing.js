@@ -1,11 +1,14 @@
 import { useState, useEffect } from "preact/hooks"
+import GraphemeSplitter from "grapheme-splitter"
+
+const splitter = new GraphemeSplitter()
 
 export function useTypingEffect(text) {
   const [lengthLimit, setLengthLimit] = useState(0)
   const [time, setTime] = useState(0)
 
   useEffect(() => {
-    const totalLength = text.length
+    const totalLength = splitter.countGraphemes(text)
 
     if (totalLength === lengthLimit) {
       return
@@ -46,7 +49,7 @@ export function useTypingEffect(text) {
     return () => clearTimeout(timeoutId)
   }, [text, lengthLimit, time])
 
-  const displayedText = text.slice(0, lengthLimit)
+  const displayedText = splitter.takeGraphemes(text, lengthLimit)
 
   return displayedText
 }
