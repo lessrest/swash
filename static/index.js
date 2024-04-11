@@ -14,18 +14,7 @@ import { useLiveTranscription } from "./transcribing.js"
 import { useChatCompletion } from "./chatCompletion.js"
 import { useTypingEffect } from "./typing.js"
 
-let state = {
-  archive: [],
-  transcript: [],
-  current: { words: [], timestamp: null },
-  interim: [],
-}
-
-window.swash = {
-  get state() {
-    return state
-  },
-}
+import { state, reducer } from "./state.js"
 
 function Transcript({ transcript, current, interim }) {
   const currentWords = html`
@@ -53,6 +42,12 @@ function Transcript({ transcript, current, interim }) {
       <${RecordingWidget} />
     </article>
   `
+}
+
+window.swash = {
+  get state() {
+    return state
+  },
 }
 
 function Interim({ interim }) {
