@@ -267,12 +267,58 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if path != "/v1/audio/transcriptions" && path != "/v1/chat/completions" {
+		http.Error(w, "Unsupported OpenAI API endpoint", http.StatusBadRequest)
+		return
+	}
+
+	// Create a new HTTP request
+	req, err := http.NewRequest(r.Method, "https://api.openai.com"+path, r.Body)
+	if err != nil {
+		log.Error("Error creating request", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Set the request headers
+	req.Header.Set("Authorization", "Bearer "+openaiApiKey)
+	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+
+	// Send the request
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error("Error sending request", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	// Copy the response headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+
+	// Copy the response body
+	_, err = io.Copy(w, resp.Body)
+	if err != nil {
+		log.Error("Error copying response body", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
 func main() {
 	port := getEnv("PORT")
 
 	http.HandleFunc("/transcribe", handler)
 	http.HandleFunc("/whisper", whisper)
 	http.HandleFunc("/whisper-deepgram", whisperDeepgram)
+	http.HandleFunc("/openai/", proxyOpenAI)
 
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/", fs)
