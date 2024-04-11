@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "@types/dom-webcodecs": "^0.1.11",
+    "crunker": "^2.4.0",
+    "htm": "^3.1.1",
+    "idb": "^8.0.0",
+    "preact": "^10.20.1",
+    "webm-muxer": "^4.0.1"
+  }
+}

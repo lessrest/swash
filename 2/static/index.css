@@ -1,0 +1,120 @@
+body {
+  font-family: system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  margin: 0;
+  padding: 0.5rem 0.5rem;
+}
+
+article {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+kbd {
+  font: inherit;
+}
+
+input {
+  margin: 0;
+}
+
+p {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: baseline;
+  margin: 0.25rem 0 0 0;
+  gap: 0.5rem;
+}
+
+p nav {
+  display: flex;
+  gap: 0.5rem;
+}
+
+audio {
+  height: 2rem;
+  width: 100%;
+  margin-bottom: 0.5rem;
+}
+
+button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  margin: 0;
+  padding: 0;
+}
+
+button.stop::before {
+  content: "⏹️";
+}
+
+button.play::before {
+  content: "▶️";
+}
+
+button.record::before {
+  content: "⏺️";
+}
+
+button.record,
+button.stop {
+  font-size: 1.5rem;
+}
+
+button:not(.record):not(.stop) {
+  display: none;
+}
+
+.whisper,
+.words {
+  font-family: "Big Caslon", "Book Antiqua", "Palatino Linotype", Georgia,
+    serif;
+}
+
+.whisper.segment {
+  display: block;
+  margin-right: 1rem;
+}
+
+.whisper.segments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.index {
+  font-family: "Hoefler Text", "Baskerville Old Face", Garamond,
+    "Times New Roman", serif;
+  opacity: 0.7;
+  display: inline-block;
+  margin-right: 0.5rem;
+}
+
+time {
+  color: #666;
+  font-size: 0.85rem;
+  line-height: 1rem;
+}
+
+.speaker-1 {
+  font-style: italic;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: #111;
+    color: ivory;
+  }
+
+  button {
+    color: inherit;
+  }
+}
+
+.pause {
+  display: inline-block;
+}
