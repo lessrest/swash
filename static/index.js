@@ -1,4 +1,4 @@
-import { openDB } from "idb"
+import { createEventStore, saveEvent, getAllEvents } from "./eventStore.js"
 import "grapheme-splitter"
 import { render } from "preact"
 import {
@@ -451,18 +451,8 @@ function reducer(state, { payload, timestamp }) {
   return handler ? handler(state, payload, timestamp) : state
 }
 
-const storeName = "events.2"
-
-const eventStore = await openDB("swa.sh", 3, {
-  upgrade: (db, oldVersion, newVersion, transaction) => {
-    db.createObjectStore(storeName, {
-      keyPath: "sequenceNumber",
-      autoIncrement: true,
-    })
-  },
-})
-
-const allEvents = [] // await getAllEvents()
+const eventStore = await createEventStore()
+const allEvents = await getAllEvents(eventStore)
 console.log(allEvents.map((x) => x.payload.type))
 
 for (const event of allEvents) {
@@ -473,21 +463,9 @@ show(state)
 
 window.scrollTo(0, document.body.scrollHeight)
 
-async function saveEvent(payload) {
-  const key = await eventStore.add(storeName, {
-    timestamp: Date.now(),
-    payload,
-  })
-
-  return await eventStore.get(storeName, key)
-}
-
-async function getAllEvents() {
-  return await eventStore.getAll(storeName)
-}
 
 async function emit(payload) {
-  const event = await saveEvent(payload)
+  const event = await saveEvent(eventStore, payload)
   update(event)
   console.log(event, state)
 }
