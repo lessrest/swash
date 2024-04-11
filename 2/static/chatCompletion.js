@@ -1,11 +1,20 @@
 import { useState, useEffect, useCallback, useReducer } from "preact/hooks"
 
+// example of the chat chunks send by SSE
+// {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-3.5-turbo-0125", "system_fingerprint": "fp_44709d6fcb", "choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}]}
+
+// {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-3.5-turbo-0125", "system_fingerprint": "fp_44709d6fcb", "choices":[{"index":0,"delta":{"content":"Hello"},"logprobs":null,"finish_reason":null}]}
+
+// ....
+
+// {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-3.5-turbo-0125", "system_fingerprint": "fp_44709d6fcb", "choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+
 function messageReducer(state, action) {
   switch (action.type) {
-    case 'APPEND_CONTENT':
+    case "APPEND_CONTENT":
       return state + action.content
-    case 'RESET':
-      return ''
+    case "RESET":
+      return ""
     default:
       return state
   }
@@ -20,7 +29,7 @@ export function useChatCompletion({
   onDone,
 }) {
   const [isStreaming, setIsStreaming] = useState(false)
-  const [message, dispatch] = useReducer(messageReducer, '')
+  const [message, dispatch] = useReducer(messageReducer, "")
 
   const startCompletion = useCallback(async () => {
     setIsStreaming(true)
@@ -70,7 +79,7 @@ export function useChatCompletion({
           const parsed = JSON.parse(message)
           const delta = parsed.choices[0].delta
           if (delta.content) {
-            dispatch({ type: 'APPEND_CONTENT', content: delta.content })
+            dispatch({ type: "APPEND_CONTENT", content: delta.content })
           }
         } catch (error) {
           console.error("Could not JSON parse stream message", message, error)
@@ -81,7 +90,7 @@ export function useChatCompletion({
 
   useEffect(() => {
     return () => {
-      dispatch({ type: 'RESET' })
+      dispatch({ type: "RESET" })
     }
   }, [])
 
