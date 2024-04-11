@@ -2,7 +2,7 @@ import { openDB } from "idb"
 import { render } from "preact"
 import { useState, useCallback, useRef, useEffect } from "preact/hooks"
 import { html } from "htm/preact"
-import { concatenateAudioBlobs } from "./audio.js"
+import { useSpeechAudio } from "./recording.js"
 
 const apiUrl = document.location.origin.replace(/^http/, "ws") + "/transcribe"
 
@@ -30,21 +30,18 @@ function Transcript({ transcript, current, interim }) {
   const currentWords = html`
     <${Interim} interim=${[...current.words, ...interim]} />
   `
-  let prefix = []
   return html`
     <article>
-      ${transcript.map((segment, i) => {
-        const x = html`
-          <${TranscriptSegment}
-            prefix=${prefix}
-            segment=${segment}
-            index=${i}
-            key=${`segment-${i}-${segment.timestamp}`}
-          />
-        `
-        prefix = segment.whisper ? [...prefix, segment] : [...prefix]
-        return x
-      })}
+      ${transcript.map(
+        (segment, i) =>
+          html`
+            <${TranscriptSegment}
+              segment=${segment}
+              index=${i}
+              key=${`segment-${i}-${segment.timestamp}`}
+            />
+          `,
+      )}
       <${TranscriptItem}
         timestamp=${current.timestamp}
         words=${currentWords}
@@ -110,7 +107,6 @@ function Interim({ interim }) {
     } else {
       setRateOfChange(0)
     }
-    console.log("delta", delta, "rate", rateOfChange)
   }, [delta, totalLength])
 
   let choppedWords = []
@@ -127,8 +123,6 @@ function Interim({ interim }) {
     }
   }
 
-  console.log(choppedWords)
-
   const pendingIndicator = delta > 0 ? " 💬" : ""
 
   return html`<span class="interim"
@@ -136,36 +130,16 @@ function Interim({ interim }) {
   >`
 }
 
-// function Words({ words }) {
-//   return words.map(({ punctuated_word, confidence, speaker }) => {
-//     return html`<span
-//       style="opacity: ${confidence}"
-//       class="speaker-${speaker}"
-//       >${punctuated_word + " "}</span
-//     >`
-//   })
-// }
+function TranscriptSegment({ segment, index }) {
+  const { words, audio, t0 } = segment
 
-function TranscriptSegment({ segment, index, prefix }) {
-  const { words, audio, timestamp, whisper, t0 } = segment
-
-  const wordSpans = whisper
-    ? html`<${Whisper}
-        text=${whisper.text}
-        segments=${whisper.segments}
-        prefix=${prefix}
-      />`
-    : html`<${Words} words=${words} />`
-
-  const hasWhisper = whisper && whisper.text
+  const wordSpans = html`<${Words} words=${words} />`
 
   return html`
     <${TranscriptItem}
       timestamp=${t0}
       audio=${audio}
-      whisperButton=${true}
       words=${wordSpans}
-      prefix=${prefix}
       index=${index}
     />
   `
@@ -197,43 +171,7 @@ function Words({ words }) {
   return html`<span class="words">${children}</span>`
 }
 
-function Whisper({ text, segments, prefix }) {
-  if (segments) {
-    const prefixTexts = prefix.map((segment) => segment.whisper.text)
-    const prefixText = prefixTexts.slice(-3).join(" ")
-
-    const parts = segments.map((segment, i) => {
-      return html`<span class="whisper segment">${segment.text}</span>`
-    })
-    return html`<span class="whisper segments">${parts}</span>`
-  } else {
-    return html`<span class="whisper">${text}</span>`
-  }
-}
-
-function WhisperButton({ audio, timestamp, prefix }) {
-  const whisper = useCallback(
-    () => doWhisper({ audio, timestamp, prefix }),
-    [audio, timestamp, prefix],
-  )
-
-  // useEffect(() => {
-  //   if (audio && mediaRecorder && mediaRecorder.state === "recording") {
-  //     doWhisper({ audio, timestamp, prefix })
-  //   }
-  // }, [])
-
-  return html` <button onClick=${whisper}>✨</button> `
-}
-
-function TranscriptItem({
-  timestamp,
-  audio,
-  whisperButton,
-  words,
-  index,
-  prefix,
-}) {
+function TranscriptItem({ timestamp, audio, words, index }) {
   return html`
     <p>
       <nav>
@@ -241,15 +179,6 @@ function TranscriptItem({
         <${Player} audio=${audio} />
         <button onClick=${() =>
           emit({ type: "SplitTranscript", timestamp })}>✂️</button>
-        ${
-          whisperButton
-            ? html`<${WhisperButton}
-                audio=${audio}
-                timestamp=${timestamp}
-                prefix=${prefix}
-              />`
-            : html`<span></span>`
-        }
       </nav>
       <div style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
         <span>${words}</span>
@@ -557,27 +486,59 @@ const openTranscriptionSocket = () =>
     }
   })
 
-async function doWhisper({ audio, timestamp, prefix }) {
-  const formData = new FormData()
-  const blob = await fetch(audio).then((response) => response.blob())
-  const extension = blob.type === "audio/mp4" ? "mp4" : "webm"
+const useLiveTranscription = ({ onUpdate, onError }) => {
+  const [socket, setSocket] = useState(null)
+  const [readyState, setReadyState] = useState(null)
 
-  const prefixTexts = prefix.map((segment) => segment.whisper.text)
-  const prefixText = prefixTexts.slice(-3).join(" ")
+  useEffect(() => {
+    const socket = new WebSocket(apiUrl)
+    setSocket(socket)
+    setReadyState(socket.readyState)
 
-  formData.append("file", blob, `audio.${extension}`)
-  formData.append("prefix", prefixText)
+    const onReadyStateChange = () => {
+      setReadyState(socket.readyState)
+    }
 
-  const response = await fetch("/whisper", {
-    method: "POST",
-    body: formData,
-  })
+    socket.onopen = onReadyStateChange
+    socket.onclose = onReadyStateChange
 
-  if (response.ok) {
-    const result = await response.json()
-    emit({ type: "WhisperResult", result, timestamp, verbose: true })
-  } else {
-    console.error("Error calling Whisper API:", response.statusText)
+    return () => {
+      socket.close()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!socket) return
+
+    const onMessage = (event) => {
+      const message = JSON.parse(event.data)
+      if (isBoringDeepgramMessage(message)) {
+        return
+      } else {
+        onUpdate(message)
+      }
+    }
+
+    socket.addEventListener("message", onMessage)
+
+    return () => {
+      socket.removeEventListener("message", onMessage)
+    }
+  }, [socket, onUpdate])
+
+  useEffect(() => {
+    if (!socket) return
+
+    socket.addEventListener("error", onError)
+
+    return () => {
+      socket.removeEventListener("error", onError)
+    }
+  }, [socket, onError])
+
+  return {
+    readyState,
+    send: (message) => socket.send(message),
   }
 }
 

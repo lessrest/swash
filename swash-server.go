@@ -22,14 +22,14 @@ var deepgramQueryParams = map[string]string{
 	"smart_format":    "true",
 	"vad_events":      "true",
 	"diarize":         "true",
-	"language":        "en-US",
 }
 
-func deepgramUrl() string {
+func deepgramUrl(language string) string {
 	queryParams := url.Values{}
 	for key, value := range deepgramQueryParams {
 		queryParams.Add(key, value)
 	}
+	queryParams.Add("language", language)
 	return "wss://api.deepgram.com/v1/listen?" + queryParams.Encode()
 }
 
@@ -90,7 +90,12 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	defer browserConn.Close()
 
-	url := deepgramUrl()
+	language := r.URL.Query().Get("language")
+	if language == "" {
+		language = "en-US"
+	}
+
+	url := deepgramUrl(language)
 	header := http.Header{"Authorization": {"Token " + deepgramApiKey}}
 	serviceConn, _, err := websocket.DefaultDialer.Dial(url, header)
 	if err != nil {
@@ -269,21 +274,8 @@ func main() {
 	http.HandleFunc("/whisper", whisper)
 	http.HandleFunc("/whisper-deepgram", whisperDeepgram)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		http.ServeFile(w, r, "index.html")
-	})
-	http.HandleFunc("/index.js", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/javascript")
-		http.ServeFile(w, r, "index.js")
-	})
-	http.HandleFunc("/audio.js", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/javascript")
-		http.ServeFile(w, r, "audio.js")
-	})
-	http.HandleFunc("/index.css", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/css")
-		http.ServeFile(w, r, "index.css")
-	})
+	fs := http.FileServer(http.Dir("./static"))
+	http.Handle("/", fs)
 
 	log.Info("serve", "port", port)
 

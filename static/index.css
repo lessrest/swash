@@ -63,7 +63,6 @@ button.record::before {
 button.record,
 button.stop {
   font-size: 1.5rem;
-  line-height: 3rem;
 }
 
 button:not(.record):not(.stop) {
@@ -114,9 +113,6 @@ time {
   button {
     color: inherit;
   }
-}
-
-.interim .word {
 }
 
 .pause {

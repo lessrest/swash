@@ -4,5 +4,8 @@
   "trailingComma": "all",
   "quoteProps": "consistent",
   "singleQuote": false,
-  "tabWidth": 2
+  "tabWidth": 2,
+  "htmlWhitespaceSensitivity": "css",
+  "bracketSameLine": true,
+  "singleAttributePerLine": false
 }
