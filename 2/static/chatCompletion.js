@@ -22,16 +22,13 @@ function messageReducer(state, action) {
   }
 }
 
-export function useChatCompletion({
-  apiKey,
-  model,
-  messages,
-  temperature,
-  onError,
-  onDone,
-}) {
+export function useChatCompletion({ model, messages, temperature, onError }) {
   const [isStreaming, setIsStreaming] = useState(false)
-  const [message, dispatch] = useReducer(messageReducer, { role: "", content: "" })
+  const [isDone, setIsDone] = useState(false)
+  const [message, dispatch] = useReducer(messageReducer, {
+    role: "",
+    content: "",
+  })
 
   const startCompletion = useCallback(async () => {
     setIsStreaming(true)
@@ -40,7 +37,6 @@ export function useChatCompletion({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
         model,
@@ -62,8 +58,8 @@ export function useChatCompletion({
     while (true) {
       const { done, value } = await reader.read()
       if (done) {
-        onDone()
         setIsStreaming(false)
+        setIsDone(true)
         break
       }
 
@@ -73,8 +69,8 @@ export function useChatCompletion({
       for (const line of lines) {
         const message = line.replace(/^data: /, "")
         if (message === "[DONE]") {
-          onDone()
           setIsStreaming(false)
+          setIsDone(true)
           break
         }
         try {
@@ -87,8 +83,8 @@ export function useChatCompletion({
             dispatch({ type: "APPEND_CONTENT", content: delta.content })
           }
           if (parsed.choices[0].finish_reason === "stop") {
-            onDone()
             setIsStreaming(false)
+            setIsDone(true)
             break
           }
         } catch (error) {
@@ -96,17 +92,20 @@ export function useChatCompletion({
         }
       }
     }
-  }, [apiKey, model, messages, temperature, onMessage, onError, onDone])
+  }, [model, messages, temperature, onError])
 
   useEffect(() => {
+    if (!isStreaming && !isDone) {
+      startCompletion()
+    }
     return () => {
       dispatch({ type: "RESET" })
     }
-  }, [])
+  }, [isStreaming, isDone])
 
   return {
     isStreaming,
+    isDone,
     message,
-    startCompletion,
   }
 }
