@@ -27,9 +27,9 @@ export function useTypingEffect(text) {
   }, [text, lengthLimit])
 
   useEffect(() => {
-    const amplitude = 50
-    const frequency = 0.05
-    const offset = 50
+    const amplitude = 25
+    const frequency = 0.1
+    const offset = 75
 
     const rateOfChange = Math.sin(time * frequency) * amplitude + offset
 
