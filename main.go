@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/gorilla/websocket"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 var upgrader = websocket.Upgrader{} // use default options
@@ -77,7 +79,7 @@ func startProxySession(serviceConn *websocket.Conn, browserConn *websocket.Conn)
 	select {}
 }
 
-func handleTranscribe(w http.ResponseWriter, r *http.Request) {
+func handleTranscribe(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	browserConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Error("upgrade", "error", err)
@@ -102,7 +104,7 @@ func handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	log.Info("session ended", "from", browserConn.RemoteAddr())
 }
 
-func whisper(w http.ResponseWriter, r *http.Request) {
+func whisper(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	prefix := r.FormValue("prefix")
 
 	// Read the audio file from the request
@@ -153,6 +155,9 @@ func whisper(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, err := sendOpenAIRequest("POST", "/v1/audio/transcriptions", writer.FormDataContentType(), body)
+	if err == nil {
+		err = saveEventToDB(db, "whisper", 0, string(body.Bytes()))
+	}
 	if err != nil {
 		handleError(w, err)
 		return
@@ -162,7 +167,7 @@ func whisper(w http.ResponseWriter, r *http.Request) {
 	handleResponse(w, resp)
 }
 
-func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
+func whisperDeepgram(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	// Read the audio file from the request
 	file, _, err := r.FormFile("file")
 	if err != nil {
@@ -181,6 +186,9 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, err := sendDeepgramRequest(audioData)
+	if err == nil {
+		err = saveEventToDB(db, "whisper-deepgram", 0, string(audioData))
+	}
 	if err != nil {
 		handleError(w, err)
 		return
@@ -190,7 +198,7 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 	handleResponse(w, resp)
 }
 
-func handleOpenAIProxy(w http.ResponseWriter, r *http.Request) {
+func handleOpenAIProxy(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	path := strings.TrimPrefix(r.URL.Path, "/openai")
 	if path != "/v1/audio/transcriptions" && path != "/v1/chat/completions" {
 		log.Error("Unsupported OpenAI API endpoint", "path", path)
@@ -210,6 +218,10 @@ func handleOpenAIProxy(w http.ResponseWriter, r *http.Request) {
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
+	if err == nil {
+		body, _ := io.ReadAll(r.Body)
+		err = saveEventToDB(db, path, 0, string(body))
+	}
 	if err != nil {
 		log.Error("Error sending request", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -234,12 +246,25 @@ func copyHeaders(w http.ResponseWriter, resp *http.Response) {
 }
 
 func main() {
+	db, err := initDB()
+	if err != nil {
+		log.Fatal("Error initializing database", "error", err)
+	}
+	defer db.Close()
 	port := getEnv("PORT")
 
-	http.Handle("/transcribe", http.HandlerFunc(handleTranscribe))
-	http.Handle("/whisper", http.HandlerFunc(whisper))
-	http.Handle("/whisper-deepgram", http.HandlerFunc(whisperDeepgram))
-	http.Handle("/openai/", http.HandlerFunc(handleOpenAIProxy))
+	http.Handle("/transcribe", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleTranscribe(w, r, db)
+	}))
+	http.Handle("/whisper", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		whisper(w, r, db)
+	}))
+	http.Handle("/whisper-deepgram", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		whisperDeepgram(w, r, db)
+	}))
+	http.Handle("/openai/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleOpenAIProxy(w, r, db)
+	}))
 
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/", fs)
@@ -316,4 +341,27 @@ func handleResponse(w http.ResponseWriter, resp *http.Response) {
 	if err != nil {
 		handleError(w, err)
 	}
+}
+func initDB() (*sql.DB, error) {
+	db, err := sql.Open("sqlite3", "events.db")
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS events (
+		key TEXT,
+		seq INTEGER,
+		time INTEGER,
+		payload TEXT
+	)`)
+	if err != nil {
+		return nil, err
+	}
+
+	return db, nil
+}
+
+func saveEventToDB(db *sql.DB, key string, seq int, payload string) error {
+	_, err := db.Exec(`INSERT INTO events (key, seq, time, payload) VALUES (?, ?, ?, ?)`, key, seq, time.Now().Unix(), payload)
+	return err
 }
