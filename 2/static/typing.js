@@ -2,13 +2,12 @@ import { useState, useEffect } from "preact/hooks"
 
 export function useTypingEffect(text) {
   const [lengthLimit, setLengthLimit] = useState(0)
-  const [rateOfChange, setRateOfChange] = useState(0)
+  const [time, setTime] = useState(0)
 
   useEffect(() => {
     const totalLength = text.length
 
     if (totalLength === lengthLimit) {
-      setRateOfChange(0)
       return
     }
 
@@ -18,24 +17,30 @@ export function useTypingEffect(text) {
 
     if (delta < 0) {
       setLengthLimit(totalLength)
-      setRateOfChange(0)
     } else if (delta > 0) {
-      const newRate = Math.min(maxRate, minRate + delta)
-      setRateOfChange(newRate)
+      const intervalId = setInterval(() => {
+        setTime((prevTime) => prevTime + 1)
+      }, 100)
+
+      return () => clearInterval(intervalId)
     }
   }, [text, lengthLimit])
 
   useEffect(() => {
-    if (rateOfChange === 0) return
+    const amplitude = 50
+    const frequency = 0.05
+    const offset = 50
+
+    const rateOfChange = Math.sin(time * frequency) * amplitude + offset
 
     const updateLengthLimit = () => {
-      setLengthLimit((prevLimit) => prevLimit + 1)
+      setLengthLimit((prevLimit) => Math.min(prevLimit + 1, text.length))
     }
 
-    const intervalId = setInterval(updateLengthLimit, 1000 / rateOfChange)
+    const timeoutId = setTimeout(updateLengthLimit, 1000 / rateOfChange)
 
-    return () => clearInterval(intervalId)
-  }, [rateOfChange])
+    return () => clearTimeout(timeoutId)
+  }, [text, time])
 
   const displayedText = text.slice(0, lengthLimit)
 
