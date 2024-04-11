@@ -1,2 +1,5 @@
-server1: go run main.go -port=3000
-server2: go run main.go -port=3001
+server1: make -C 1 run
+server2: make -C 2 run
+
+
+

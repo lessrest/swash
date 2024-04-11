@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+max=$(ls | grep -E '^[0-9]+$' | sort -n | tail -1)
+next=$((max + 1))
+cp -Rv $max $next
+
+echo $next
