@@ -27,20 +27,24 @@ export function useTypingEffect(text) {
   }, [text, lengthLimit])
 
   useEffect(() => {
-    const amplitude = 25
-    const frequency = 0.1
-    const offset = 75
+    const baseSpeed = 50 // Base typing speed in characters per second
+    const fluctuationAmplitude = 0.2 // Amplitude of speed fluctuation
+    const fluctuationFrequency = 0.05 // Frequency of speed fluctuation
 
-    const rateOfChange = Math.sin(time * frequency) * amplitude + offset
+    const charactersRemaining = text.length - lengthLimit
+    const speedMultiplier = Math.max(0.1, Math.min(2, charactersRemaining / 100))
+
+    const fluctuation = Math.sin(time * fluctuationFrequency) * fluctuationAmplitude + 1
+    const typingSpeed = baseSpeed * speedMultiplier * fluctuation
 
     const updateLengthLimit = () => {
       setLengthLimit((prevLimit) => Math.min(prevLimit + 1, text.length))
     }
 
-    const timeoutId = setTimeout(updateLengthLimit, 1000 / rateOfChange)
+    const timeoutId = setTimeout(updateLengthLimit, 1000 / typingSpeed)
 
     return () => clearTimeout(timeoutId)
-  }, [text, time])
+  }, [text, lengthLimit, time])
 
   const displayedText = text.slice(0, lengthLimit)
 
