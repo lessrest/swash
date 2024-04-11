@@ -77,10 +77,6 @@ export const handlers = {
   },
 }
 
-export function reducer(state, { payload, timestamp }) {
-  const handler = handlers[payload.type]
-  return handler ? handler(state, payload, timestamp) : state
-}
 export let state = {
   archive: [],
   transcript: [],
