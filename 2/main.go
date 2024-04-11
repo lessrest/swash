@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/log"
 	"github.com/gorilla/websocket"
