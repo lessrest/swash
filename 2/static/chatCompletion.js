@@ -11,10 +11,12 @@ import { useState, useEffect, useCallback, useReducer } from "preact/hooks"
 
 function messageReducer(state, action) {
   switch (action.type) {
+    case "SET_ROLE":
+      return { ...state, role: action.role }
     case "APPEND_CONTENT":
-      return state + action.content
+      return { ...state, content: state.content + action.content }
     case "RESET":
-      return ""
+      return { role: "", content: "" }
     default:
       return state
   }
@@ -29,7 +31,7 @@ export function useChatCompletion({
   onDone,
 }) {
   const [isStreaming, setIsStreaming] = useState(false)
-  const [message, dispatch] = useReducer(messageReducer, "")
+  const [message, dispatch] = useReducer(messageReducer, { role: "", content: "" })
 
   const startCompletion = useCallback(async () => {
     setIsStreaming(true)
@@ -78,8 +80,16 @@ export function useChatCompletion({
         try {
           const parsed = JSON.parse(message)
           const delta = parsed.choices[0].delta
+          if (delta.role === "assistant") {
+            dispatch({ type: "SET_ROLE", role: delta.role })
+          }
           if (delta.content) {
             dispatch({ type: "APPEND_CONTENT", content: delta.content })
+          }
+          if (parsed.choices[0].finish_reason === "stop") {
+            onDone()
+            setIsStreaming(false)
+            break
           }
         } catch (error) {
           console.error("Could not JSON parse stream message", message, error)
