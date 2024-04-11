@@ -158,46 +158,14 @@ func whisper(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a new HTTP request
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/audio/transcriptions", body)
+	resp, err := sendOpenAIRequest("POST", "/v1/audio/transcriptions", writer.FormDataContentType(), body)
 	if err != nil {
-		log.Error("Error creating request", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Set the request headers
-	req.Header.Set("Authorization", "Bearer "+openaiApiKey)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-
-	// Send the request
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Error("Error sending request", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		handleError(w, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	// Read the response body
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Error("Error reading response body", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Set the response headers
-	w.Header().Set("Content-Type", "application/json")
-
-	// Write the response body
-	_, err = w.Write(respBody)
-	if err != nil {
-		log.Error("Error writing response", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	handleResponse(w, resp)
 }
 
 func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
@@ -218,54 +186,14 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a new HTTP request
-	req, err := http.NewRequest("POST", "https://api.deepgram.com/v1/listen", bytes.NewBuffer(audioData))
+	resp, err := sendDeepgramRequest(audioData)
 	if err != nil {
-		log.Error("Error creating request", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Set the request headers
-	req.Header.Set("Authorization", "Token "+deepgramApiKey)
-	req.Header.Set("Content-Type", "audio/webm")
-
-	// Set the query parameters
-	q := req.URL.Query()
-	q.Set("model", "nova-2")
-	q.Set("diarize", "true")
-	q.Set("smart_format", "true")
-	q.Set("language", "en-US")
-	req.URL.RawQuery = q.Encode()
-
-	// Send the request
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Error("Error sending request", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		handleError(w, err)
 		return
 	}
 	defer resp.Body.Close()
 
-	// Read the response body
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Error("Error reading response body", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Set the response headers
-	w.Header().Set("Content-Type", "application/json")
-
-	// Write the response body
-	_, err = w.Write(respBody)
-	if err != nil {
-		log.Error("Error writing response", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	handleResponse(w, resp)
 }
 
 func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
@@ -338,4 +266,69 @@ func main() {
 	}
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+func sendOpenAIRequest(method, path, contentType string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, "https://api.openai.com"+path, body)
+	if err != nil {
+		log.Error("Error creating request", "error", err)
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Bearer "+openaiApiKey)
+	req.Header.Set("Content-Type", contentType)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error("Error sending request", "error", err)
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+func sendDeepgramRequest(audioData []byte) (*http.Response, error) {
+	req, err := http.NewRequest("POST", "https://api.deepgram.com/v1/listen", bytes.NewBuffer(audioData))
+	if err != nil {
+		log.Error("Error creating request", "error", err)
+		return nil, err
+	}
+
+	req.Header.Set("Authorization", "Token "+deepgramApiKey)
+	req.Header.Set("Content-Type", "audio/webm")
+
+	q := req.URL.Query()
+	q.Set("model", "nova-2")
+	q.Set("diarize", "true")
+	q.Set("smart_format", "true")
+	q.Set("language", "en-US")
+	req.URL.RawQuery = q.Encode()
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error("Error sending request", "error", err)
+		return nil, err
+	}
+
+	return resp, nil
+}
+
+func handleError(w http.ResponseWriter, err error) {
+	log.Error("Error occurred", "error", err)
+	http.Error(w, err.Error(), http.StatusInternalServerError)
+}
+
+func handleResponse(w http.ResponseWriter, resp *http.Response) {
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_, err = w.Write(respBody)
+	if err != nil {
+		handleError(w, err)
+	}
 }
