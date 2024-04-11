@@ -155,9 +155,6 @@ func whisper(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	}
 
 	resp, err := sendOpenAIRequest("POST", "/v1/audio/transcriptions", writer.FormDataContentType(), body)
-	if err == nil {
-		err = saveEventToDB(db, "whisper", 0, string(body.Bytes()))
-	}
 	if err != nil {
 		handleError(w, err)
 		return
@@ -186,9 +183,6 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	}
 
 	resp, err := sendDeepgramRequest(audioData)
-	if err == nil {
-		err = saveEventToDB(db, "whisper-deepgram", 0, string(audioData))
-	}
 	if err != nil {
 		handleError(w, err)
 		return
@@ -218,10 +212,6 @@ func handleOpenAIProxy(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
-	if err == nil {
-		body, _ := io.ReadAll(r.Body)
-		err = saveEventToDB(db, path, 0, string(body))
-	}
 	if err != nil {
 		log.Error("Error sending request", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -264,6 +254,10 @@ func main() {
 	}))
 	http.Handle("/openai/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handleOpenAIProxy(w, r, db)
+	}))
+
+	http.Handle("/append-event", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		appendEvent(w, r, db)
 	}))
 
 	fs := http.FileServer(http.Dir("./static"))
@@ -364,4 +358,16 @@ func initDB() (*sql.DB, error) {
 func saveEventToDB(db *sql.DB, key string, seq int, payload string) error {
 	_, err := db.Exec(`INSERT INTO events (key, seq, time, payload) VALUES (?, ?, ?, ?)`, key, seq, time.Now().Unix(), payload)
 	return err
+}
+func appendEvent(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+	key := r.FormValue("key")
+	payload := r.FormValue("payload")
+
+	err := saveEventToDB(db, key, 0, payload)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
