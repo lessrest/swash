@@ -54,6 +54,7 @@ export function useChatCompletion({ model, messages, temperature, onError }) {
 
     const reader = response.body.getReader()
     const decoder = new TextDecoder("utf-8")
+    let buffer = ""
 
     while (true) {
       const { done, value } = await reader.read()
@@ -63,16 +64,22 @@ export function useChatCompletion({ model, messages, temperature, onError }) {
         break
       }
 
-      const chunk = decoder.decode(value)
-      const lines = chunk.split("\n").filter((line) => line.trim() !== "")
+      buffer += decoder.decode(value)
+      let position = buffer.indexOf("\n")
 
-      for (const line of lines) {
+      while (position !== -1) {
+        const line = buffer.slice(0, position).trim()
+        buffer = buffer.slice(position + 1)
+
+        if (line === "") continue
+
         const message = line.replace(/^data: /, "")
         if (message === "[DONE]") {
           setIsStreaming(false)
           setIsDone(true)
           break
         }
+
         try {
           const parsed = JSON.parse(message)
           const delta = parsed.choices[0].delta
@@ -90,6 +97,8 @@ export function useChatCompletion({ model, messages, temperature, onError }) {
         } catch (error) {
           console.error("Could not JSON parse stream message", message, error)
         }
+
+        position = buffer.indexOf("\n")
       }
     }
   }, [model, messages, temperature, onError])
