@@ -268,7 +268,7 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 }
 
 func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
+	path := strings.TrimPrefix(r.URL.Path, "/openai")
 	if path != "/v1/audio/transcriptions" && path != "/v1/chat/completions" {
 		log.Error("Unsupported OpenAI API endpoint", "path", path)
 		http.Error(w, "Unsupported OpenAI API endpoint", http.StatusBadRequest)
