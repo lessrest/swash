@@ -1,4 +1,10 @@
-import { useState, useEffect, useCallback, useReducer } from "preact/hooks"
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useReducer,
+  useMemo,
+} from "preact/hooks"
 
 // example of the chat chunks send by SSE
 // {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-3.5-turbo-0125", "system_fingerprint": "fp_44709d6fcb", "choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}]}
@@ -58,6 +64,9 @@ export function useChatCompletion({ model, messages, temperature, onError }) {
 
     while (true) {
       const { done, value } = await reader.read()
+
+      console.log("Read", { done, value })
+
       if (done) {
         setIsStreaming(false)
         setIsDone(true)
@@ -68,6 +77,7 @@ export function useChatCompletion({ model, messages, temperature, onError }) {
       let position = buffer.indexOf("\n")
 
       while (position !== -1) {
+        console.log("Found newline", { position })
         const line = buffer.slice(0, position).trim()
         buffer = buffer.slice(position + 1)
 
@@ -104,13 +114,11 @@ export function useChatCompletion({ model, messages, temperature, onError }) {
   }, [model, messages, temperature, onError])
 
   useEffect(() => {
-    if (!isStreaming && !isDone) {
-      startCompletion()
-    }
+    startCompletion()
     return () => {
       dispatch({ type: "RESET" })
     }
-  }, [isStreaming, isDone])
+  }, [model, messages, temperature])
 
   return {
     isStreaming,
