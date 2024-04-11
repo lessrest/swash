@@ -1,9 +1,17 @@
 import { openDB } from "idb"
 import { render } from "preact"
-import { useState, useCallback, useRef, useEffect } from "preact/hooks"
+import {
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  useMemo,
+} from "preact/hooks"
 import { html } from "htm/preact"
 import { useSpeechAudio } from "./recording.js"
 import { useLiveTranscription } from "./transcribing.js"
+import { useChatCompletion } from "./chatCompletion.js"
+import { useTypingEffect } from "./typing.js"
 
 let state = {
   archive: [],
@@ -123,12 +131,36 @@ function TranscriptSegment({ segment, index }) {
 
   const wordSpans = html`<${Words} words=${words} />`
 
+  const text = words.map((word) => word.punctuated_word).join(" ")
+  // ask GPT
+  const onError = useCallback((error) => console.error(error), [])
+  const messages = useMemo(
+    () => [
+      { role: "system", content: "You are a helpful assistant." },
+      {
+        role: "user",
+        content: `Rewrite the following text in a clear and concise style, using emojis and some uppercase emphasis: ${text}`,
+      },
+    ],
+    [text],
+  )
+
+  const { isStreaming, isDone, message } = useChatCompletion({
+    model: "gpt-3.5-turbo",
+    messages,
+    temperature: 0,
+    onError,
+  })
+
+  const displayedText = useTypingEffect(message ? message.content : "")
+
   return html`
     <${TranscriptItem}
       timestamp=${t0}
       audio=${audio}
       words=${wordSpans}
       index=${index} />
+    <aside style="white-space: pre-wrap">${displayedText}</aside>
   `
 }
 
@@ -246,7 +278,7 @@ function RecordingStarting({ mediaStream, language }) {
   const onUpdate = useCallback((message) => {
     console.log("Received Deepgram message:", message)
     emit({ type: "DeepgramMessage", message })
-    setDeadline(Date.now() + 5000)
+    setDeadline(Date.now() + 3000)
   }, [])
 
   const onError = useCallback((error) => {
@@ -290,7 +322,7 @@ function RecordingStarting({ mediaStream, language }) {
   useEffect(() => {
     if (isRecording) {
       console.log("Recording started, setting deadline")
-      setDeadline(Date.now() + 5000)
+      setDeadline(Date.now() + 3000)
     } else {
       console.log("Recording stopped, clearing deadline")
       setDeadline(null)
