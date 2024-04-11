@@ -269,7 +269,6 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 }
 
 func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
-	go func() {
 	path := strings.TrimPrefix(r.URL.Path, "/openai")
 	if path != "/v1/audio/transcriptions" && path != "/v1/chat/completions" {
 		log.Error("Unsupported OpenAI API endpoint", "path", path)
@@ -306,17 +305,19 @@ func proxyOpenAI(w http.ResponseWriter, r *http.Request) {
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
+			log.Info("Added header", "key", key, "value", value)
 		}
 	}
 
-		// Copy the response body
-		_, err = io.Copy(w, resp.Body)
-		if err != nil {
-			log.Error("Error copying response body", "error", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}()
+	// Copy the response body
+	log.Info("Copying response body")
+	written, err := io.Copy(w, resp.Body)
+	log.Info("Copied response body", "written", written)
+	if err != nil {
+		log.Error("Error copying response body", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
 func main() {

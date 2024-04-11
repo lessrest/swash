@@ -30,26 +30,27 @@ export function useTypingEffect(text) {
   }, [text, lengthLimit])
 
   useEffect(() => {
-    const baseSpeed = 50 // Base typing speed in characters per second
-    const fluctuationAmplitude = 0.2 // Amplitude of speed fluctuation
-    const fluctuationFrequency = 0.05 // Frequency of speed fluctuation
+    const baseSpeed = 50 // Base typing speed in graphemes per second
 
-    const charactersRemaining = text.length - lengthLimit
-    const speedMultiplier = Math.max(0.1, Math.min(2, charactersRemaining / 100))
+    const graphemesRemaining = splitter.countGraphemes(text) - lengthLimit
 
-    const fluctuation = Math.sin(time * fluctuationFrequency) * fluctuationAmplitude + 1
-    const typingSpeed = baseSpeed * speedMultiplier * fluctuation
+    const speedMultiplier = Math.max(
+      0.1,
+      Math.min(2, graphemesRemaining / 100),
+    )
+
+    const typingSpeed = baseSpeed * speedMultiplier
 
     const updateLengthLimit = () => {
-      setLengthLimit((prevLimit) => Math.min(prevLimit + 1, text.length))
+      setLengthLimit((prevLimit) =>
+        Math.min(prevLimit + 1, splitter.countGraphemes(text)),
+      )
     }
 
     const timeoutId = setTimeout(updateLengthLimit, 1000 / typingSpeed)
 
     return () => clearTimeout(timeoutId)
-  }, [text, lengthLimit, time])
-
-  const displayedText = splitter.takeGraphemes(text, lengthLimit)
-
+  }, [text, lengthLimit])
+  const displayedText = splitter.splitGraphemes(text).slice(0, lengthLimit)
   return displayedText
 }

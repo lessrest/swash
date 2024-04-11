@@ -140,14 +140,14 @@ function TranscriptSegment({ segment, index }) {
       { role: "system", content: "You are a helpful assistant." },
       {
         role: "user",
-        content: `Rewrite the following text in a clear and concise style, using emojis and some uppercase emphasis: ${text}`,
+        content: `Write this text as a short sequence of terse bullet points: ${text}`,
       },
     ],
     [text],
   )
 
   const { isStreaming, isDone, message } = useChatCompletion({
-    model: "gpt-3.5-turbo",
+    model: "gpt-4-turbo-preview",
     messages,
     temperature: 0,
     onError,
@@ -160,8 +160,8 @@ function TranscriptSegment({ segment, index }) {
       timestamp=${t0}
       audio=${audio}
       words=${wordSpans}
-      index=${index} />
-    <aside style="white-space: pre-wrap">${displayedText}</aside>
+      index=${index}
+      response=${displayedText} />
   `
 }
 
@@ -190,7 +190,7 @@ function Words({ words }) {
   return html`<span class="words">${children}</span>`
 }
 
-function TranscriptItem({ timestamp, audio, words, index }) {
+function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
   return html`
     <p>
       <nav>
@@ -203,6 +203,14 @@ function TranscriptItem({ timestamp, audio, words, index }) {
         <span>${words}</span>
       </div>
       <time>${formatDateTimeHuman(new Date(timestamp))}</time>
+    </p>
+    <p style="white-space: pre-wrap">
+      <nav>
+        <span class="index">✶${index + 1}</span>
+      </nav>
+      <div style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
+        <span class="response">${response}</span>
+      </div>
     </p>
   `
 }
@@ -454,7 +462,7 @@ const eventStore = await openDB("swa.sh", 3, {
   },
 })
 
-const allEvents = await getAllEvents()
+const allEvents = [] // await getAllEvents()
 console.log(allEvents.map((x) => x.payload.type))
 
 for (const event of allEvents) {

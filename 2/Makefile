@@ -1,3 +1,5 @@
+.PHONY: server run
+
 server:
 	go build -o $@ main.go
 
