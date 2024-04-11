@@ -441,11 +441,6 @@ const handlers = {
   },
 }
 
-function reducer(state, { payload, timestamp }) {
-  const handler = handlers[payload.type]
-  return handler ? handler(state, payload, timestamp) : state
-}
-
 const eventStore = await createEventStore()
 const allEvents = await getAllEvents(eventStore)
 console.log(allEvents.map((x) => x.payload.type))
@@ -457,7 +452,6 @@ for (const event of allEvents) {
 show(state)
 
 window.scrollTo(0, document.body.scrollHeight)
-
 
 async function emit(payload) {
   const event = await saveEvent(eventStore, payload)
