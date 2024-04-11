@@ -65,19 +65,14 @@ export function useChatCompletion({ model, messages, temperature, onError }) {
     while (true) {
       const { done, value } = await reader.read()
 
-      console.log("Read", { done, value })
-
       if (done) {
-        setIsStreaming(false)
-        setIsDone(true)
         break
       }
 
       buffer += decoder.decode(value)
-      let position = buffer.indexOf("\n")
 
-      while (position !== -1) {
-        console.log("Found newline", { position })
+      let position
+      while ((position = buffer.indexOf("\n")) !== -1) {
         const line = buffer.slice(0, position).trim()
         buffer = buffer.slice(position + 1)
 
@@ -107,10 +102,11 @@ export function useChatCompletion({ model, messages, temperature, onError }) {
         } catch (error) {
           console.error("Could not JSON parse stream message", message, error)
         }
-
-        position = buffer.indexOf("\n")
       }
     }
+
+    setIsStreaming(false)
+    setIsDone(true)
   }, [model, messages, temperature, onError])
 
   useEffect(() => {
