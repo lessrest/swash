@@ -41,3 +41,13 @@ export async function saveEvent(eventStore, key, payload) {
 export async function getAllEvents(eventStore) {
   return await eventStore.getAll(storeName)
 }
+const EVENT_KEY = "eventKey"
+
+function getEventKey() {
+  let eventKey = localStorage.getItem(EVENT_KEY)
+  if (!eventKey) {
+    eventKey = crypto.randomUUID()
+    localStorage.setItem(EVENT_KEY, eventKey)
+  }
+  return eventKey
+}
