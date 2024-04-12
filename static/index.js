@@ -179,8 +179,10 @@ function ChatCompletionSegment({ messages, t0 }) {
 
   console.log(messages)
 
+  const model = provider === 'openai' ? 'gpt-4-turbo-preview' : 'claude-3-opus-20240229';
   const { isStreaming, isDone, message } = useChatCompletion({
-    model: "gpt-4-turbo-preview",
+    provider,
+    model,
     messages,
     temperature: 0,
     onError,
@@ -282,11 +284,13 @@ function formatDateTimeHuman(date) {
 function RecordingWidget() {
   const [mediaStream, setMediaStream] = useState(null)
   const [language, setLanguage] = useState("en-US")
+  const [provider, setProvider] = useState("openai")
 
   if (mediaStream) {
     return html`<${RecordingStarting}
       mediaStream=${mediaStream}
-      language=${language} /> `
+      language=${language}
+      provider=${provider} /> `
   } else {
     return html`<div
       style="display: flex; justify-content: space-between; align-items: center">
@@ -302,6 +306,12 @@ function RecordingWidget() {
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
       </select>
+      <select
+        value=${provider}
+        onChange=${(e) => setProvider(e.target.value)}>
+        <option value="openai">GPT-4</option>
+        <option value="anthropic">Claude</option>
+      </select>
     </div>`
   }
 }
@@ -310,7 +320,7 @@ async function getAudioStream() {
   return navigator.mediaDevices.getUserMedia({ audio: true })
 }
 
-function RecordingStarting({ mediaStream, language }) {
+function RecordingStarting({ mediaStream, language, provider }) {
   const [deadline, setDeadline] = useState(null)
 
   const onUpdate = useCallback((message) => {
