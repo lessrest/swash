@@ -55,6 +55,7 @@ export function useChatCompletion({
       model,
       temperature,
       stream: true,
+      max_tokens: 1024,
     }
 
     if (provider === "anthropic") {
