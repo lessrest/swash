@@ -118,6 +118,7 @@ export function useChatCompletion({
         buffer = buffer.slice(position + 1)
 
         if (line === "") continue
+        if (line.startsWith("event:")) continue
 
         const message = line.replace(/^data: /, "")
         if (message === "[DONE]") {

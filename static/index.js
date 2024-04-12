@@ -47,12 +47,6 @@ function Transcript({ transcript, current, interim }) {
   `
 }
 
-window.swash = {
-  get state() {
-    return state
-  },
-}
-
 function Interim({ interim }) {
   const totalLength = interim
     .map(({ punctuated_word }) => punctuated_word)
@@ -125,8 +119,8 @@ function Interim({ interim }) {
   >`
 }
 
-function TranscriptSegment({ provider, segment, index, segments }) {
-  const { words, audio, t0, chatCompletion } = segment
+function TranscriptSegment({ segment, index, segments }) {
+  const { words, audio, t0 } = segment
 
   const wordSpans = html`<${Words} words=${words} />`
 
@@ -200,7 +194,7 @@ function ChatCompletionSegment({ messages, t0 }) {
   console.log(messages)
 
   const { isStreaming, isDone, message } = useChatCompletion({
-    model: modelSignal.value,
+    model: models[modelSignal.value],
     messages,
     temperature: 0,
     onError,
@@ -303,12 +297,9 @@ const languageSignal = signal("en-US")
 
 function RecordingWidget() {
   const [mediaStream, setMediaStream] = useState(null)
-  const language = useSignal(languageSignal)
 
   if (mediaStream) {
-    return html`<${RecordingStarting}
-      mediaStream=${mediaStream}
-      language=${language.value} /> `
+    return html`<${RecordingStarting} mediaStream=${mediaStream} /> `
   } else {
     return html`<div
       style="display: flex; justify-content: space-between; align-items: center">
@@ -319,14 +310,14 @@ function RecordingWidget() {
           setMediaStream(stream)
         }}></button>
       <select
-        value=${language.value}
-        onChange=${(e) => language.value = e.target.value}>
+        value=${languageSignal.value}
+        onChange=${(e) => (languageSignal.value = e.target.value)}>
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
       </select>
       <select
         value=${modelSignal.value}
-        onChange=${(e) => modelSignal.value = e.target.value}>
+        onChange=${(e) => (modelSignal.value = e.target.value)}>
         <option value="claude3-haiku">Claude III Haiku</option>
         <option value="claude3-opus">Claude III Opus</option>
         <option value="gpt4-turbo">GPT IV Turbo</option>
@@ -339,7 +330,7 @@ async function getAudioStream() {
   return navigator.mediaDevices.getUserMedia({ audio: true })
 }
 
-function RecordingStarting({ mediaStream, language }) {
+function RecordingStarting({ mediaStream }) {
   const [deadline, setDeadline] = useState(null)
 
   const onUpdate = useCallback((message) => {
@@ -354,7 +345,7 @@ function RecordingStarting({ mediaStream, language }) {
   }, [])
 
   const { readyState, send } = useLiveTranscription({
-    language,
+    language: languageSignal.value,
     onUpdate,
     onError,
   })

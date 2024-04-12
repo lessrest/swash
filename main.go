@@ -26,7 +26,6 @@ func deepgramUrl(language string) string {
 		"vad_events":      {"true"},
 		"diarize":         {"true"},
 		"language":        {language},
-		"keywords":        {"Ieva:5", "Mikael:5	", "Jāzeps:5", "Jāzi:5", "Rīga:5"},
 	}
 	return "wss://api.deepgram.com/v1/listen?" + queryParams.Encode()
 }
