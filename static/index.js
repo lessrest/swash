@@ -14,7 +14,8 @@ import { useLiveTranscription } from "./transcribing.js"
 import { useChatCompletion } from "./chatCompletion.js"
 import { useTypingEffect } from "./typing.js"
 
-import { state, reducer } from "./state.js"
+import { state, reducer, setState } from "./state.js"
+import { ieva } from "./prompts.js"
 
 function Transcript({ transcript, current, interim }) {
   const currentWords = html`
@@ -31,6 +32,7 @@ function Transcript({ transcript, current, interim }) {
             <${TranscriptSegment}
               segment=${segment}
               index=${i}
+              segments=${nonEmptySegments}
               key=${`segment-${i}-${segment.timestamp}`} />
           `,
       )}
@@ -122,24 +124,60 @@ function Interim({ interim }) {
   >`
 }
 
-function TranscriptSegment({ segment, index }) {
-  const { words, audio, t0 } = segment
+function TranscriptSegment({ segment, index, segments }) {
+  const { words, audio, t0, chatCompletion } = segment
 
   const wordSpans = html`<${Words} words=${words} />`
 
   const text = words.map((word) => word.punctuated_word).join(" ")
-  // ask GPT
+
+  const messages = useMemo(() => {
+    const previousMessages = segments
+      .slice(0, index)
+      .filter((entry) => entry.t0 < t0)
+      .flatMap((entry) => [
+        {
+          role: "user",
+          content: entry.words.map((word) => word.punctuated_word).join(" "),
+        },
+        { role: "assistant", content: entry.chatCompletion || "" },
+      ])
+
+    return [
+      { role: "system", content: systemPrompt },
+      ...previousMessages,
+      { role: "user", content: text },
+    ]
+  }, [text, t0, segments])
+
+  const response = html`<${ChatCompletionSegment}
+    t0=${t0}
+    messages=${messages} />`
+
+  return html`
+    <${TranscriptItem}
+      timestamp=${t0}
+      audio=${audio}
+      words=${wordSpans}
+      index=${index} />
+    <p style="white-space: pre-wrap">
+      <nav>
+        <span class="index">✶${index + 1}</span>
+      </nav>
+      <div style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
+        <span class="response">${response}</span>
+      </div>
+    </p>      
+  `
+}
+
+const systemPrompt =
+  location.search === "?ieva" ? ieva : "You are a helpful assistant."
+
+function ChatCompletionSegment({ messages, t0 }) {
   const onError = useCallback((error) => console.error(error), [])
-  const messages = useMemo(
-    () => [
-      { role: "system", content: "You are a helpful assistant." },
-      {
-        role: "user",
-        content: `Write this text as a short sequence of terse bullet points: ${text}`,
-      },
-    ],
-    [text],
-  )
+
+  console.log(messages)
 
   const { isStreaming, isDone, message } = useChatCompletion({
     model: "gpt-4-turbo-preview",
@@ -148,16 +186,20 @@ function TranscriptSegment({ segment, index }) {
     onError,
   })
 
-  const displayedText = useTypingEffect(message ? message.content : "")
+  useEffect(() => {
+    if (message && isDone) {
+      emit({ type: "ChatCompletionResult", message: message.content, t0 })
+    }
+    // scroll to bottom
+    window.scrollTo(0, document.body.scrollHeight)
+  }, [message, isDone, t0])
 
-  return html`
-    <${TranscriptItem}
-      timestamp=${t0}
-      audio=${audio}
-      words=${wordSpans}
-      index=${index}
-      response=${displayedText} />
-  `
+  const displayedText = useTypingEffect(message ? message.content : "")
+  const indicator = isStreaming ? " 💬" : isDone ? "" : " ⏳"
+
+  console.log(message.content, "---", displayedText)
+
+  return html`${displayedText}${indicator}`
 }
 
 function Words({ words }) {
@@ -198,14 +240,6 @@ function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
         <span>${words}</span>
       </div>
       <time>${formatDateTimeHuman(new Date(timestamp))}</time>
-    </p>
-    <p style="white-space: pre-wrap">
-      <nav>
-        <span class="index">✶${index + 1}</span>
-      </nav>
-      <div style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
-        <span class="response">${response}</span>
-      </div>
     </p>
   `
 }
@@ -442,11 +476,11 @@ const handlers = {
 }
 
 const eventStore = await createEventStore()
-const allEvents = await getAllEvents(eventStore)
+const allEvents = [] // await getAllEvents(eventStore)
 console.log(allEvents.map((x) => x.payload.type))
 
 for (const event of allEvents) {
-  state = reducer(state, event)
+  setState(reducer(state, event))
 }
 
 show(state)
@@ -456,7 +490,7 @@ window.scrollTo(0, document.body.scrollHeight)
 async function emit(payload) {
   const event = await saveEvent(eventStore, payload)
   update(event)
-  console.log(event, state)
+  console.info(payload.type, event, state)
 }
 
 function show(state) {
@@ -469,9 +503,12 @@ function show(state) {
     `,
     document.getElementById("app"),
   )
+
+  // scroll to bottom
+  window.scrollTo(0, document.body.scrollHeight)
 }
 
 function update(event) {
-  state = reducer(state, event)
+  setState(reducer(state, event))
   show(state)
 }

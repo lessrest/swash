@@ -1,4 +1,4 @@
-run:; make run
+server: make run
 
 
 

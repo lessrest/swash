@@ -30,16 +30,24 @@ export function useTypingEffect(text) {
   }, [text, lengthLimit])
 
   useEffect(() => {
+    /**
+     * Calculate the typing speed based on the number of graphemes remaining.
+     * @param {number} baseSpeed - The base typing speed in graphemes per second.
+     * @param {number} graphemesRemaining - The number of graphemes remaining to be typed.
+     * @returns {number} The calculated typing speed.
+     */
+    const calculateTypingSpeed = (baseSpeed, graphemesRemaining) => {
+      const minSpeed = 20 // Minimum typing speed in graphemes per second
+      const speedMultiplier = Math.max(
+        0.1,
+        Math.min(2, graphemesRemaining / 100),
+      )
+      return Math.max(baseSpeed * speedMultiplier, minSpeed)
+    }
+
     const baseSpeed = 50 // Base typing speed in graphemes per second
-
     const graphemesRemaining = splitter.countGraphemes(text) - lengthLimit
-
-    const speedMultiplier = Math.max(
-      0.1,
-      Math.min(2, graphemesRemaining / 100),
-    )
-
-    const typingSpeed = baseSpeed * speedMultiplier
+    const typingSpeed = calculateTypingSpeed(baseSpeed, graphemesRemaining)
 
     const updateLengthLimit = () => {
       setLengthLimit((prevLimit) =>
@@ -52,5 +60,8 @@ export function useTypingEffect(text) {
     return () => clearTimeout(timeoutId)
   }, [text, lengthLimit])
   const displayedText = splitter.splitGraphemes(text).slice(0, lengthLimit)
+  // scroll to bottom
+  window.scrollTo(0, document.body.scrollHeight)
+
   return displayedText
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"database/sql"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/gorilla/websocket"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 var upgrader = websocket.Upgrader{} // use default options
@@ -27,6 +25,7 @@ func deepgramUrl(language string) string {
 		"vad_events":      {"true"},
 		"diarize":         {"true"},
 		"language":        {language},
+		"keywords":        {"Ieva:5", "Mikael:5	", "Jāzeps:5", "Jāzi:5", "Rīga:5"},
 	}
 	return "wss://api.deepgram.com/v1/listen?" + queryParams.Encode()
 }
@@ -79,7 +78,7 @@ func startProxySession(serviceConn *websocket.Conn, browserConn *websocket.Conn)
 	select {}
 }
 
-func handleTranscribe(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+func handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	browserConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Error("upgrade", "error", err)
@@ -104,7 +103,7 @@ func handleTranscribe(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	log.Info("session ended", "from", browserConn.RemoteAddr())
 }
 
-func whisper(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+func whisper(w http.ResponseWriter, r *http.Request) {
 	prefix := r.FormValue("prefix")
 
 	// Read the audio file from the request
@@ -164,7 +163,7 @@ func whisper(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	handleResponse(w, resp)
 }
 
-func whisperDeepgram(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 	// Read the audio file from the request
 	file, _, err := r.FormFile("file")
 	if err != nil {
@@ -192,7 +191,7 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	handleResponse(w, resp)
 }
 
-func handleOpenAIProxy(w http.ResponseWriter, r *http.Request, db *sql.DB) {
+func handleOpenAIProxy(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/openai")
 	if path != "/v1/audio/transcriptions" && path != "/v1/chat/completions" {
 		log.Error("Unsupported OpenAI API endpoint", "path", path)
@@ -220,10 +219,25 @@ func handleOpenAIProxy(w http.ResponseWriter, r *http.Request, db *sql.DB) {
 	defer resp.Body.Close()
 
 	copyHeaders(w, resp)
-	_, err = io.Copy(w, resp.Body)
-	if err != nil {
-		log.Error("Error copying response body", "error", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	buf := make([]byte, 16) // Use a small buffer size for streaming
+	for {
+		n, err := resp.Body.Read(buf)
+		if err != nil && err != io.EOF {
+			log.Error("Error reading response body", "error", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			break
+		}
+		if n == 0 {
+			break
+		}
+		if _, err := w.Write(buf[:n]); err != nil {
+			log.Error("Error writing response body", "error", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			break
+		}
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush() // Flush the response writer if it supports flushing
+		}
 	}
 }
 
@@ -236,38 +250,25 @@ func copyHeaders(w http.ResponseWriter, resp *http.Response) {
 }
 
 func main() {
-	db, err := initDB()
-	if err != nil {
-		log.Fatal("Error initializing database", "error", err)
-	}
-	defer db.Close()
 	port := getEnv("PORT")
 
 	http.Handle("/transcribe", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleTranscribe(w, r, db)
+		handleTranscribe(w, r)
 	}))
 	http.Handle("/whisper", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		whisper(w, r, db)
+		whisper(w, r)
 	}))
 	http.Handle("/whisper-deepgram", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		whisperDeepgram(w, r, db)
+		whisperDeepgram(w, r)
 	}))
 	http.Handle("/openai/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handleOpenAIProxy(w, r, db)
-	}))
-
-	http.Handle("/append-event", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		appendEvent(w, r, db)
+		handleOpenAIProxy(w, r)
 	}))
 
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/", fs)
 
 	log.Info("serve", "port", port)
-
-	for key, value := range deepgramQueryParams {
-		log.Info("param", key, value)
-	}
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
@@ -335,61 +336,4 @@ func handleResponse(w http.ResponseWriter, resp *http.Response) {
 	if err != nil {
 		handleError(w, err)
 	}
-}
-func initDB() (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", "events.db")
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS events (
-		key TEXT,
-		seq INTEGER,
-		time INTEGER,
-		payload TEXT
-	)`)
-	if err != nil {
-		return nil, err
-	}
-
-	return db, nil
-}
-
-func saveEventToDB(db *sql.DB, key string, seq int, payload string) error {
-	result, err := db.Exec(`
-		INSERT INTO events (key, seq, time, payload)
-		SELECT ?, ?, ?, ?
-		WHERE (SELECT COALESCE(MAX(seq), 0) FROM events WHERE key = ?) = ?
-	`, key, seq, time.Now().Unix(), payload, key, seq)
-	if err != nil {
-		return err
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("optimistic lock failed")
-	}
-
-	return nil
-}
-func appendEvent(w http.ResponseWriter, r *http.Request, db *sql.DB) {
-	key := r.FormValue("key")
-	seq, err := strconv.Atoi(r.FormValue("seq"))
-	if err != nil {
-		handleError(w, err)
-		return
-	}
-	payload := r.FormValue("payload")
-
-	err = saveEventToDB(db, key, seq, payload)
-	if err != nil {
-		handleError(w, err)
-		return
-	}
-
-	w.WriteHeader(http.StatusOK)
 }

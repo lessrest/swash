@@ -73,5 +73,10 @@ function isBoringDeepgramMessage(message) {
       message.channel.alternatives[0].transcript === ""
     )
   }
+
+  if (message.type == "SpeechStarted") {
+    return true
+  }
+
   return false
 }

@@ -5,6 +5,10 @@ export let state = {
   interim: [],
 }
 
+export function setState(newState) {
+  state = newState
+}
+
 export function reducer(state, { payload, timestamp }) {
   const handler = handlers[payload.type]
   return handler ? handler(state, payload, timestamp) : state
@@ -78,6 +82,14 @@ export const handlers = {
       ...state,
       archive: [...state.archive, ...archived],
       transcript: remaining,
+    }
+  },
+  ChatCompletionResult(state, { message, t0 }) {
+    return {
+      ...state,
+      transcript: state.transcript.map((entry) =>
+        entry.t0 === t0 ? { ...entry, chatCompletion: message } : entry,
+      ),
     }
   },
 }
