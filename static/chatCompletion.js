@@ -28,7 +28,7 @@ function messageReducer(state, action) {
   }
 }
 
-export function useChatCompletion({ model, messages, temperature, onError }) {
+export function useChatCompletion({ provider, model, messages, temperature, onError }) {
   const [isStreaming, setIsStreaming] = useState(false)
   const [isDone, setIsDone] = useState(false)
   const [message, dispatch] = useReducer(messageReducer, {
@@ -41,7 +41,8 @@ export function useChatCompletion({ model, messages, temperature, onError }) {
 
     console.log("startCompletion", messages)
 
-    const response = await fetch("/openai/v1/chat/completions", {
+    const apiPath = provider === 'anthropic' ? '/anthropic/v1/messages' : '/openai/v1/chat/completions';
+    const response = await fetch(apiPath, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -88,18 +89,32 @@ export function useChatCompletion({ model, messages, temperature, onError }) {
         }
 
         try {
-          const parsed = JSON.parse(message)
-          const delta = parsed.choices[0].delta
-          if (delta.role === "assistant") {
-            dispatch({ type: "SET_ROLE", role: delta.role })
-          }
-          if (delta.content) {
-            dispatch({ type: "APPEND_CONTENT", content: delta.content })
-          }
-          if (parsed.choices[0].finish_reason === "stop") {
-            setIsStreaming(false)
-            setIsDone(true)
-            break
+          if (provider === 'anthropic') {
+            const parsed = JSON.parse(message)
+            if (parsed.type === 'message_start') {
+              dispatch({ type: "SET_ROLE", role: parsed.message.role })
+            } else if (parsed.type === 'content_block_delta') {
+              const text = parsed.delta.text
+              dispatch({ type: "APPEND_CONTENT", content: text })
+            } else if (parsed.type === 'message_stop') {
+              setIsStreaming(false)
+              setIsDone(true)
+              break
+            }
+          } else {
+            const parsed = JSON.parse(message)
+            const delta = parsed.choices[0].delta
+            if (delta.role === "assistant") {
+              dispatch({ type: "SET_ROLE", role: delta.role })
+            }
+            if (delta.content) {
+              dispatch({ type: "APPEND_CONTENT", content: delta.content })
+            }
+            if (parsed.choices[0].finish_reason === "stop") {
+              setIsStreaming(false)
+              setIsDone(true)
+              break
+            }
           }
         } catch (error) {
           console.error("Could not JSON parse stream message", message, error)
