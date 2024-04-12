@@ -16,6 +16,7 @@ import (
 var upgrader = websocket.Upgrader{} // use default options
 var deepgramApiKey = getEnv("DEEPGRAM_API_KEY")
 var openaiApiKey = getEnv("OPENAI_API_KEY")
+var anthropicApiKey = getEnv("ANTHROPIC_API_KEY")
 
 func deepgramUrl(language string) string {
 	queryParams := url.Values{
@@ -264,6 +265,9 @@ func main() {
 	http.Handle("/openai/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handleOpenAIProxy(w, r)
 	}))
+	http.Handle("/anthropic/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handleAnthropicProxy(w, r)
+	}))
 
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/", fs)
@@ -336,4 +340,72 @@ func handleResponse(w http.ResponseWriter, resp *http.Response) {
 	if err != nil {
 		handleError(w, err)
 	}
+}
+func handleAnthropicProxy(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/anthropic")
+	if path != "/v1/messages" {
+		log.Error("Unsupported Anthropic API endpoint", "path", path)
+		http.Error(w, "Unsupported Anthropic API endpoint", http.StatusBadRequest)
+		return
+	}
+
+	req, err := http.NewRequest(r.Method, "https://api.anthropic.com"+path, r.Body)
+	if err != nil {
+		log.Error("Error creating request", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	req.Header.Set("X-API-Key", anthropicApiKey)
+	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error("Error sending request", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	copyHeaders(w, resp)
+	buf := make([]byte, 16) // Use a small buffer size for streaming
+	for {
+		n, err := resp.Body.Read(buf)
+		if err != nil && err != io.EOF {
+			log.Error("Error reading response body", "error", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			break
+		}
+		if n == 0 {
+			break
+		}
+		if _, err := w.Write(buf[:n]); err != nil {
+			log.Error("Error writing response body", "error", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			break
+		}
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush() // Flush the response writer if it supports flushing
+		}
+	}
+}
+func sendAnthropicRequest(method, path string, body io.Reader) (*http.Response, error) {
+	req, err := http.NewRequest(method, "https://api.anthropic.com"+path, body)
+	if err != nil {
+		log.Error("Error creating request", "error", err)
+		return nil, err
+	}
+
+	req.Header.Set("X-API-Key", anthropicApiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Error("Error sending request", "error", err)
+		return nil, err
+	}
+
+	return resp, nil
 }
