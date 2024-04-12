@@ -80,6 +80,12 @@ button:not(.record):not(.stop) {
   color: darkcyan;
 }
 
+@media (prefers-color-scheme: dark) {
+  .response {
+    color: lightcyan;
+  }
+}
+
 .whisper.segment {
   display: block;
   margin-right: 1rem;

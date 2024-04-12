@@ -8,6 +8,7 @@ import {
   useEffect,
   useMemo,
 } from "preact/hooks"
+import { signal, useSignal } from "@preact/signals"
 import { html } from "htm/preact"
 import { useSpeechAudio } from "./recording.js"
 import { useLiveTranscription } from "./transcribing.js"
@@ -15,7 +16,7 @@ import { useChatCompletion } from "./chatCompletion.js"
 import { useTypingEffect } from "./typing.js"
 
 import { state, reducer, setState } from "./state.js"
-import { ieva } from "./prompts.js"
+import { ieva, captainslog } from "./prompts.js"
 
 function Transcript({ transcript, current, interim }) {
   const currentWords = html`
@@ -124,7 +125,7 @@ function Interim({ interim }) {
   >`
 }
 
-function TranscriptSegment({ segment, index, segments }) {
+function TranscriptSegment({ provider, segment, index, segments }) {
   const { words, audio, t0, chatCompletion } = segment
 
   const wordSpans = html`<${Words} words=${words} />`
@@ -148,7 +149,7 @@ function TranscriptSegment({ segment, index, segments }) {
       ...previousMessages,
       { role: "user", content: text },
     ]
-  }, [text, t0, segments])
+  }, [text, t0, JSON.stringify(segments)])
 
   const response = html`<${ChatCompletionSegment}
     t0=${t0}
@@ -171,18 +172,35 @@ function TranscriptSegment({ segment, index, segments }) {
   `
 }
 
-const systemPrompt =
-  location.search === "?ieva" ? ieva : "You are a helpful assistant."
+const systemPrompt = location.search === "?ieva" ? ieva : captainslog
+
+const models = {
+  "gpt4-turbo": {
+    name: "GPT IV Turbo",
+    model: "gpt-4-turbo-preview",
+    provider: "openai",
+  },
+  "claude3-opus": {
+    name: "Claude III Opus",
+    model: "claude-3-opus-20240229",
+    provider: "anthropic",
+  },
+  "claude3-haiku": {
+    name: "Claude III Haiku",
+    model: "claude-3-haiku-20240307",
+    provider: "anthropic",
+  },
+}
+
+const modelSignal = signal("claude3-haiku")
 
 function ChatCompletionSegment({ messages, t0 }) {
   const onError = useCallback((error) => console.error(error), [])
 
   console.log(messages)
 
-  const model = provider === 'openai' ? 'gpt-4-turbo-preview' : 'claude-3-opus-20240229';
   const { isStreaming, isDone, message } = useChatCompletion({
-    provider,
-    model,
+    model: modelSignal.value,
     messages,
     temperature: 0,
     onError,
@@ -284,13 +302,11 @@ function formatDateTimeHuman(date) {
 function RecordingWidget() {
   const [mediaStream, setMediaStream] = useState(null)
   const [language, setLanguage] = useState("en-US")
-  const [provider, setProvider] = useState("openai")
 
   if (mediaStream) {
     return html`<${RecordingStarting}
       mediaStream=${mediaStream}
-      language=${language}
-      provider=${provider} /> `
+      language=${language} /> `
   } else {
     return html`<div
       style="display: flex; justify-content: space-between; align-items: center">
@@ -306,12 +322,6 @@ function RecordingWidget() {
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
       </select>
-      <select
-        value=${provider}
-        onChange=${(e) => setProvider(e.target.value)}>
-        <option value="openai">GPT-4</option>
-        <option value="anthropic">Claude</option>
-      </select>
     </div>`
   }
 }
@@ -320,7 +330,7 @@ async function getAudioStream() {
   return navigator.mediaDevices.getUserMedia({ audio: true })
 }
 
-function RecordingStarting({ mediaStream, language, provider }) {
+function RecordingStarting({ mediaStream, language }) {
   const [deadline, setDeadline] = useState(null)
 
   const onUpdate = useCallback((message) => {

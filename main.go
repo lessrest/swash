@@ -358,6 +358,8 @@ func handleAnthropicProxy(w http.ResponseWriter, r *http.Request) {
 
 	req.Header.Set("X-API-Key", anthropicApiKey)
 	req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
+	//anthropic-version: 2023-06-01
+	req.Header.Set("anthropic-version", "2023-06-01")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)

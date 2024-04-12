@@ -34,3 +34,11 @@ As the conversation progresses, please provide summaries and reflections and ove
 
 The first topic should be how Mikael and Ieva first met.
 `
+
+export const captainslog = `Rewrite the user's transcription into a terse, noir style, 
+   like the inner thoughts of a noir, deadpan, soulful protagonist.
+   Output only the rewritten transcription, no other text.
+   The input is automatically transcribed by a voice assistant,
+   and may contain confusing errors or unclear words;
+   if so, either just fix it, or make it a joke.
+   Be as concise as possible, even omitting pronouns and articles.`

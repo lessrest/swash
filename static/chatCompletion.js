@@ -29,8 +29,7 @@ function messageReducer(state, action) {
 }
 
 export function useChatCompletion({
-  provider,
-  model,
+  model: { provider, model },
   messages,
   temperature,
   onError,
@@ -53,7 +52,7 @@ export function useChatCompletion({
         : "/openai/v1/chat/completions"
     const requestBody = {
       model,
-      temperature,
+      temperature: 1,
       stream: true,
       max_tokens: 1024,
     }
@@ -75,13 +74,11 @@ export function useChatCompletion({
 
     while (retries > 0) {
       try {
+        console.info({ requestBody })
         response = await fetch(apiPath, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            ...(provider === "anthropic"
-              ? { "anthropic-version": "2023-06-01" }
-              : {}),
           },
           body: JSON.stringify(requestBody),
         })
