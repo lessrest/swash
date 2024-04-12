@@ -299,14 +299,16 @@ function formatDateTimeHuman(date) {
   })
 }
 
+const languageSignal = signal("en-US")
+
 function RecordingWidget() {
   const [mediaStream, setMediaStream] = useState(null)
-  const [language, setLanguage] = useState("en-US")
+  const language = useSignal(languageSignal)
 
   if (mediaStream) {
     return html`<${RecordingStarting}
       mediaStream=${mediaStream}
-      language=${language} /> `
+      language=${language.value} /> `
   } else {
     return html`<div
       style="display: flex; justify-content: space-between; align-items: center">
@@ -317,8 +319,8 @@ function RecordingWidget() {
           setMediaStream(stream)
         }}></button>
       <select
-        value=${language}
-        onChange=${(e) => setLanguage(e.target.value)}>
+        value=${language.value}
+        onChange=${(e) => language.value = e.target.value}>
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
       </select>
