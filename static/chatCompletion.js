@@ -70,21 +70,36 @@ export function useChatCompletion({
       requestBody.messages = messages
     }
 
-    const response = await fetch(apiPath, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(provider === "anthropic"
-          ? { "anthropic-version": "2023-06-01" }
-          : {}),
-      },
-      body: JSON.stringify(requestBody),
-    })
+    let retries = 3
+    let response
 
-    if (!response.ok) {
-      onError(new Error(`HTTP error! status: ${response.status}`))
-      setIsStreaming(false)
-      return
+    while (retries > 0) {
+      try {
+        response = await fetch(apiPath, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(provider === "anthropic"
+              ? { "anthropic-version": "2023-06-01" }
+              : {}),
+          },
+          body: JSON.stringify(requestBody),
+        })
+
+        if (response.ok) {
+          break
+        } else {
+          throw new Error(`HTTP error! status: ${response.status}`)
+        }
+      } catch (error) {
+        retries--
+        if (retries === 0) {
+          onError(error)
+          setIsStreaming(false)
+          return
+        }
+        await new Promise((resolve) => setTimeout(resolve, 3000)) // Delay for 3 seconds before retrying
+      }
     }
 
     const reader = response.body.getReader()
