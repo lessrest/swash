@@ -51,6 +51,24 @@ export function useChatCompletion({
       provider === "anthropic"
         ? "/anthropic/v1/messages"
         : "/openai/v1/chat/completions"
+    const requestBody = {
+      model,
+      temperature,
+      stream: true,
+    }
+
+    if (provider === "anthropic") {
+      const systemMessage = messages.find((msg) => msg.role === "system")
+      if (systemMessage) {
+        requestBody.system = systemMessage.content
+        requestBody.messages = messages.filter((msg) => msg.role !== "system")
+      } else {
+        requestBody.messages = messages
+      }
+    } else {
+      requestBody.messages = messages
+    }
+
     const response = await fetch(apiPath, {
       method: "POST",
       headers: {
@@ -59,12 +77,7 @@ export function useChatCompletion({
           ? { "anthropic-version": "2023-06-01" }
           : {}),
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature,
-        stream: true,
-      }),
+      body: JSON.stringify(requestBody),
     })
 
     if (!response.ok) {
