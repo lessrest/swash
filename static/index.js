@@ -104,7 +104,7 @@ function Toolbar() {
         <option value="gpt4-turbo">GPT IV Turbo</option>
       </select>
       <select disabled=${!!mediaStream} value=${promptSignal.value}>
-        ${Object.entries(prompts).map(
+        ${Object.entries(state.prompts).map(
           ([key, value]) => html` <option value=${key}>${key}</option> `,
         )}
       </select>
