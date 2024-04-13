@@ -150,23 +150,12 @@ function TranscriptSegment({ segment, index, segments }) {
     messages=${messages} />`
 
   return html`
-    <div style="display: flex; gap: 1rem;">
-      <div style="flex: 1;">
-        <${TranscriptItem}
-          timestamp=${t0}
-          audio=${audio}
-          words=${wordSpans}
-          index=${index} />
-      </div>
-      <div style="flex: 1; white-space: pre-wrap;">
-        <nav>
-          <span class="index">✶${index + 1}</span>
-        </nav>
-        <div style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
-          <span class="response">${response}</span>
-        </div>
-      </div>
-    </div>
+    <${TranscriptItem}
+      timestamp=${t0}
+      audio=${audio}
+      words=${wordSpans}
+      index=${index}
+      response=${response} />
   `
 }
 
@@ -257,7 +246,7 @@ function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
       <div style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
         <span>${words}</span>
       </div>
-      <time>${formatDateTimeHuman(new Date(timestamp))}</time>
+      <span class="response">${response}</span>
     </p>
   `
 }
