@@ -18,9 +18,33 @@ import { useTypingEffect } from "./typing.js"
 import { state, reducer, setState } from "./state.js"
 import { prompts } from "./prompts.js"
 
+const models = {
+  "gpt4-turbo": {
+    name: "GPT IV Turbo",
+    model: "gpt-4-turbo-preview",
+    provider: "openai",
+  },
+  "claude3-opus": {
+    name: "Claude III Opus",
+    model: "claude-3-opus-20240229",
+    provider: "anthropic",
+  },
+  "claude3-haiku": {
+    name: "Claude III Haiku",
+    model: "claude-3-haiku-20240307",
+    provider: "anthropic",
+  },
+}
+
+const promptSignal = signal("captainslog")
+const systemPrompt = computed(() => prompts[promptSignal.value])
+
+const modelSignal = signal("claude3-opus")
+const languageSignal = signal("en-US")
+
 function Session({ paragraphs, current, interim }) {
   const currentWords = html`
-    <${Interim} interim=${[...current.words, ...interim]} />
+    <${AnimatedWords} interim=${[...current.words, ...interim]} />
   `
   const hasCurrentOrInterim = current.words.length > 0 || interim.length > 0
 
@@ -31,7 +55,7 @@ function Session({ paragraphs, current, interim }) {
       ${nonEmptySegments.map(
         (segment, i) =>
           html`
-            <${TranscriptSegment}
+            <${Paragraph}
               segment=${segment}
               index=${i}
               segments=${nonEmptySegments}
@@ -47,15 +71,50 @@ function Session({ paragraphs, current, interim }) {
         : ""}
       <br style="padding-top: 2rem" />
       <div class="recording-toolbar">
-        <${RecordingWidget} />
+        <${Toolbar} />
       </div>
     </article>
   `
 }
 
+function Toolbar() {
+  const [mediaStream, setMediaStream] = useState(null)
+
+  return html`
+    ${mediaStream === null
+      ? html`<button
+          class="record"
+          onClick=${async () => {
+            const stream = await getAudioStream()
+            setMediaStream(stream)
+          }}></button>`
+      : ""}
+    ${mediaStream
+      ? html`<${RecordingInProgress} mediaStream=${mediaStream} />`
+      : ""}
+    <div
+      style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
+      <select disabled=${!!mediaStream} value=${languageSignal.value}>
+        <option value="en-US">English</option>
+        <option value="sv-SE">Swedish</option>
+      </select>
+      <select disabled=${!!mediaStream} value=${modelSignal.value}>
+        <option value="claude3-haiku">Claude III Haiku</option>
+        <option value="claude3-opus">Claude III Opus</option>
+        <option value="gpt4-turbo">GPT IV Turbo</option>
+      </select>
+      <select disabled=${!!mediaStream} value=${promptSignal.value}>
+        ${Object.entries(prompts).map(
+          ([key, value]) => html` <option value=${key}>${key}</option> `,
+        )}
+      </select>
+    </div>
+  `
+}
+
 const splitter = new GraphemeSplitter()
 
-function Interim({ interim }) {
+function AnimatedWords({ interim }) {
   const text = interim.map(({ punctuated_word }) => punctuated_word).join(" ")
   const totalLength = splitter.splitGraphemes(text).length
   const displayedText = useTypingEffect(text)
@@ -84,7 +143,7 @@ function Interim({ interim }) {
   >`
 }
 
-function TranscriptSegment({ segment, index, segments }) {
+function Paragraph({ segment, index, segments }) {
   const { words, audio, t0 } = segment
 
   const wordSpans = html`<${Words} words=${words} />`
@@ -124,29 +183,23 @@ function TranscriptSegment({ segment, index, segments }) {
   `
 }
 
-const promptSignal = signal("captainslog")
-const systemPrompt = computed(() => prompts[promptSignal.value])
-
-const models = {
-  "gpt4-turbo": {
-    name: "GPT IV Turbo",
-    model: "gpt-4-turbo-preview",
-    provider: "openai",
-  },
-  "claude3-opus": {
-    name: "Claude III Opus",
-    model: "claude-3-opus-20240229",
-    provider: "anthropic",
-  },
-  "claude3-haiku": {
-    name: "Claude III Haiku",
-    model: "claude-3-haiku-20240307",
-    provider: "anthropic",
-  },
+function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
+  if (words.length === 0) return ""
+  return html`
+    <p>
+      <nav>
+        <span class="index">❡${index + 1}</span>
+        <${Player} audio=${audio} />
+        <button onClick=${() =>
+          emit({ type: "SplitTranscript", timestamp })}>✂️</button>
+      </nav>
+      <div style="display: flex; flex-direction: column; gap: 0.5rem">
+        <span>${words}</span>
+        <span class="response">${response}</span>
+      </div>
+    </p>
+  `
 }
-
-const modelSignal = signal("claude3-opus")
-
 function ChatCompletionSegment({ messages, t0 }) {
   const onError = useCallback((error) => console.error(error), [])
 
@@ -159,18 +212,18 @@ function ChatCompletionSegment({ messages, t0 }) {
     onError,
   })
 
+  const displayedText = useTypingEffect(message ? message.content : "")
+  const finishedDisplaying = isDone && displayedText === message.content
+  const thinking = isStreaming && !finishedDisplaying
+  const indicator = thinking ? " 💬" : isDone ? "" : " ⏳"
+
   useEffect(() => {
-    if (message && isDone) {
+    if (message && message.content && finishedDisplaying) {
       emit({ type: "ChatCompletionResult", message: message.content, t0 })
     }
     // scroll to bottom
     window.scrollTo(0, document.body.scrollHeight)
-  }, [message, isDone, t0])
-
-  const displayedText = useTypingEffect(message ? message.content : "")
-  const indicator = isStreaming ? " 💬" : isDone ? "" : " ⏳"
-
-  console.log(message.content, "---", displayedText)
+  }, [message.content, finishedDisplaying, t0])
 
   return html`${displayedText}${indicator}`
 }
@@ -198,24 +251,6 @@ function Words({ words }) {
   )
 
   return html`<span class="words">${children}</span>`
-}
-
-function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
-  if (words.length === 0) return ""
-  return html`
-    <p>
-      <nav>
-        <span class="index">❡${index + 1}</span>
-        <${Player} audio=${audio} />
-        <button onClick=${() =>
-          emit({ type: "SplitTranscript", timestamp })}>✂️</button>
-      </nav>
-      <div style="display: flex; flex-direction: column; gap: 0.5rem">
-        <span>${words}</span>
-        <span class="response">${response}</span>
-      </div>
-    </p>
-  `
 }
 
 function Player({ audio }) {
@@ -251,43 +286,6 @@ function formatDateTimeHuman(date) {
     hour: "numeric",
     minute: "2-digit",
   })
-}
-
-const languageSignal = signal("en-US")
-
-function RecordingWidget() {
-  const [mediaStream, setMediaStream] = useState(null)
-
-  return html`
-    ${mediaStream === null
-      ? html`<button
-          class="record"
-          onClick=${async () => {
-            const stream = await getAudioStream()
-            setMediaStream(stream)
-          }}></button>`
-      : ""}
-    ${mediaStream
-      ? html`<${RecordingInProgress} mediaStream=${mediaStream} />`
-      : ""}
-    <div
-      style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
-      <select disabled=${!!mediaStream} value=${languageSignal.value}>
-        <option value="en-US">English</option>
-        <option value="sv-SE">Swedish</option>
-      </select>
-      <select disabled=${!!mediaStream} value=${modelSignal.value}>
-        <option value="claude3-haiku">Claude III Haiku</option>
-        <option value="claude3-opus">Claude III Opus</option>
-        <option value="gpt4-turbo">GPT IV Turbo</option>
-      </select>
-      <select disabled=${!!mediaStream} value=${promptSignal.value}>
-        ${Object.entries(prompts).map(([key, value]) => html`
-          <option value=${key}>${key}</option>
-        `)}
-      </select>
-    </div>
-  `
 }
 
 async function getAudioStream() {

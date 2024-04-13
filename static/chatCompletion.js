@@ -52,7 +52,7 @@ export function useChatCompletion({
         : "/openai/v1/chat/completions"
     const requestBody = {
       model,
-      temperature: 1,
+      temperature: 0.5,
       stream: true,
       max_tokens: 1024,
     }

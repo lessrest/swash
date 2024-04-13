@@ -22,7 +22,7 @@ input {
 
 p {
   display: grid;
-  grid-template-columns: auto 1fr 1fr;
+  grid-template-columns: auto 1fr;
   align-items: baseline;
   margin: 0.25rem 0 0 0;
   gap: 0.5rem;
@@ -78,11 +78,13 @@ button:not(.record):not(.stop) {
 
 .response {
   color: darkcyan;
+  margin-left: 1rem;
+  font-style: italic;
 }
 
 @media (prefers-color-scheme: dark) {
   .response {
-    color: lightcyan;
+    color: ivory;
   }
 }
 
@@ -137,7 +139,7 @@ time {
   left: 0;
   right: 0;
   background-color: #f0f0f0;
-  padding: 0.5rem;
+  padding: 0.25rem 0.5rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
