@@ -18,13 +18,13 @@ import { useTypingEffect } from "./typing.js"
 import { state, reducer, setState } from "./state.js"
 import { ieva, captainslog } from "./prompts.js"
 
-function Transcript({ transcript, current, interim }) {
+function Transcript({ paragraphs, current, interim }) {
   const currentWords = html`
     <${Interim} interim=${[...current.words, ...interim]} />
   `
   const hasCurrentOrInterim = current.words.length > 0 || interim.length > 0
 
-  const nonEmptySegments = transcript.filter(({ words }) => words.length > 0)
+  const nonEmptySegments = paragraphs.filter(({ words }) => words.length > 0)
 
   return html`
     <article>
@@ -445,11 +445,11 @@ const handlers = {
     }
   },
   AudioBlob(state, { blob, data }, timestamp) {
-    // Move the current segment to the transcript with audio attached.
+    // Move the current segment to the paragraphs with audio attached.
     return {
       ...state,
-      transcript: [
-        ...state.transcript,
+      paragraphs: [
+        ...state.paragraphs,
         {
           words: state.current.words,
           audio: URL.createObjectURL(blob || data),
@@ -471,21 +471,21 @@ const handlers = {
     // It's not the timestamp of the event itself.
     return {
       ...state,
-      transcript: state.transcript.map((entry) =>
+      paragraphs: state.paragraphs.map((entry) =>
         entry.t0 === timestamp ? { ...entry, whisper: result } : entry,
       ),
     }
   },
   SplitTranscript(state, { timestamp }) {
     // Archive everything before the segment with the given timestamp.
-    const archived = state.transcript.filter((entry) => entry.t0 < timestamp)
-    const remaining = state.transcript.filter(
+    const archived = state.paragraphs.filter((entry) => entry.t0 < timestamp)
+    const remaining = state.paragraphs.filter(
       (entry) => entry.t0 >= timestamp,
     )
     return {
       ...state,
       archive: [...state.archive, ...archived],
-      transcript: remaining,
+      paragraphs: remaining,
     }
   },
 }
@@ -512,7 +512,7 @@ function show(state) {
   render(
     html`
       <${Transcript}
-        transcript=${state.transcript}
+        paragraphs=${state.transcript}
         current=${state.current}
         interim=${state.interim} />
     `,
