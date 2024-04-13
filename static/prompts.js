@@ -51,3 +51,9 @@ and may contain confusing errors or unclear words;
 if so, either fix it, ask for clarification, or make it a joke.
 
 Be as concise as possible.`
+
+export const prompts = {
+  ieva,
+  captainslog,
+  assistant,
+}
