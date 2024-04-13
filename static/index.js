@@ -150,19 +150,23 @@ function TranscriptSegment({ segment, index, segments }) {
     messages=${messages} />`
 
   return html`
-    <${TranscriptItem}
-      timestamp=${t0}
-      audio=${audio}
-      words=${wordSpans}
-      index=${index} />
-    <p style="white-space: pre-wrap">
-      <nav>
-        <span class="index">✶${index + 1}</span>
-      </nav>
-      <div style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
-        <span class="response">${response}</span>
+    <div style="display: flex; gap: 1rem;">
+      <div style="flex: 1;">
+        <${TranscriptItem}
+          timestamp=${t0}
+          audio=${audio}
+          words=${wordSpans}
+          index=${index} />
       </div>
-    </p>      
+      <div style="flex: 1; white-space: pre-wrap;">
+        <nav>
+          <span class="index">✶${index + 1}</span>
+        </nav>
+        <div style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
+          <span class="response">${response}</span>
+        </div>
+      </div>
+    </div>
   `
 }
 
