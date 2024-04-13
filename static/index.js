@@ -8,7 +8,7 @@ import {
   useEffect,
   useMemo,
 } from "preact/hooks"
-import { signal, computed } from "@preact/signals"
+import { signal, computed, effect } from "@preact/signals"
 import { html } from "htm/preact"
 import { useSpeechAudio } from "./recording.js"
 import { useLiveTranscription } from "./transcribing.js"
@@ -37,11 +37,24 @@ const models = {
 }
 
 const promptSignal = signal("captainslog")
-const promptEditorSignal = signal(null)
+const promptEditorSignal = signal({ show: false })
 const systemPrompt = computed(() => state.prompts[promptSignal.value])
 
 const modelSignal = signal("claude3-opus")
 const languageSignal = signal("en-US")
+
+// when any signals change, call show(state)
+
+effect(() => {
+  console.log(
+    "effect",
+    promptSignal.value,
+    systemPrompt.value,
+    modelSignal.value,
+    languageSignal.value,
+  )
+  show(state)
+})
 
 function Session({ paragraphs, current, interim }) {
   const currentWords = html`
@@ -51,36 +64,57 @@ function Session({ paragraphs, current, interim }) {
 
   const nonEmptySegments = paragraphs.filter(({ words }) => words.length > 0)
 
+  const showPromptEditor = promptEditorSignal.value.show
+  const promptEditor = showPromptEditor ? html`<${PromptEditor} />` : ""
+
+  console.log("showPromptEditor", showPromptEditor)
+
   return html`
-    <article>
-      ${nonEmptySegments.map(
-        (segment, i) =>
-          html`
-            <${Paragraph}
-              segment=${segment}
-              index=${i}
-              segments=${nonEmptySegments}
-              key=${`segment-${i}-${segment.timestamp}`} />
-          `,
-      )}
-      ${hasCurrentOrInterim
-        ? html`<${TranscriptItem}
-            timestamp=${current.timestamp}
-            words=${currentWords}
-            button=${false}
-            index=${nonEmptySegments.length} />`
-        : ""}
-      <br style="padding-top: 2rem" />
-      <div class="recording-toolbar">
-        <${Toolbar} />
-      </div>
-    </article>
-    <${PromptEditor} />
+    <div>
+      <article>
+        ${nonEmptySegments.map(
+          (segment, i) =>
+            html`
+              <${Paragraph}
+                segment=${segment}
+                index=${i}
+                segments=${nonEmptySegments}
+                key=${`segment-${i}-${segment.timestamp}`} />
+            `,
+        )}
+        ${hasCurrentOrInterim
+          ? html`<${TranscriptItem}
+              timestamp=${current.timestamp}
+              words=${currentWords}
+              button=${false}
+              index=${nonEmptySegments.length} />`
+          : ""}
+        <br style="padding-top: 2rem" />
+        <div class="recording-toolbar">
+          <${Toolbar} />
+        </div>
+      </article>
+      ${promptEditor}
+    </div>
   `
 }
 
 function Toolbar() {
   const [mediaStream, setMediaStream] = useState(null)
+
+  const editCallback = useCallback(() => {
+    console.log("Editing prompt", promptSignal.value)
+    promptEditorSignal.value = {
+      show: true,
+      name: promptSignal.value,
+      systemPrompt: state.prompts[promptSignal.value],
+    }
+    show(state)
+  }, [
+    promptSignal.value,
+    promptEditorSignal.value,
+    state.prompts[promptSignal.value],
+  ])
 
   return html`
     ${mediaStream === null
@@ -96,10 +130,11 @@ function Toolbar() {
       : ""}
     <div
       style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
-      <button onClick=${() => promptEditorSignal.value = { name: promptSignal.value, systemPrompt: state.prompts[promptSignal.value] }}>
-        Edit Prompt
-      </button>
-      <select disabled=${!!mediaStream} value=${languageSignal.value}>
+      <button onClick=${editCallback}>Edit Prompt</button>
+      <select
+        disabled=${!!mediaStream}
+        value=${languageSignal.value}
+        onChange=${(e) => (languageSignal.value = e.target.value)}>
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
       </select>
@@ -155,6 +190,8 @@ function Paragraph({ segment, index, segments }) {
 
   const text = words.map((word) => word.punctuated_word).join(" ")
 
+  const systemPrompt = state.prompts[promptSignal.value]
+
   const messages = useMemo(() => {
     const previousMessages = segments
       .slice(0, index)
@@ -172,7 +209,7 @@ function Paragraph({ segment, index, segments }) {
       ...previousMessages,
       { role: "user", content: text },
     ]
-  }, [text, t0, JSON.stringify(segments)])
+  }, [text, t0, JSON.stringify(segments), systemPrompt])
 
   const response = html`<${ChatCompletionSegment}
     t0=${t0}
@@ -423,28 +460,31 @@ function update(event) {
   setState(reducer(state, event))
   show(state)
 }
-function PromptEditor() {
-  const { name, systemPrompt } = promptEditorSignal.value || {}
 
-  if (!name) return null
+function PromptEditor() {
+  console.log("PromptEditor", promptEditorSignal.value)
+  const { name, systemPrompt } = promptEditorSignal.value
 
   const handleSave = () => {
     emit({ type: "SavePrompt", name, systemPrompt })
-    promptEditorSignal.value = null
+    promptEditorSignal.value = { show: false }
   }
 
   const handleCancel = () => {
-    promptEditorSignal.value = null
+    promptEditorSignal.value = { show: false }
   }
 
   return html`
     <div class="modal">
       <div class="modal-content">
         <h2>Edit Prompt: ${name}</h2>
-        <textarea 
+        <textarea
           value=${systemPrompt}
-          onInput=${(e) => promptEditorSignal.value = { ...promptEditorSignal.value, systemPrompt: e.target.value }}
-        ></textarea>
+          onInput=${(e) =>
+            (promptEditorSignal.value = {
+              ...promptEditorSignal.value,
+              systemPrompt: e.target.value,
+            })}></textarea>
         <div class="modal-buttons">
           <button onClick=${handleSave}>Save</button>
           <button onClick=${handleCancel}>Cancel</button>
