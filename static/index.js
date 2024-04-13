@@ -75,6 +75,7 @@ function Session({
                 segment=${segment}
                 index=${i}
                 segments=${nonEmptySegments}
+                viewState=${viewState}
                 key=${`segment-${i}-${segment.timestamp}`} />
             `,
         )}
@@ -188,14 +189,14 @@ function AnimatedWords({ interim }) {
   >`
 }
 
-function Paragraph({ segment, index, segments }) {
+function Paragraph({ segment, index, segments, viewState }) {
   const { words, audio, t0 } = segment
 
   const wordSpans = html`<${Words} words=${words} />`
 
   const text = words.map((word) => word.punctuated_word).join(" ")
 
-  const systemPrompt = state.prompts[viewState.value.promptName]
+  const systemPrompt = state.prompts[viewState.promptName]
 
   const messages = useMemo(() => {
     const previousMessages = segments
@@ -218,7 +219,7 @@ function Paragraph({ segment, index, segments }) {
     text,
     t0,
     JSON.stringify(segments),
-    state.prompts[viewState.value.promptName],
+    state.prompts[viewState.promptName],
   ])
 
   const response = html`<${ChatCompletionSegment}
@@ -253,13 +254,13 @@ function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
     </p>
   `
 }
-function ChatCompletionSegment({ messages, t0, viewState }) {
+function ChatCompletionSegment({ messages, t0, viewState: { model } }) {
   const onError = useCallback((error) => console.error(error), [])
 
   console.log(messages)
 
   const { isStreaming, isDone, message } = useChatCompletion({
-    model: models[viewState.model],
+    model: models[model],
     messages,
     temperature: 0,
     onError,
