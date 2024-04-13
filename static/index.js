@@ -190,7 +190,7 @@ function Paragraph({ segment, index, segments }) {
 
   const text = words.map((word) => word.punctuated_word).join(" ")
 
-  const systemPrompt = state.prompts[promptSignal.value]
+  const systemPrompt = state.prompts[viewState.value.promptName]
 
   const messages = useMemo(() => {
     const previousMessages = segments
@@ -209,7 +209,7 @@ function Paragraph({ segment, index, segments }) {
       ...previousMessages,
       { role: "user", content: text },
     ]
-  }, [text, t0, JSON.stringify(segments), systemPrompt])
+  }, [text, t0, JSON.stringify(segments), state.prompts[viewState.value.promptName]])
 
   const response = html`<${ChatCompletionSegment}
     t0=${t0}
@@ -248,7 +248,7 @@ function ChatCompletionSegment({ messages, t0 }) {
   console.log(messages)
 
   const { isStreaming, isDone, message } = useChatCompletion({
-    model: models[modelSignal.value],
+    model: models[viewState.value.model],
     messages,
     temperature: 0,
     onError,
@@ -393,7 +393,7 @@ function RecordingInProgress({ mediaStream }) {
 
   useEffect(() => {
     // start the recorder when the socket is open
-    if (readyState === WebSocket.OPEN) {
+    if (readyState === WebSocket.OPEN && !isRecording) {
       console.log("WebSocket open, starting recorder")
       start()
     }
@@ -404,23 +404,7 @@ function RecordingInProgress({ mediaStream }) {
     }
   }, [readyState, start, stop])
 
-  switch (readyState) {
-    case WebSocket.CONNECTING:
-      console.log("WebSocket connecting, rendering connecting message")
-      return html`<span>Connecting...</span>`
-    case WebSocket.OPEN:
-      console.log("WebSocket open, rendering RecordingInProgress")
-      return html`<button class="stop" onClick=${stop}></button>`
-    case WebSocket.CLOSING:
-      console.log("WebSocket closing, rendering closing message")
-      return html`<span>Closing connection...</span>`
-    case WebSocket.CLOSED:
-      console.log("WebSocket closed, rendering closed message")
-      return html`<span>Connection closed.</span>`
-    default:
-      console.log("Unknown WebSocket state, rendering error message")
-      return html`<span>Error: Unknown WebSocket state.</span>`
-  }
+  return html`<button class="stop" onClick=${stop}></button>`
 }
 
 const eventStore = await createEventStore()

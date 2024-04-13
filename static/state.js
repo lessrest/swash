@@ -12,7 +12,8 @@ export function setState(newState) {
   state = newState
 }
 
-export function reducer(state, { payload, timestamp }) {
+export function reducer(state, event) {
+  const { payload, timestamp } = event
   const handler = handlers[payload.type]
   return handler ? handler(state, payload, timestamp) : state
 }
