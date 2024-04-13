@@ -64,10 +64,10 @@ button.record,
 button.stop {
   font-size: 1.5rem;
 }
-
+/* 
 button:not(.record):not(.stop) {
   display: none;
-}
+} */
 
 .whisper,
 .words,

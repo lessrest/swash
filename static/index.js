@@ -1,22 +1,16 @@
 import { createEventStore, saveEvent, getAllEvents } from "./eventStore.js"
 import GraphemeSplitter from "grapheme-splitter"
 import { render } from "preact"
-import {
-  useState,
-  useCallback,
-  useRef,
-  useEffect,
-  useMemo,
-} from "preact/hooks"
-import { signal } from "@preact/signals"
+import { useState, useCallback, useEffect, useMemo } from "preact/hooks"
+import { computed, signal } from "@preact/signals"
 import { html } from "htm/preact"
 import { useSpeechAudio } from "./recording.js"
 import { useLiveTranscription } from "./transcribing.js"
 import { useChatCompletion } from "./chatCompletion.js"
 import { useTypingEffect } from "./typing.js"
 
-import { state, reducer, setState } from "./state.js"
-import { ieva, captainslog, assistant } from "./prompts.js"
+import { reducer } from "./state.js"
+import { prompts as initialPrompts } from "./prompts.js"
 
 const models = {
   "gpt4-turbo": {
@@ -36,76 +30,87 @@ const models = {
   },
 }
 
-const viewState = signal({
+const firstAppState = () => ({
   promptName: "captainslog",
-  promptEditorState: { show: false },
   model: "claude3-opus",
   language: "en-US",
+  paragraphs: [],
+  current: { words: [], timestamp: null },
+  interim: [],
+  prompts: initialPrompts,
 })
 
-function Session({
-  paragraphs,
-  current,
-  interim,
-  viewState: { promptName, promptEditorState, model, language },
-}) {
-  const currentWords = html`
-    <${AnimatedWords} interim=${[...current.words, ...interim]} />
+const appState = signal(firstAppState())
+
+const currentWords = computed(() => [
+  ...appState.value.current.words,
+  ...appState.value.interim,
+])
+
+const paragraphs = computed(() => appState.value.paragraphs)
+const nonEmptyParagraphs = computed(() =>
+  paragraphs.value.filter(({ words }) => words.length > 0),
+)
+const promptName = computed(() => appState.value.promptName)
+const model = computed(() => appState.value.model)
+const language = computed(() => appState.value.language)
+const prompts = computed(() => appState.value.prompts)
+const currentTimestamp = computed(() => appState.value.current.timestamp)
+
+function Session() {
+  const textAnimation = html`
+    <${AnimatedWords} interim=${currentWords.value} />
   `
-  const hasCurrentOrInterim = current.words.length > 0 || interim.length > 0
-
-  const nonEmptySegments = paragraphs.filter(({ words }) => words.length > 0)
-
-  const showPromptEditor = promptEditorState.show
-  const promptEditor = showPromptEditor
-    ? html`<${PromptEditor}
-        promptName=${promptName}
-        promptEditorState=${promptEditorState} />`
-    : ""
-
-  console.log("showPromptEditor", showPromptEditor)
 
   return html`
-    <div>
-      <article>
-        ${nonEmptySegments.map(
-          (segment, i) =>
-            html`
-              <${Paragraph}
-                segment=${segment}
-                index=${i}
-                segments=${nonEmptySegments}
-                viewState=${viewState}
-                key=${`segment-${i}-${segment.timestamp}`} />
-            `,
-        )}
-        ${hasCurrentOrInterim
-          ? html`<${TranscriptItem}
-              timestamp=${current.timestamp}
-              words=${currentWords}
-              button=${false}
-              index=${nonEmptySegments.length} />`
-          : ""}
-        <br style="padding-top: 2rem" />
-        <div class="recording-toolbar">
-          <${Toolbar} />
-        </div>
-      </article>
-      ${promptEditor}
-    </div>
+    <article>
+      ${nonEmptyParagraphs.value.map(
+        (segment, i) =>
+          html`
+            <${Paragraph}
+              segment=${segment}
+              index=${i}
+              key=${`segment-${i}-${segment.timestamp}`} />
+          `,
+      )}
+      ${currentWords.value.length > 0
+        ? html`<${TranscriptItem}
+            timestamp=${currentTimestamp.value}
+            words=${textAnimation}
+            button=${false}
+            index=${nonEmptyParagraphs.value.length} />`
+        : ""}
+      <br style="padding-top: 2rem" />
+      <div class="recording-toolbar">
+        <${Toolbar} />
+      </div>
+    </article>
   `
 }
 
-function Toolbar({
-  viewState: { promptName, promptEditorState, model, language },
-}) {
+function Toolbar() {
   const [mediaStream, setMediaStream] = useState(null)
 
-  const editCallback = useCallback(() => {
-    console.log("Editing prompt", promptName)
-    promptEditorState.show = true
-    show(state)
-  }, [promptName, promptEditorState])
+  const changeLanguage = useCallback((e) => {
+    appState.value = {
+      ...appState.value,
+      language: e.target.value,
+    }
+  }, [])
+
+  const changeModel = useCallback((e) => {
+    appState.value = {
+      ...appState.value,
+      model: e.target.value,
+    }
+  }, [])
+
+  const changePrompt = useCallback((e) => {
+    appState.value = {
+      ...appState.value,
+      promptName: e.target.value,
+    }
+  }, [])
 
   return html`
     ${mediaStream === null
@@ -121,36 +126,26 @@ function Toolbar({
       : ""}
     <div
       style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
-      <button onClick=${editCallback}>Edit Prompt</button>
       <select
         disabled=${!!mediaStream}
-        value=${language}
-        onChange=${(e) =>
-          (viewState.value = {
-            ...viewState.value,
-            language: e.target.value,
-          })}>
+        value=${language.value}
+        onChange=${changeLanguage}>
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
       </select>
       <select
         disabled=${!!mediaStream}
-        value=${model}
-        onChange=${(e) =>
-          (viewState.value = { ...viewState.value, model: e.target.value })}>
+        value=${model.value}
+        onChange=${changeModel}>
         <option value="claude3-haiku">Claude III Haiku</option>
         <option value="claude3-opus">Claude III Opus</option>
         <option value="gpt4-turbo">GPT IV Turbo</option>
       </select>
       <select
         disabled=${!!mediaStream}
-        value=${promptName}
-        onChange=${(e) =>
-          (viewState.value = {
-            ...viewState.value,
-            promptName: e.target.value,
-          })}>
-        ${Object.entries(state.prompts).map(
+        value=${promptName.value}
+        onChange=${changePrompt}>
+        ${Object.entries(prompts.value).map(
           ([key, value]) => html` <option value=${key}>${key}</option> `,
         )}
       </select>
@@ -189,63 +184,59 @@ function AnimatedWords({ interim }) {
   >`
 }
 
-function Paragraph({ segment, index, segments, viewState }) {
-  const { words, audio, t0 } = segment
+function Paragraph({ segment, index }) {
+  const { words, t0 } = segment
 
   const wordSpans = html`<${Words} words=${words} />`
-
   const text = words.map((word) => word.punctuated_word).join(" ")
+  const systemPrompt = prompts.value[promptName.value]
 
-  const systemPrompt = state.prompts[viewState.promptName]
+  const previousMessages = useMemo(
+    () =>
+      nonEmptyParagraphs.value
+        .slice(0, index)
+        .filter((entry) => entry.t0 < t0)
+        .flatMap((entry) => [
+          {
+            role: "user",
+            content: entry.words
+              .map((word) => word.punctuated_word)
+              .join(" "),
+          },
+          ...(entry.chatCompletion
+            ? [{ role: "assistant", content: entry.chatCompletion }]
+            : []),
+        ]),
+    [nonEmptyParagraphs.value, t0],
+  )
 
-  const messages = useMemo(() => {
-    const previousMessages = segments
-      .slice(0, index)
-      .filter((entry) => entry.t0 < t0)
-      .flatMap((entry) => [
-        {
-          role: "user",
-          content: entry.words.map((word) => word.punctuated_word).join(" "),
-        },
-        { role: "assistant", content: entry.chatCompletion || "" },
-      ])
-
-    return [
+  const messages = useMemo(
+    () => [
       { role: "system", content: systemPrompt },
       ...previousMessages,
       { role: "user", content: text },
-    ]
-  }, [
-    text,
-    t0,
-    JSON.stringify(segments),
-    state.prompts[viewState.promptName],
-  ])
+    ],
+    [text, systemPrompt, previousMessages],
+  )
 
   const response = html`<${ChatCompletionSegment}
     t0=${t0}
-    messages=${messages}
-    viewState=${viewState.value} />`
+    messages=${messages} />`
 
   return html`
     <${TranscriptItem}
-      timestamp=${t0}
-      audio=${audio}
       words=${wordSpans}
       index=${index}
       response=${response} />
   `
 }
 
-function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
+function TranscriptItem({ words, index, response = "" }) {
   if (words.length === 0) return ""
   return html`
     <p>
       <nav>
         <span class="index">❡${index + 1}</span>
-        <${Player} audio=${audio} />
-        <button onClick=${() =>
-          emit({ type: "SplitTranscript", timestamp })}>✂️</button>
       </nav>
       <div style="display: flex; flex-direction: column; gap: 0.5rem">
         <span>${words}</span>
@@ -254,13 +245,12 @@ function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
     </p>
   `
 }
-function ChatCompletionSegment({ messages, t0, viewState: { model } }) {
+
+function ChatCompletionSegment({ messages, t0 }) {
   const onError = useCallback((error) => console.error(error), [])
 
-  console.log(messages)
-
   const { isStreaming, isDone, message } = useChatCompletion({
-    model: models[model],
+    model: models[model.value],
     messages,
     temperature: 0,
     onError,
@@ -307,34 +297,6 @@ function Words({ words }) {
   return html`<span class="words">${children}</span>`
 }
 
-function Player({ audio }) {
-  const [playing, setPlaying] = useState(false)
-  const audioRef = useRef(null)
-
-  useEffect(() => {
-    audioRef.current = new Audio(audio)
-    audioRef.current.onended = () => setPlaying(false)
-    return () => audioRef.current.pause()
-  }, [audio])
-
-  const play = useCallback(() => {
-    audioRef.current.play()
-    setPlaying(true)
-  }, [])
-
-  const stop = useCallback(() => {
-    audioRef.current.pause()
-    audioRef.current.currentTime = 0
-    setPlaying(false)
-  }, [])
-
-  return html`
-    <button
-      onClick=${playing ? stop : play}
-      className=${playing ? "stop" : "play"}></button>
-  `
-}
-
 function formatDateTimeHuman(date) {
   return date.toLocaleTimeString("en-US", {
     hour: "numeric",
@@ -361,7 +323,7 @@ function RecordingInProgress({ mediaStream }) {
   }, [])
 
   const { readyState, send } = useLiveTranscription({
-    language: languageSignal.value,
+    language: language.value,
     onUpdate,
     onError,
   })
@@ -420,72 +382,23 @@ function RecordingInProgress({ mediaStream }) {
 }
 
 const eventStore = await createEventStore()
-const allEvents = [] // await getAllEvents(eventStore)
-console.log(allEvents.map((x) => x.payload.type))
 
-for (const event of allEvents) {
-  setState(reducer(state, event))
-}
-
-show(state)
+show()
 
 window.scrollTo(0, document.body.scrollHeight)
 
 async function emit(payload) {
   const event = await saveEvent(eventStore, payload)
   update(event)
-  console.info(payload.type, event, state)
+  console.info(payload.type, event)
 }
 
-function show(state) {
-  render(
-    html`
-      <${Session}
-        paragraphs=${state.paragraphs}
-        current=${state.current}
-        interim=${state.interim}
-        viewState=${viewState} />
-    `,
-    document.getElementById("app"),
-  )
-
-  // scroll to bottom
+function show() {
+  render(html` <${Session} /> `, document.getElementById("app"))
   window.scrollTo(0, document.body.scrollHeight)
 }
 
 function update(event) {
-  setState(reducer(state, event))
-  show(state)
-}
-
-function PromptEditor({
-  promptName,
-  promptEditorState: { name, systemPrompt, show },
-}) {
-  console.log("PromptEditor", name, systemPrompt, show)
-
-  const handleSave = () => {
-    emit({ type: "SavePrompt", name, systemPrompt })
-    promptEditorState.show = false
-  }
-
-  const handleCancel = () => {
-    promptEditorState.show = false
-  }
-
-  return html`
-    <div class="modal">
-      <div class="modal-content">
-        <h2>Edit Prompt: ${name}</h2>
-        <textarea
-          value=${promptEditorState.systemPrompt}
-          onInput=${(e) =>
-            (promptEditorState.systemPrompt = e.target.value)}></textarea>
-        <div class="modal-buttons">
-          <button onClick=${handleSave}>Save</button>
-          <button onClick=${handleCancel}>Cancel</button>
-        </div>
-      </div>
-    </div>
-  `
+  appState.value = reducer(appState.value, event)
+  show()
 }
