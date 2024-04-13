@@ -43,20 +43,12 @@ const viewState = signal({
   language: "en-US",
 })
 
-// when any signals change, call show(state)
-
-effect(() => {
-  console.log(
-    "effect",
-    promptSignal.value,
-    systemPrompt.value,
-    modelSignal.value,
-    languageSignal.value,
-  )
-  show(state)
-})
-
-function Session({ paragraphs, current, interim, viewState: { promptName, promptEditorState, model, language } }) {
+function Session({
+  paragraphs,
+  current,
+  interim,
+  viewState: { promptName, promptEditorState, model, language },
+}) {
   const currentWords = html`
     <${AnimatedWords} interim=${[...current.words, ...interim]} />
   `
@@ -65,7 +57,11 @@ function Session({ paragraphs, current, interim, viewState: { promptName, prompt
   const nonEmptySegments = paragraphs.filter(({ words }) => words.length > 0)
 
   const showPromptEditor = promptEditorState.show
-  const promptEditor = showPromptEditor ? html`<${PromptEditor} promptName=${promptName} promptEditorState=${promptEditorState} />` : ""
+  const promptEditor = showPromptEditor
+    ? html`<${PromptEditor}
+        promptName=${promptName}
+        promptEditorState=${promptEditorState} />`
+    : ""
 
   console.log("showPromptEditor", showPromptEditor)
 
@@ -99,7 +95,9 @@ function Session({ paragraphs, current, interim, viewState: { promptName, prompt
   `
 }
 
-function Toolbar({ viewState: { promptName, promptEditorState, model, language } }) {  
+function Toolbar({
+  viewState: { promptName, promptEditorState, model, language },
+}) {
   const [mediaStream, setMediaStream] = useState(null)
 
   const editCallback = useCallback(() => {
@@ -126,14 +124,19 @@ function Toolbar({ viewState: { promptName, promptEditorState, model, language }
       <select
         disabled=${!!mediaStream}
         value=${language}
-        onChange=${(e) => (viewState.value = { ...viewState.value, language: e.target.value })}>
+        onChange=${(e) =>
+          (viewState.value = {
+            ...viewState.value,
+            language: e.target.value,
+          })}>
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
       </select>
       <select
         disabled=${!!mediaStream}
         value=${model}
-        onChange=${(e) => (viewState.value = { ...viewState.value, model: e.target.value })}>
+        onChange=${(e) =>
+          (viewState.value = { ...viewState.value, model: e.target.value })}>
         <option value="claude3-haiku">Claude III Haiku</option>
         <option value="claude3-opus">Claude III Opus</option>
         <option value="gpt4-turbo">GPT IV Turbo</option>
@@ -141,7 +144,11 @@ function Toolbar({ viewState: { promptName, promptEditorState, model, language }
       <select
         disabled=${!!mediaStream}
         value=${promptName}
-        onChange=${(e) => (viewState.value = { ...viewState.value, promptName: e.target.value })}>
+        onChange=${(e) =>
+          (viewState.value = {
+            ...viewState.value,
+            promptName: e.target.value,
+          })}>
         ${Object.entries(state.prompts).map(
           ([key, value]) => html` <option value=${key}>${key}</option> `,
         )}
@@ -207,7 +214,12 @@ function Paragraph({ segment, index, segments }) {
       ...previousMessages,
       { role: "user", content: text },
     ]
-  }, [text, t0, JSON.stringify(segments), state.prompts[viewState.value.promptName]])
+  }, [
+    text,
+    t0,
+    JSON.stringify(segments),
+    state.prompts[viewState.value.promptName],
+  ])
 
   const response = html`<${ChatCompletionSegment}
     t0=${t0}
@@ -444,7 +456,10 @@ function update(event) {
   show(state)
 }
 
-function PromptEditor({ promptName, promptEditorState: { name, systemPrompt, show } }) {
+function PromptEditor({
+  promptName,
+  promptEditorState: { name, systemPrompt, show },
+}) {
   console.log("PromptEditor", name, systemPrompt, show)
 
   const handleSave = () => {
