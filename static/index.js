@@ -56,8 +56,7 @@ effect(() => {
   show(state)
 })
 
-function Session({ paragraphs, current, interim, viewState }) {
-  const { promptName, promptEditorState, model, language } = viewState.value
+function Session({ paragraphs, current, interim, viewState: { promptName, promptEditorState, model, language } }) {
   const currentWords = html`
     <${AnimatedWords} interim=${[...current.words, ...interim]} />
   `
@@ -100,8 +99,7 @@ function Session({ paragraphs, current, interim, viewState }) {
   `
 }
 
-function Toolbar({ viewState }) {
-  const { promptName, promptEditorState, model, language } = viewState.value
+function Toolbar({ viewState: { promptName, promptEditorState, model, language } }) {  
   const [mediaStream, setMediaStream] = useState(null)
 
   const editCallback = useCallback(() => {
@@ -132,16 +130,16 @@ function Toolbar({ viewState }) {
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
       </select>
-      <select 
-        disabled=${!!mediaStream} 
+      <select
+        disabled=${!!mediaStream}
         value=${model}
         onChange=${(e) => (viewState.value = { ...viewState.value, model: e.target.value })}>
         <option value="claude3-haiku">Claude III Haiku</option>
         <option value="claude3-opus">Claude III Opus</option>
         <option value="gpt4-turbo">GPT IV Turbo</option>
       </select>
-      <select 
-        disabled=${!!mediaStream} 
+      <select
+        disabled=${!!mediaStream}
         value=${promptName}
         onChange=${(e) => (viewState.value = { ...viewState.value, promptName: e.target.value })}>
         ${Object.entries(state.prompts).map(
@@ -446,9 +444,8 @@ function update(event) {
   show(state)
 }
 
-function PromptEditor({ promptName, promptEditorState }) {
-  console.log("PromptEditor", promptEditorState)
-  const { name, systemPrompt } = promptEditorState
+function PromptEditor({ promptName, promptEditorState: { name, systemPrompt, show } }) {
+  console.log("PromptEditor", name, systemPrompt, show)
 
   const handleSave = () => {
     emit({ type: "SavePrompt", name, systemPrompt })
