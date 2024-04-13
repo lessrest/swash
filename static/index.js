@@ -16,7 +16,7 @@ import { useChatCompletion } from "./chatCompletion.js"
 import { useTypingEffect } from "./typing.js"
 
 import { state, reducer, setState } from "./state.js"
-import { ieva, captainslog, assistant } from "./prompts.js"
+import { prompts } from "./prompts.js"
 
 function Session({ paragraphs, current, interim }) {
   const currentWords = html`
@@ -124,7 +124,8 @@ function TranscriptSegment({ segment, index, segments }) {
   `
 }
 
-const systemPrompt = location.search === "?ieva" ? ieva : captainslog
+const promptSignal = signal("captainslog")
+const systemPrompt = computed(() => prompts[promptSignal.value])
 
 const models = {
   "gpt4-turbo": {
@@ -279,6 +280,11 @@ function RecordingWidget() {
         <option value="claude3-haiku">Claude III Haiku</option>
         <option value="claude3-opus">Claude III Opus</option>
         <option value="gpt4-turbo">GPT IV Turbo</option>
+      </select>
+      <select disabled=${!!mediaStream} value=${promptSignal.value}>
+        ${Object.entries(prompts).map(([key, value]) => html`
+          <option value=${key}>${key}</option>
+        `)}
       </select>
     </div>
   `
