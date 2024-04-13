@@ -8,7 +8,7 @@ import {
   useEffect,
   useMemo,
 } from "preact/hooks"
-import { signal, computed, effect } from "@preact/signals"
+import { signal } from "@preact/signals"
 import { html } from "htm/preact"
 import { useSpeechAudio } from "./recording.js"
 import { useLiveTranscription } from "./transcribing.js"
@@ -36,10 +36,12 @@ const models = {
   },
 }
 
-const promptName = "captainslog"
-const promptEditorState = { show: false }
-const model = "claude3-opus"
-const language = "en-US"
+const viewState = signal({
+  promptName: "captainslog",
+  promptEditorState: { show: false },
+  model: "claude3-opus",
+  language: "en-US",
+})
 
 // when any signals change, call show(state)
 
@@ -54,7 +56,8 @@ effect(() => {
   show(state)
 })
 
-function Session({ paragraphs, current, interim, promptName, promptEditorState, model, language }) {
+function Session({ paragraphs, current, interim, viewState }) {
+  const { promptName, promptEditorState, model, language } = viewState.value
   const currentWords = html`
     <${AnimatedWords} interim=${[...current.words, ...interim]} />
   `
@@ -97,7 +100,8 @@ function Session({ paragraphs, current, interim, promptName, promptEditorState, 
   `
 }
 
-function Toolbar({ promptName, promptEditorState, model, language }) {
+function Toolbar({ viewState }) {
+  const { promptName, promptEditorState, model, language } = viewState.value
   const [mediaStream, setMediaStream] = useState(null)
 
   const editCallback = useCallback(() => {
@@ -124,16 +128,22 @@ function Toolbar({ promptName, promptEditorState, model, language }) {
       <select
         disabled=${!!mediaStream}
         value=${language}
-        onChange=${(e) => (language = e.target.value)}>
+        onChange=${(e) => (viewState.value = { ...viewState.value, language: e.target.value })}>
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
       </select>
-      <select disabled=${!!mediaStream} value=${model}>
+      <select 
+        disabled=${!!mediaStream} 
+        value=${model}
+        onChange=${(e) => (viewState.value = { ...viewState.value, model: e.target.value })}>
         <option value="claude3-haiku">Claude III Haiku</option>
         <option value="claude3-opus">Claude III Opus</option>
         <option value="gpt4-turbo">GPT IV Turbo</option>
       </select>
-      <select disabled=${!!mediaStream} value=${promptName}>
+      <select 
+        disabled=${!!mediaStream} 
+        value=${promptName}
+        onChange=${(e) => (viewState.value = { ...viewState.value, promptName: e.target.value })}>
         ${Object.entries(state.prompts).map(
           ([key, value]) => html` <option value=${key}>${key}</option> `,
         )}
@@ -438,10 +448,7 @@ function show(state) {
         paragraphs=${state.paragraphs}
         current=${state.current}
         interim=${state.interim}
-        promptName=${promptName}
-        promptEditorState=${promptEditorState}
-        model=${model}
-        language=${language} />
+        viewState=${viewState} />
     `,
     document.getElementById("app"),
   )
