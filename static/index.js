@@ -1,5 +1,5 @@
 import { createEventStore, saveEvent, getAllEvents } from "./eventStore.js"
-import "grapheme-splitter"
+import GraphemeSplitter from "grapheme-splitter"
 import { render } from "preact"
 import {
   useState,
@@ -16,9 +16,9 @@ import { useChatCompletion } from "./chatCompletion.js"
 import { useTypingEffect } from "./typing.js"
 
 import { state, reducer, setState } from "./state.js"
-import { ieva, captainslog } from "./prompts.js"
+import { ieva, captainslog, assistant } from "./prompts.js"
 
-function Transcript({ paragraphs, current, interim }) {
+function Session({ paragraphs, current, interim }) {
   const currentWords = html`
     <${Interim} interim=${[...current.words, ...interim]} />
   `
@@ -53,68 +53,27 @@ function Transcript({ paragraphs, current, interim }) {
   `
 }
 
+const splitter = new GraphemeSplitter()
+
 function Interim({ interim }) {
-  const totalLength = interim
-    .map(({ punctuated_word }) => punctuated_word)
-    .join("").length
-
-  // To show interim changes as a monotonically lengthening text,
-  // we maintain a "rate of change" in characters/second and
-  // when the buffer length exceeds the last buffer length
-  // we set the rate of change, higher for larger additions
-  // and lower for smaller additions.
-  //
-  // When the buffer length decreases, we immediately reset
-  // the length limit to the shorter buffer length.
-  //
-  // The displayed text is the prefix of the buffer with length
-  // equal to the length limit.
-
-  const [lengthLimit, setLengthLimit] = useState(0)
-  const [rateOfChange, setRateOfChange] = useState(0)
-
-  const delta = totalLength - lengthLimit
-
-  useEffect(() => {
-    if (delta === 0) return
-
-    const updateLengthLimit = () => {
-      setLengthLimit((lengthLimit) => lengthLimit + 1)
-      console.log("limit", lengthLimit)
-    }
-
-    const intervalId = setInterval(updateLengthLimit, 1000 / rateOfChange)
-
-    return () => clearInterval(intervalId)
-  }, [rateOfChange])
-
-  useEffect(() => {
-    const minRate = 10 // Minimum rate of change
-    if (delta < 0) {
-      setLengthLimit(totalLength)
-      setRateOfChange(0)
-    } else if (delta > 0) {
-      const maxRate = 100
-      // Rate of change is proportional to the size of the addition
-      // let's say 50 is the expected max delta
-      const newRate = Math.min(maxRate, minRate + delta)
-      setRateOfChange(newRate)
-    } else {
-      setRateOfChange(0)
-    }
-  }, [delta, totalLength])
+  const text = interim.map(({ punctuated_word }) => punctuated_word).join(" ")
+  const totalLength = splitter.splitGraphemes(text).length
+  const displayedText = useTypingEffect(text)
+  const displayedLength = splitter.splitGraphemes(displayedText).length
+  const delta = totalLength - displayedLength
 
   let choppedWords = []
-  let budget = lengthLimit
+  let budget = displayedLength
   for (const word of interim) {
-    if (word.punctuated_word.length > budget) {
+    const graphemes = splitter.splitGraphemes(word.punctuated_word)
+    if (graphemes.length > budget) {
       // chop the word
-      const chopped = word.punctuated_word.slice(0, budget)
+      const chopped = graphemes.slice(0, budget).join("")
       choppedWords.push({ ...word, punctuated_word: chopped })
       break
     } else {
       choppedWords.push(word)
-      budget -= word.punctuated_word.length
+      budget -= graphemes.length
     }
   }
 
@@ -402,92 +361,20 @@ function RecordingInProgress({ mediaStream }) {
   switch (readyState) {
     case WebSocket.CONNECTING:
       console.log("WebSocket connecting, rendering connecting message")
-      return html`<p>Connecting...</p>`
+      return html`<span>Connecting...</span>`
     case WebSocket.OPEN:
       console.log("WebSocket open, rendering RecordingInProgress")
       return html`<button class="stop" onClick=${stop}></button>`
     case WebSocket.CLOSING:
       console.log("WebSocket closing, rendering closing message")
-      return html`<p>Closing connection...</p>`
+      return html`<span>Closing connection...</span>`
     case WebSocket.CLOSED:
       console.log("WebSocket closed, rendering closed message")
-      return html`<p>Connection closed.</p>`
+      return html`<span>Connection closed.</span>`
     default:
       console.log("Unknown WebSocket state, rendering error message")
-      return html`<p>Error: Unknown WebSocket state.</p>`
+      return html`<span>Error: Unknown WebSocket state.</span>`
   }
-}
-
-const handlers = {
-  DeepgramMessage(state, { message }, timestamp) {
-    if (message.type !== "Results") return state
-
-    const { words, transcript } = message.channel.alternatives[0]
-
-    if (transcript.trim() === "") return state
-
-    if (message.is_final) {
-      // Move interim words to the current segment.
-      return {
-        ...state,
-        current: {
-          words: [...state.current.words, ...words],
-          timestamp,
-        },
-        interim: [],
-      }
-    } else {
-      // Update the interim words.
-      return {
-        ...state,
-        interim: words,
-      }
-    }
-  },
-  AudioBlob(state, { blob, data }, timestamp) {
-    // Move the current segment to the paragraphs with audio attached.
-    return {
-      ...state,
-      paragraphs: [
-        ...state.paragraphs,
-        {
-          words: state.current.words,
-          audio: URL.createObjectURL(blob || data),
-          blob,
-          t0: state.current.timestamp,
-          timestamp,
-        },
-      ],
-      current: { words: [], timestamp: null },
-    }
-  },
-  StartedRecording(state) {
-    return {
-      ...state,
-    }
-  },
-  WhisperResult(state, { result, timestamp }) {
-    // The timestamp here identifies the segment that was transcribed.
-    // It's not the timestamp of the event itself.
-    return {
-      ...state,
-      paragraphs: state.paragraphs.map((entry) =>
-        entry.t0 === timestamp ? { ...entry, whisper: result } : entry,
-      ),
-    }
-  },
-  SplitTranscript(state, { timestamp }) {
-    // Archive everything before the segment with the given timestamp.
-    const archived = state.paragraphs.filter((entry) => entry.t0 < timestamp)
-    const remaining = state.paragraphs.filter(
-      (entry) => entry.t0 >= timestamp,
-    )
-    return {
-      ...state,
-      archive: [...state.archive, ...archived],
-      paragraphs: remaining,
-    }
-  },
 }
 
 const eventStore = await createEventStore()
@@ -511,8 +398,8 @@ async function emit(payload) {
 function show(state) {
   render(
     html`
-      <${Transcript}
-        paragraphs=${state.transcript}
+      <${Session}
+        paragraphs=${state.paragraphs}
         current=${state.current}
         interim=${state.interim} />
     `,
