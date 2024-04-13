@@ -253,13 +253,13 @@ function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
     </p>
   `
 }
-function ChatCompletionSegment({ messages, t0, viewState }) {
+function ChatCompletionSegment({ messages, t0, viewState: { model } }) {
   const onError = useCallback((error) => console.error(error), [])
 
   console.log(messages)
 
   const { isStreaming, isDone, message } = useChatCompletion({
-    model: models[viewState.model],
+    model: models[model],
     messages,
     temperature: 0,
     onError,
