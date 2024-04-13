@@ -223,7 +223,8 @@ function Paragraph({ segment, index, segments }) {
 
   const response = html`<${ChatCompletionSegment}
     t0=${t0}
-    messages=${messages} />`
+    messages=${messages}
+    viewState=${viewState.value} />`
 
   return html`
     <${TranscriptItem}
@@ -252,13 +253,13 @@ function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
     </p>
   `
 }
-function ChatCompletionSegment({ messages, t0 }) {
+function ChatCompletionSegment({ messages, t0, viewState }) {
   const onError = useCallback((error) => console.error(error), [])
 
   console.log(messages)
 
   const { isStreaming, isDone, message } = useChatCompletion({
-    model: models[viewState.value.model],
+    model: models[viewState.model],
     messages,
     temperature: 0,
     onError,
