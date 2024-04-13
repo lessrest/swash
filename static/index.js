@@ -36,12 +36,10 @@ const models = {
   },
 }
 
-const promptSignal = signal("captainslog")
-const promptEditorSignal = signal({ show: false })
-const systemPrompt = computed(() => state.prompts[promptSignal.value])
-
-const modelSignal = signal("claude3-opus")
-const languageSignal = signal("en-US")
+const promptName = "captainslog"
+const promptEditorState = { show: false }
+const model = "claude3-opus"
+const language = "en-US"
 
 // when any signals change, call show(state)
 
@@ -56,7 +54,7 @@ effect(() => {
   show(state)
 })
 
-function Session({ paragraphs, current, interim }) {
+function Session({ paragraphs, current, interim, promptName, promptEditorState, model, language }) {
   const currentWords = html`
     <${AnimatedWords} interim=${[...current.words, ...interim]} />
   `
@@ -64,8 +62,8 @@ function Session({ paragraphs, current, interim }) {
 
   const nonEmptySegments = paragraphs.filter(({ words }) => words.length > 0)
 
-  const showPromptEditor = promptEditorSignal.value.show
-  const promptEditor = showPromptEditor ? html`<${PromptEditor} />` : ""
+  const showPromptEditor = promptEditorState.show
+  const promptEditor = showPromptEditor ? html`<${PromptEditor} promptName=${promptName} promptEditorState=${promptEditorState} />` : ""
 
   console.log("showPromptEditor", showPromptEditor)
 
@@ -99,22 +97,14 @@ function Session({ paragraphs, current, interim }) {
   `
 }
 
-function Toolbar() {
+function Toolbar({ promptName, promptEditorState, model, language }) {
   const [mediaStream, setMediaStream] = useState(null)
 
   const editCallback = useCallback(() => {
-    console.log("Editing prompt", promptSignal.value)
-    promptEditorSignal.value = {
-      show: true,
-      name: promptSignal.value,
-      systemPrompt: state.prompts[promptSignal.value],
-    }
+    console.log("Editing prompt", promptName)
+    promptEditorState.show = true
     show(state)
-  }, [
-    promptSignal.value,
-    promptEditorSignal.value,
-    state.prompts[promptSignal.value],
-  ])
+  }, [promptName, promptEditorState])
 
   return html`
     ${mediaStream === null
@@ -133,17 +123,17 @@ function Toolbar() {
       <button onClick=${editCallback}>Edit Prompt</button>
       <select
         disabled=${!!mediaStream}
-        value=${languageSignal.value}
-        onChange=${(e) => (languageSignal.value = e.target.value)}>
+        value=${language}
+        onChange=${(e) => (language = e.target.value)}>
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
       </select>
-      <select disabled=${!!mediaStream} value=${modelSignal.value}>
+      <select disabled=${!!mediaStream} value=${model}>
         <option value="claude3-haiku">Claude III Haiku</option>
         <option value="claude3-opus">Claude III Opus</option>
         <option value="gpt4-turbo">GPT IV Turbo</option>
       </select>
-      <select disabled=${!!mediaStream} value=${promptSignal.value}>
+      <select disabled=${!!mediaStream} value=${promptName}>
         ${Object.entries(state.prompts).map(
           ([key, value]) => html` <option value=${key}>${key}</option> `,
         )}
@@ -447,7 +437,11 @@ function show(state) {
       <${Session}
         paragraphs=${state.paragraphs}
         current=${state.current}
-        interim=${state.interim} />
+        interim=${state.interim}
+        promptName=${promptName}
+        promptEditorState=${promptEditorState}
+        model=${model}
+        language=${language} />
     `,
     document.getElementById("app"),
   )
@@ -461,17 +455,17 @@ function update(event) {
   show(state)
 }
 
-function PromptEditor() {
-  console.log("PromptEditor", promptEditorSignal.value)
-  const { name, systemPrompt } = promptEditorSignal.value
+function PromptEditor({ promptName, promptEditorState }) {
+  console.log("PromptEditor", promptEditorState)
+  const { name, systemPrompt } = promptEditorState
 
   const handleSave = () => {
     emit({ type: "SavePrompt", name, systemPrompt })
-    promptEditorSignal.value = { show: false }
+    promptEditorState.show = false
   }
 
   const handleCancel = () => {
-    promptEditorSignal.value = { show: false }
+    promptEditorState.show = false
   }
 
   return html`
@@ -479,12 +473,9 @@ function PromptEditor() {
       <div class="modal-content">
         <h2>Edit Prompt: ${name}</h2>
         <textarea
-          value=${systemPrompt}
+          value=${promptEditorState.systemPrompt}
           onInput=${(e) =>
-            (promptEditorSignal.value = {
-              ...promptEditorSignal.value,
-              systemPrompt: e.target.value,
-            })}></textarea>
+            (promptEditorState.systemPrompt = e.target.value)}></textarea>
         <div class="modal-buttons">
           <button onClick=${handleSave}>Save</button>
           <button onClick=${handleCancel}>Cancel</button>
