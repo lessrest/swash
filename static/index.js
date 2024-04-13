@@ -8,7 +8,7 @@ import {
   useEffect,
   useMemo,
 } from "preact/hooks"
-import { signal, useSignal } from "@preact/signals"
+import { signal, computed } from "@preact/signals"
 import { html } from "htm/preact"
 import { useSpeechAudio } from "./recording.js"
 import { useLiveTranscription } from "./transcribing.js"
@@ -22,6 +22,7 @@ function Transcript({ transcript, current, interim }) {
   const currentWords = html`
     <${Interim} interim=${[...current.words, ...interim]} />
   `
+  const hasCurrentOrInterim = current.words.length > 0 || interim.length > 0
 
   const nonEmptySegments = transcript.filter(({ words }) => words.length > 0)
 
@@ -37,11 +38,14 @@ function Transcript({ transcript, current, interim }) {
               key=${`segment-${i}-${segment.timestamp}`} />
           `,
       )}
-      <${TranscriptItem}
-        timestamp=${current.timestamp}
-        words=${currentWords}
-        button=${false}
-        index=${nonEmptySegments.length} />
+      ${hasCurrentOrInterim
+        ? html`<${TranscriptItem}
+            timestamp=${current.timestamp}
+            words=${currentWords}
+            button=${false}
+            index=${nonEmptySegments.length} />`
+        : ""}
+      <br style="padding-top: 2rem" />
       <div class="recording-toolbar">
         <${RecordingWidget} />
       </div>
@@ -181,7 +185,7 @@ const models = {
   },
 }
 
-const modelSignal = signal("claude3-haiku")
+const modelSignal = signal("claude3-opus")
 
 function ChatCompletionSegment({ messages, t0 }) {
   const onError = useCallback((error) => console.error(error), [])
@@ -237,6 +241,7 @@ function Words({ words }) {
 }
 
 function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
+  if (words.length === 0) return ""
   return html`
     <p>
       <nav>
@@ -245,10 +250,10 @@ function TranscriptItem({ timestamp, audio, words, index, response = "" }) {
         <button onClick=${() =>
           emit({ type: "SplitTranscript", timestamp })}>✂️</button>
       </nav>
-      <div style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
+      <div style="display: flex; flex-direction: column; gap: 0.5rem">
         <span>${words}</span>
+        <span class="response">${response}</span>
       </div>
-      <span class="response">${response}</span>
     </p>
   `
 }
@@ -294,36 +299,34 @@ function RecordingWidget() {
   const [mediaStream, setMediaStream] = useState(null)
 
   return html`
-    <button
-      class="record"
-      onClick=${async () => {
-        const stream = await getAudioStream()
-        setMediaStream(stream)
-      }}
-    ></button>
-    <${RecordingStarting} mediaStream=${mediaStream} />
+    ${mediaStream === null
+      ? html`<button
+          class="record"
+          onClick=${async () => {
+            const stream = await getAudioStream()
+            setMediaStream(stream)
+          }}></button>`
+      : ""}
+    ${mediaStream
+      ? html`<${RecordingInProgress} mediaStream=${mediaStream} />`
+      : ""}
+    <div
+      style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
+      <select disabled=${!!mediaStream} value=${languageSignal.value}>
+        <option value="en-US">English</option>
+        <option value="sv-SE">Swedish</option>
+      </select>
+      <select disabled=${!!mediaStream} value=${modelSignal.value}>
+        <option value="claude3-haiku">Claude III Haiku</option>
+        <option value="claude3-opus">Claude III Opus</option>
+        <option value="gpt4-turbo">GPT IV Turbo</option>
+      </select>
+    </div>
   `
 }
 
 async function getAudioStream() {
   return navigator.mediaDevices.getUserMedia({ audio: true })
-}
-
-function RecordingStarting({ mediaStream }) {
-  return html`
-    <div>
-      <select disabled value=${languageSignal.value}>
-        <option value="en-US">English</option>
-        <option value="sv-SE">Swedish</option>
-      </select>
-      <select disabled value=${modelSignal.value}>
-        <option value="claude3-haiku">Claude III Haiku</option>
-        <option value="claude3-opus">Claude III Opus</option>
-        <option value="gpt4-turbo">GPT IV Turbo</option>
-      </select>
-      <${RecordingInProgress} mediaStream=${mediaStream} />
-    </div>
-  `
 }
 
 function RecordingInProgress({ mediaStream }) {
@@ -383,13 +386,26 @@ function RecordingInProgress({ mediaStream }) {
     }
   }, [isRecording])
 
+  useEffect(() => {
+    // start the recorder when the socket is open
+    if (readyState === WebSocket.OPEN) {
+      console.log("WebSocket open, starting recorder")
+      start()
+    }
+
+    return () => {
+      console.log("WebSocket closed, stopping recorder")
+      stop()
+    }
+  }, [readyState, start, stop])
+
   switch (readyState) {
     case WebSocket.CONNECTING:
       console.log("WebSocket connecting, rendering connecting message")
       return html`<p>Connecting...</p>`
     case WebSocket.OPEN:
       console.log("WebSocket open, rendering RecordingInProgress")
-      return html`<${RecordingInProgress} start=${start} stop=${stop} />`
+      return html`<button class="stop" onClick=${stop}></button>`
     case WebSocket.CLOSING:
       console.log("WebSocket closing, rendering closing message")
       return html`<p>Closing connection...</p>`
@@ -400,23 +416,6 @@ function RecordingInProgress({ mediaStream }) {
       console.log("Unknown WebSocket state, rendering error message")
       return html`<p>Error: Unknown WebSocket state.</p>`
   }
-}
-
-function RecordingInProgress({ start, stop }) {
-  useEffect(() => {
-    console.info("RecordingInProgress: Starting recorders")
-    start()
-    return () => {
-      console.info("RecordingInProgress: Stopping recorders")
-      stop()
-    }
-  }, [start, stop])
-
-  return html`
-    <div>
-      <button class="stop" onClick=${stop}></button>
-    </div>
-  `
 }
 
 const handlers = {
