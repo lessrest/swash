@@ -1,3 +1,14 @@
+/**
+ * @typedef {Object} State
+ * @property {Array} archive - The archived paragraphs.
+ * @property {Array} paragraphs - The current paragraphs.
+ * @property {Object} current - The current paragraph being recorded.
+ * @property {Array} current.words - The words in the current paragraph.
+ * @property {number | null} current.timestamp - The timestamp of the current paragraph.
+ * @property {Array} interim - The interim words being recorded.
+ */
+
+/** @type {State} */
 export let state = {
   archive: [],
   paragraphs: [],
@@ -5,7 +16,14 @@ export let state = {
   interim: [],
 }
 
+/**
+ * Set the state to a new value, asserting its type.
+ * @param {unknown} newState - The new state value.
+ */
 export function setState(newState) {
+  if (!isState(newState)) {
+    throw new Error("Invalid state object")
+  }
   state = newState
 }
 
@@ -92,4 +110,22 @@ export const handlers = {
       ),
     }
   },
+}
+/**
+ * Type predicate to check if an object is a valid State.
+ * @param {unknown} state - The object to check.
+ * @returns {state is State} True if the object is a valid State, false otherwise.
+ */
+function isState(state) {
+  return (
+    typeof state === "object" &&
+    state !== null &&
+    Array.isArray(state.archive) &&
+    Array.isArray(state.paragraphs) &&
+    typeof state.current === "object" &&
+    state.current !== null &&
+    Array.isArray(state.current.words) &&
+    (state.current.timestamp === null || typeof state.current.timestamp === "number") &&
+    Array.isArray(state.interim)
+  )
 }
