@@ -292,30 +292,34 @@ function RecordingWidget() {
   const [mediaStream, setMediaStream] = useState(null)
 
   if (mediaStream) {
-    return html`<${RecordingStarting} mediaStream=${mediaStream} /> `
+    return html`<${RecordingStarting} mediaStream=${mediaStream} />`
   } else {
-    return html`<div
-      style="display: flex; justify-content: space-between; align-items: center">
-      <button
-        class="record"
-        onClick=${async () => {
-          const stream = await getAudioStream()
-          setMediaStream(stream)
-        }}></button>
-      <select
-        value=${languageSignal.value}
-        onChange=${(e) => (languageSignal.value = e.target.value)}>
-        <option value="en-US">English</option>
-        <option value="sv-SE">Swedish</option>
-      </select>
-      <select
-        value=${modelSignal.value}
-        onChange=${(e) => (modelSignal.value = e.target.value)}>
-        <option value="claude3-haiku">Claude III Haiku</option>
-        <option value="claude3-opus">Claude III Opus</option>
-        <option value="gpt4-turbo">GPT IV Turbo</option>
-      </select>
-    </div>`
+    return html`
+      <div class="recording-toolbar">
+        <button
+          class="record"
+          onClick=${async () => {
+            const stream = await getAudioStream()
+            setMediaStream(stream)
+          }}
+        ></button>
+        <select
+          value=${languageSignal.value}
+          onChange=${(e) => (languageSignal.value = e.target.value)}
+        >
+          <option value="en-US">English</option>
+          <option value="sv-SE">Swedish</option>
+        </select>
+        <select
+          value=${modelSignal.value}
+          onChange=${(e) => (modelSignal.value = e.target.value)}
+        >
+          <option value="claude3-haiku">Claude III Haiku</option>
+          <option value="claude3-opus">Claude III Opus</option>
+          <option value="gpt4-turbo">GPT IV Turbo</option>
+        </select>
+      </div>
+    `
   }
 }
 
