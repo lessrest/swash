@@ -37,6 +37,7 @@ const models = {
 }
 
 const promptSignal = signal("captainslog")
+const promptEditorSignal = signal(false)
 const systemPrompt = computed(() => state.prompts[promptSignal.value])
 
 const modelSignal = signal("claude3-opus")
@@ -94,6 +95,9 @@ function Toolbar() {
       : ""}
     <div
       style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
+      <button onClick=${() => promptEditorSignal.value = !promptEditorSignal.value}>
+        Edit Prompt
+      </button>
       <select disabled=${!!mediaStream} value=${languageSignal.value}>
         <option value="en-US">English</option>
         <option value="sv-SE">Swedish</option>
