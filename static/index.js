@@ -16,7 +16,7 @@ import { useChatCompletion } from "./chatCompletion.js"
 import { useTypingEffect } from "./typing.js"
 
 import { state, reducer, setState } from "./state.js"
-import { prompts } from "./prompts.js"
+import { ieva, captainslog, assistant } from "./prompts.js"
 
 const models = {
   "gpt4-turbo": {
@@ -37,7 +37,7 @@ const models = {
 }
 
 const promptSignal = signal("captainslog")
-const systemPrompt = computed(() => prompts[promptSignal.value])
+const systemPrompt = computed(() => state.prompts[promptSignal.value])
 
 const modelSignal = signal("claude3-opus")
 const languageSignal = signal("en-US")
