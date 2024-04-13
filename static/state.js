@@ -1,8 +1,11 @@
+import { prompts } from "./prompts.js"
+
 export let state = {
   archive: [],
   paragraphs: [],
   current: { words: [], timestamp: null },
   interim: [],
+  prompts,
 }
 
 export function setState(newState) {
@@ -15,6 +18,22 @@ export function reducer(state, { payload, timestamp }) {
 }
 
 export const handlers = {
+  SavePrompt(state, { name, systemPrompt }) {
+    return {
+      ...state,
+      prompts: {
+        ...state.prompts,
+        [name]: systemPrompt,
+      },
+    }
+  },
+  DeletePrompt(state, { name }) {
+    const { [name]: _, ...prompts } = state.prompts
+    return {
+      ...state,
+      prompts,
+    }
+  },
   DeepgramMessage(state, { message }, timestamp) {
     if (message.type !== "Results") return state
 
