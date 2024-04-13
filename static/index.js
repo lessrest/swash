@@ -37,7 +37,7 @@ const models = {
 }
 
 const promptSignal = signal("captainslog")
-const promptEditorSignal = signal(false)
+const promptEditorSignal = signal(null)
 const systemPrompt = computed(() => state.prompts[promptSignal.value])
 
 const modelSignal = signal("claude3-opus")
@@ -75,6 +75,7 @@ function Session({ paragraphs, current, interim }) {
         <${Toolbar} />
       </div>
     </article>
+    <${PromptEditor} />
   `
 }
 
@@ -95,7 +96,7 @@ function Toolbar() {
       : ""}
     <div
       style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
-      <button onClick=${() => promptEditorSignal.value = !promptEditorSignal.value}>
+      <button onClick=${() => promptEditorSignal.value = { name: promptSignal.value, systemPrompt: state.prompts[promptSignal.value] }}>
         Edit Prompt
       </button>
       <select disabled=${!!mediaStream} value=${languageSignal.value}>
@@ -421,4 +422,34 @@ function show(state) {
 function update(event) {
   setState(reducer(state, event))
   show(state)
+}
+function PromptEditor() {
+  const { name, systemPrompt } = promptEditorSignal.value || {}
+
+  if (!name) return null
+
+  const handleSave = () => {
+    emit({ type: "SavePrompt", name, systemPrompt })
+    promptEditorSignal.value = null
+  }
+
+  const handleCancel = () => {
+    promptEditorSignal.value = null
+  }
+
+  return html`
+    <div class="modal">
+      <div class="modal-content">
+        <h2>Edit Prompt: ${name}</h2>
+        <textarea 
+          value=${systemPrompt}
+          onInput=${(e) => promptEditorSignal.value = { ...promptEditorSignal.value, systemPrompt: e.target.value }}
+        ></textarea>
+        <div class="modal-buttons">
+          <button onClick=${handleSave}>Save</button>
+          <button onClick=${handleCancel}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  `
 }
