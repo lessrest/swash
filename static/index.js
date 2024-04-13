@@ -42,7 +42,9 @@ function Transcript({ transcript, current, interim }) {
         words=${currentWords}
         button=${false}
         index=${nonEmptySegments.length} />
-      <${RecordingWidget} />
+      <div class="recording-toolbar">
+        <${RecordingWidget} />
+      </div>
     </article>
   `
 }
@@ -295,30 +297,28 @@ function RecordingWidget() {
     return html`<${RecordingStarting} mediaStream=${mediaStream} />`
   } else {
     return html`
-      <div class="recording-toolbar">
-        <button
-          class="record"
-          onClick=${async () => {
-            const stream = await getAudioStream()
-            setMediaStream(stream)
-          }}
-        ></button>
-        <select
-          value=${languageSignal.value}
-          onChange=${(e) => (languageSignal.value = e.target.value)}
-        >
-          <option value="en-US">English</option>
-          <option value="sv-SE">Swedish</option>
-        </select>
-        <select
-          value=${modelSignal.value}
-          onChange=${(e) => (modelSignal.value = e.target.value)}
-        >
-          <option value="claude3-haiku">Claude III Haiku</option>
-          <option value="claude3-opus">Claude III Opus</option>
-          <option value="gpt4-turbo">GPT IV Turbo</option>
-        </select>
-      </div>
+      <button
+        class="record"
+        onClick=${async () => {
+          const stream = await getAudioStream()
+          setMediaStream(stream)
+        }}
+      ></button>
+      <select
+        value=${languageSignal.value}
+        onChange=${(e) => (languageSignal.value = e.target.value)}
+      >
+        <option value="en-US">English</option>
+        <option value="sv-SE">Swedish</option>
+      </select>
+      <select
+        value=${modelSignal.value}
+        onChange=${(e) => (modelSignal.value = e.target.value)}
+      >
+        <option value="claude3-haiku">Claude III Haiku</option>
+        <option value="claude3-opus">Claude III Opus</option>
+        <option value="gpt4-turbo">GPT IV Turbo</option>
+      </select>
     `
   }
 }
