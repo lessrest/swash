@@ -1,6 +1,6 @@
 export let state = {
   archive: [],
-  transcript: [],
+  paragraphs: [],
   current: { words: [], timestamp: null },
   interim: [],
 }
@@ -44,8 +44,8 @@ export const handlers = {
     // Move the current segment to the transcript with audio attached.
     return {
       ...state,
-      transcript: [
-        ...state.transcript,
+      paragraphs: [
+        ...state.paragraphs,
         {
           words: state.current.words,
           audio: URL.createObjectURL(blob || data),
@@ -67,21 +67,21 @@ export const handlers = {
     // It's not the timestamp of the event itself.
     return {
       ...state,
-      transcript: state.transcript.map((entry) =>
+      paragraphs: state.paragraphs.map((entry) =>
         entry.t0 === timestamp ? { ...entry, whisper: result } : entry,
       ),
     }
   },
   SplitTranscript(state, { timestamp }) {
     // Archive everything before the segment with the given timestamp.
-    const archived = state.transcript.filter((entry) => entry.t0 < timestamp)
-    const remaining = state.transcript.filter(
+    const archived = state.paragraphs.filter((entry) => entry.t0 < timestamp)
+    const remaining = state.paragraphs.filter(
       (entry) => entry.t0 >= timestamp,
     )
     return {
       ...state,
       archive: [...state.archive, ...archived],
-      transcript: remaining,
+      paragraphs: remaining,
     }
   },
   ChatCompletionResult(state, { message, t0 }) {
