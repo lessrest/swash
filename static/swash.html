@@ -89,9 +89,22 @@
         mimeType,
       })
 
+      this.setupRecorder(mimeType)
+      this.setupSnippetRecorder(mimeType)
+      await this.handleTranscriptionEvents()
+    }
+
+    setupRecorder(mimeType) {
+      this.recorder = new MediaRecorder(this.stream, {
+        audioBitsPerSecond: 64000,
+        mimeType,
+      })
+
       this.recorder.ondataavailable = ({ data }) => this.socket.send(data)
       this.recorder.start(100)
+    }
 
+    setupSnippetRecorder(mimeType) {
       const sectionTemplate = document.getElementById("section-template")
 
       const { section, audio, textSpan, transcription, insertion } =
@@ -132,7 +145,9 @@
       }
 
       this.snippetRecorder.start()
+    }
 
+    async handleTranscriptionEvents() {
       for (;;) {
         const transcriptionEvent = await nextEvent(this.socket, "message")
         const { type, channel, is_final } = JSON.parse(transcriptionEvent.data)
