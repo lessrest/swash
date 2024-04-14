@@ -81,14 +81,18 @@
 
     socket.onclose = () => say("Transcription stopped.")
 
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/ogg;codecs=opus"
+
     let recorder = new MediaRecorder(stream, {
       audioBitsPerSecond: 64000,
-      mimeType: "audio/webm;codecs=opus",
+      mimeType,
     })
 
     let snippetRecorder = new MediaRecorder(stream, {
       audioBitsPerSecond: 64000,
-      mimeType: "audio/webm;codecs=opus",
+      mimeType,
     })
 
     recorder.ondataavailable = ({ data }) => socket.send(data)
@@ -98,7 +102,7 @@
 
     snippetRecorder.ondataavailable = async ({ data }) => {
       snippetBlobs.push(data)
-      const snippet = new Blob(snippetBlobs, { type: "audio/webm" })
+      const snippet = new Blob(snippetBlobs, { type: mimeType })
       audio.src = URL.createObjectURL(snippet)
       section.classList.add("retranscribing")
       let theSection = section
