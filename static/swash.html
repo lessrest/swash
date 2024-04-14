@@ -15,6 +15,8 @@
   window.onload = start
 
   async function start() {
+    console.group("Transcription Session")
+    console.info("Starting transcription session...")
     let stream
 
     try {
@@ -24,11 +26,14 @@
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       } catch (error) {
+        console.error("Failed to get user media:", error)
         say("Weird.")
       }
+      console.info("User media stream obtained.")
     }
 
     await startTranscription(stream)
+    console.groupEnd()
   }
 
   function choose(options) {
@@ -75,21 +80,30 @@
       this.socket = await openTranscriptionSession()
       this.socket.onclose = () => say("Transcription stopped.")
 
+      console.group("Transcription UI Setup")
+      console.debug("Clearing transcription display...")
       this.clearTranscriptionDisplay()
 
       const sectionTemplate = document.getElementById("section-template")
+      console.debug("Creating section from template...")
       this.createSectionFromTemplate(sectionTemplate)
+      console.groupEnd()
 
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : "audio/mp4;codecs=mp4a.40.2"
 
+      console.group("Media Recorders Setup")
+      console.debug("Setting up main recorder with mimeType:", mimeType)
       this.setupRecorder(mimeType)
+      console.debug("Setting up snippet recorder with mimeType:", mimeType)
       this.setupSnippetRecorder(mimeType)
+      console.groupEnd()
       await this.handleTranscriptionEvents()
     }
 
     setupRecorder(mimeType) {
+      console.debug("Initializing main MediaRecorder...")
       this.recorder = new MediaRecorder(this.stream, {
         audioBitsPerSecond: 64000,
         mimeType,
@@ -100,6 +114,7 @@
     }
 
     setupSnippetRecorder(mimeType) {
+      console.debug("Initializing snippet MediaRecorder...")
       this.snippetRecorder = new MediaRecorder(this.stream, {
         audioBitsPerSecond: 64000,
         mimeType,
@@ -114,18 +129,26 @@
     }
 
     async handleTranscriptionEvents() {
+      console.group("Transcription Events")
+      console.info("Listening for transcription events...")
       for (;;) {
         const transcriptionEvent = await nextEvent(this.socket, "message")
         const { type, channel, is_final } = JSON.parse(
           transcriptionEvent.data,
         )
         if (type === "Results") {
+          console.debug("Received 'Results' event. Channel:", channel, "Is final:", is_final)
           this.handleResultsEvent(channel, is_final)
+        } else {
+          console.debug("Received unknown event type:", type)
         }
       }
+      console.groupEnd()
     }
 
     async retranscribeSnippet(mimeType) {
+      console.group("Snippet Retranscription")
+      console.info("Retranscribing snippet...")
       const snippet = new Blob(this.snippetBlobs, { type: mimeType })
       this.audio.src = URL.createObjectURL(snippet)
       this.section.classList.add("retranscribing")
@@ -133,10 +156,11 @@
       const retranscription = await transcribeAudio(snippet)
 
       this.section.classList.remove("retranscribing")
-      console.log("Retranscription:", retranscription)
+      console.log("Retranscription result:", retranscription)
 
       const { words } = retranscription.results.channels[0].alternatives[0]
       this.updateTranscription(words, this.transcription)
+      console.groupEnd()
     }
 
     appendWordsToElement(words, element) {
@@ -170,6 +194,9 @@
     }
 
     handleResultsEvent({ alternatives: [{ words, transcript }] }, isFinal) {
+      console.group("Results Event Handler")
+      console.debug("Transcript:", transcript)
+      console.debug("Is final:", isFinal)
       if (transcript.trim() !== "") {
         clearTimeout(this.silenceTimer)
         this.silenceTimer = setTimeout(() => {
@@ -185,8 +212,10 @@
         }
         this.clearInsertion()
       } else {
+        console.debug("Updating insertion with interim results...")
         this.updateTranscription(words, this.insertion)
       }
+      console.groupEnd()
     }
 
     updateTranscription(words, element) {
