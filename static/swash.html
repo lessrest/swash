@@ -59,25 +59,17 @@
     let socket = await openTranscriptionSession()
     document.body.replaceChildren()
 
-    let article = document.createElement("article")
+    const article = document.createElement("article")
     document.body.appendChild(article)
 
-    let section = document.createElement("section")
+    const sectionTemplate = document.getElementById("section-template")
+    const section = sectionTemplate.content.cloneNode(true).querySelector("section")
     article.appendChild(section)
 
-    let audio = document.createElement("audio")
-    audio.controls = false
-    section.appendChild(audio)
-
-    let textSpan = document.createElement("span")
-    section.appendChild(textSpan)
-
-    let transcription = document.createElement("span")
-    transcription.classList.add("transcription")
-    textSpan.appendChild(transcription)
-
-    let insertion = document.createElement("ins")
-    textSpan.appendChild(insertion)
+    const audio = section.querySelector("audio")
+    const textSpan = section.querySelector("span")
+    const transcription = textSpan.querySelector(".transcription")
+    const insertion = textSpan.querySelector("ins")
 
     socket.onclose = () => say("Transcription stopped.")
 
@@ -143,8 +135,8 @@
 
         if (is_final) {
           if (transcript.trim() !== "") {
-            let span = document.createElement("span")
-            sayWords(words, span)
+            const span = document.createElement("span")
+            sayWords(words, span, document.getElementById("transcription-template"))
             transcription.appendChild(span)
           }
           insertion.replaceChildren()
@@ -156,17 +148,16 @@
     }
   }
 
-  function sayWords(words, element) {
+  function sayWords(words, element, template) {
     if (words.length === 0) return
     let t0 = words[0].start
     for (const word of words) {
       let t1 = word.start
       let pauseDuration = Math.min(t1 - t0, 3)
       t0 = word.end
-      const span = document.createElement("span")
+      const span = template.content.cloneNode(true).querySelector(".word")
       // span.style.marginLeft = `${pauseDuration}em`
-      span.innerText = word.punctuated_word + " "
-      span.classList.add("word")
+      span.textContent = word.punctuated_word + " "
       span.dataset.speaker = word.speaker
       span.dataset.confidence = word.confidence
 
@@ -220,6 +211,21 @@
     return result
   }
 </script>
+
+<template id="section-template">
+  <section>
+    <audio controls="false"></audio>
+    <span>
+      <span class="transcription"></span>
+      <ins></ins>
+    </span>
+  </section>
+</template>
+
+<template id="transcription-template">
+  <span class="word"></span>
+</template>
+
 <style>
   body {
     font-family: "Times New Roman", serif;
