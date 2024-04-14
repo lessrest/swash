@@ -83,7 +83,7 @@
 
     const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
       ? "audio/webm;codecs=opus"
-      : "audio/ogg;codecs=opus"
+      : "audio/mp4;codecs=mp4a.40.2"
 
     let recorder = new MediaRecorder(stream, {
       audioBitsPerSecond: 64000,
