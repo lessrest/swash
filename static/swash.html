@@ -136,8 +136,7 @@
       console.log("Retranscription:", retranscription)
 
       const { words } = retranscription.results.channels[0].alternatives[0]
-      this.clearTranscription()
-      sayWords(words, this.transcription)
+      this.updateTranscription(words, this.transcription)
     }
 
     clearTranscriptionDisplay() {
@@ -168,8 +167,7 @@
         }
         this.clearInsertion()
       } else {
-        this.clearInsertion()
-        sayWords(words, this.insertion)
+        this.updateTranscription(words, this.insertion)
       }
     }
 
@@ -340,3 +338,7 @@
     opacity: 1;
   }
 </style>
+    updateTranscription(words, element) {
+      element.replaceChildren()
+      sayWords(words, element)
+    }
