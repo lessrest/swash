@@ -12,6 +12,18 @@
     document.body.appendChild(span)
   }
 
+  clearTranscriptionDisplay() {
+    document.body.replaceChildren()
+  }
+
+  clearTranscription() {
+    this.transcription.replaceChildren()
+  }
+
+  clearInsertion() {
+    this.insertion.replaceChildren()
+  }
+
   window.onload = start
 
   async function start() {
@@ -75,7 +87,7 @@
       this.socket = await openTranscriptionSession()
       this.socket.onclose = () => say("Transcription stopped.")
 
-      document.body.replaceChildren()
+      this.clearTranscriptionDisplay()
 
       const sectionTemplate = document.getElementById("section-template")
       this.createSectionFromTemplate(sectionTemplate)
@@ -122,7 +134,7 @@
             ],
           },
         } = retranscription
-        this.transcription.replaceChildren()
+        this.clearTranscription()
         sayWords(words, this.transcription)
       }
 
@@ -155,9 +167,9 @@
           this.transcription.appendChild(span)
           sayWords(words, span)
         }
-        this.insertion.replaceChildren()
+        this.clearInsertion()
       } else {
-        this.insertion.replaceChildren()
+        this.clearInsertion()
         sayWords(words, this.insertion)
       }
     }
