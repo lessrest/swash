@@ -77,7 +77,8 @@
 
       document.body.replaceChildren()
 
-      this.initializeElements()
+      const sectionTemplate = document.getElementById("section-template")
+      this.createSectionFromTemplate(sectionTemplate)
 
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
@@ -88,22 +89,6 @@
       await this.handleTranscriptionEvents()
     }
 
-    initializeElements() {
-      this.article = document.createElement("article")
-      document.body.appendChild(this.article)
-
-      const sectionTemplate = document.getElementById("section-template")
-      const { section, audio, textSpan, transcription, insertion } =
-        this.createSectionFromTemplate(sectionTemplate)
-
-      this.section = section
-      this.audio = audio
-      this.textSpan = textSpan
-      this.transcription = transcription
-      this.insertion = insertion
-
-      this.article.appendChild(this.section)
-    }
 
     setupRecorder(mimeType) {
       this.recorder = new MediaRecorder(this.stream, {
@@ -176,14 +161,16 @@
     }
 
     createSectionFromTemplate(template) {
-      const section = template.content
-        .cloneNode(true)
-        .querySelector("section")
-      const audio = section.querySelector("audio")
-      const textSpan = section.querySelector("kbd")
-      const transcription = textSpan.querySelector(".transcription")
-      const insertion = textSpan.querySelector("ins")
-      return { section, audio, textSpan, transcription, insertion }
+      this.article = document.createElement("article")
+      document.body.appendChild(this.article)
+
+      this.section = template.content.cloneNode(true).querySelector("section")
+      this.audio = this.section.querySelector("audio")
+      this.textSpan = this.section.querySelector("kbd")
+      this.transcription = this.textSpan.querySelector(".transcription")
+      this.insertion = this.textSpan.querySelector("ins")
+
+      this.article.appendChild(this.section)
     }
   }
 
