@@ -12,33 +12,6 @@
     document.body.appendChild(span)
   }
 
-  async retranscribeSnippet(mimeType) {
-    const snippet = new Blob(this.snippetBlobs, { type: mimeType })
-    this.audio.src = URL.createObjectURL(snippet)
-    this.section.classList.add("retranscribing")
-    
-    const retranscription = await transcribeAudio(snippet)
-    
-    this.section.classList.remove("retranscribing")
-    console.log("Retranscription:", retranscription)
-    
-    const { words } = retranscription.results.channels[0].alternatives[0]
-    this.clearTranscription()
-    sayWords(words, this.transcription)
-  }
-
-  clearTranscriptionDisplay() {
-    document.body.replaceChildren()
-  }
-
-  clearTranscription() {
-    this.transcription.replaceChildren()
-  }
-
-  clearInsertion() {
-    this.insertion.replaceChildren()
-  }
-
   window.onload = start
 
   async function start() {
@@ -150,6 +123,33 @@
           this.handleResultsEvent(channel, is_final)
         }
       }
+    }
+
+    async retranscribeSnippet(mimeType) {
+      const snippet = new Blob(this.snippetBlobs, { type: mimeType })
+      this.audio.src = URL.createObjectURL(snippet)
+      this.section.classList.add("retranscribing")
+
+      const retranscription = await transcribeAudio(snippet)
+
+      this.section.classList.remove("retranscribing")
+      console.log("Retranscription:", retranscription)
+
+      const { words } = retranscription.results.channels[0].alternatives[0]
+      this.clearTranscription()
+      sayWords(words, this.transcription)
+    }
+
+    clearTranscriptionDisplay() {
+      document.body.replaceChildren()
+    }
+
+    clearTranscription() {
+      this.transcription.replaceChildren()
+    }
+
+    clearInsertion() {
+      this.insertion.replaceChildren()
     }
 
     handleResultsEvent({ alternatives: [{ words, transcript }] }, isFinal) {
