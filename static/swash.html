@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width" />
+<title>swa.sh</title>
+<script>
+  function say(text, data) {
+    const span = document.createElement("span")
+    span.innerText = text
+    if (data) {
+      span.innerText += " " + JSON.stringify(data)
+    }
+    document.body.appendChild(span)
+  }
+
+  window.onload = start
+
+  async function start() {
+    let stream
+
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch (error) {
+      await action("Request microphone access.")
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      } catch (error) {
+        say("Weird.")
+      }
+    }
+
+    await startTranscription(stream)
+  }
+
+  function choose(options) {
+    return new Promise((resolve) => {
+      for (const option of options) {
+        const link = document.createElement("a")
+        link.innerText = option
+        link.href = "#"
+        link.onclick = () => resolve(option)
+        document.body.appendChild(link)
+      }
+    })
+  }
+
+  function nextEvent(element, eventName) {
+    return new Promise((resolve) => {
+      function handler(event) {
+        element.removeEventListener(eventName, handler)
+        resolve(event)
+      }
+      element.addEventListener(eventName, handler)
+    })
+  }
+
+  async function startTranscription(stream) {
+    await action("Start transcription.")
+
+    let socket = await openTranscriptionSession()
+    document.body.replaceChildren()
+
+    let article = document.createElement("article")
+    document.body.appendChild(article)
+
+    let section = document.createElement("section")
+    article.appendChild(section)
+
+    let audio = document.createElement("audio")
+    audio.controls = false
+    section.appendChild(audio)
+
+    let textSpan = document.createElement("span")
+    section.appendChild(textSpan)
+
+    let transcription = document.createElement("span")
+    transcription.classList.add("transcription")
+    textSpan.appendChild(transcription)
+
+    let insertion = document.createElement("ins")
+    textSpan.appendChild(insertion)
+
+    socket.onclose = () => say("Transcription stopped.")
+
+    let recorder = new MediaRecorder(stream, {
+      audioBitsPerSecond: 64000,
+      mimeType: "audio/webm;codecs=opus",
+    })
+
+    let snippetRecorder = new MediaRecorder(stream, {
+      audioBitsPerSecond: 64000,
+      mimeType: "audio/webm;codecs=opus",
+    })
+
+    recorder.ondataavailable = ({ data }) => socket.send(data)
+    recorder.start(100)
+
+    let snippetBlobs = []
+
+    snippetRecorder.ondataavailable = async ({ data }) => {
+      snippetBlobs.push(data)
+      const snippet = new Blob(snippetBlobs, { type: "audio/webm" })
+      audio.src = URL.createObjectURL(snippet)
+      section.classList.add("retranscribing")
+      let theSection = section
+      let theTranscription = transcription
+      const retranscription = await transcribeAudio(snippet)
+      theSection.classList.remove("retranscribing")
+      console.log("Retranscription:", retranscription)
+      const {
+        results: {
+          channels: [
+            {
+              alternatives: [{ words }],
+            },
+          ],
+        },
+      } = retranscription
+      theTranscription.replaceChildren()
+      sayWords(words, theTranscription)
+    }
+
+    snippetRecorder.start()
+
+    let silenceTimer = null
+
+    for (;;) {
+      const transcriptionEvent = await nextEvent(socket, "message")
+      const { type, channel, is_final } = JSON.parse(transcriptionEvent.data)
+      if (type === "Results") {
+        const { words, transcript } = channel.alternatives[0]
+        const empty = transcript.trim() === ""
+
+        if (!empty) {
+          clearTimeout(silenceTimer)
+          silenceTimer = setTimeout(() => {
+            snippetRecorder.requestData()
+          }, 1500)
+        }
+
+        if (is_final) {
+          if (transcript.trim() !== "") {
+            let span = document.createElement("span")
+            sayWords(words, span)
+            transcription.appendChild(span)
+          }
+          insertion.replaceChildren()
+        } else {
+          insertion.replaceChildren()
+          sayWords(words, insertion)
+        }
+      }
+    }
+  }
+
+  function sayWords(words, element) {
+    if (words.length === 0) return
+    let t0 = words[0].start
+    for (const word of words) {
+      let t1 = word.start
+      let pauseDuration = Math.min(t1 - t0, 3)
+      t0 = word.end
+      const span = document.createElement("span")
+      // span.style.marginLeft = `${pauseDuration}em`
+      span.innerText = word.punctuated_word + " "
+      span.classList.add("word")
+      span.dataset.speaker = word.speaker
+      span.dataset.confidence = word.confidence
+
+      if (word.confidence < 0.5) {
+        span.classList.add("bad-confidence")
+      } else if (word.confidence < 0.8) {
+        span.classList.add("low-confidence")
+      }
+
+      element.appendChild(span)
+    }
+  }
+
+  async function action(text) {
+    const link = document.createElement("a")
+    link.innerText = text
+    link.href = "#"
+    document.body.appendChild(link)
+
+    return new Promise((resolve) => {
+      link.onclick = () => resolve()
+    })
+  }
+
+  function openTranscriptionSession() {
+    const socket = new WebSocket(
+      `ws${location.protocol === "https:" ? "s" : ""}://${
+        location.host
+      }/transcribe`,
+    )
+    return new Promise((resolve, reject) => {
+      socket.onopen = () => resolve(socket)
+      socket.onerror = (error) => reject(error)
+    })
+  }
+
+  async function transcribeAudio(blob) {
+    const formData = new FormData()
+    formData.append("file", blob)
+
+    const response = await fetch("/whisper-deepgram", {
+      method: "POST",
+      body: formData,
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    const result = await response.json()
+    return result
+  }
+</script>
+<style>
+  body {
+    font-family: "Times New Roman", serif;
+    font-size: 16px;
+    line-height: 24px;
+    margin: auto;
+    padding: 1rem;
+    display: flex;
+    flex-direction: row;
+    gap: 1rem;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body {
+      background-color: #111;
+      color: ivory;
+    }
+  }
+
+  a {
+    color: inherit;
+  }
+
+  a:hover {
+    text-decoration: underline;
+  }
+
+  p:first-child {
+    margin-top: 0;
+  }
+
+  p:last-child {
+    margin-bottom: 0;
+  }
+
+  .debug {
+    display: none;
+  }
+
+  .bad-confidence {
+    opacity: 0.5;
+  }
+
+  .low-confidence {
+    opacity: 0.7;
+  }
+
+  section {
+    border-left: 4px solid transparent;
+    padding-left: 0.5rem;
+    transition: border-color 0.25s;
+  }
+
+  .retranscribing {
+    border-color: skyblue;
+  }
+
+  ins,
+  .transcription {
+    text-decoration: none;
+    /* color: transparent; */
+  }
+</style>

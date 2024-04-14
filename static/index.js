@@ -297,13 +297,6 @@ function Words({ words }) {
   return html`<span class="words">${children}</span>`
 }
 
-function formatDateTimeHuman(date) {
-  return date.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-  })
-}
-
 async function getAudioStream() {
   return navigator.mediaDevices.getUserMedia({ audio: true })
 }
@@ -312,13 +305,11 @@ function RecordingInProgress({ mediaStream }) {
   const [deadline, setDeadline] = useState(null)
 
   const onUpdate = useCallback((message) => {
-    console.log("Received Deepgram message:", message)
     emit({ type: "DeepgramMessage", message })
     setDeadline(Date.now() + 3000)
   }, [])
 
   const onError = useCallback((error) => {
-    console.error("Deepgram error:", error)
     emit({ type: "DeepgramError", error })
   }, [])
 
@@ -329,7 +320,6 @@ function RecordingInProgress({ mediaStream }) {
   })
 
   const onChunk = useCallback((blob) => {
-    console.log("Received audio chunk:", blob)
     emit({ type: "AudioBlob", blob })
   }, [])
 
