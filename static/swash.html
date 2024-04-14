@@ -139,6 +139,24 @@
       this.updateTranscription(words, this.transcription)
     }
 
+    appendWordsToElement(words, element) {
+      words.forEach((word) => {
+        const span = document.createElement("span")
+        span.classList.add("word")
+        span.textContent = word.punctuated_word + " "
+        span.dataset.speaker = word.speaker
+        span.dataset.confidence = word.confidence
+
+        if (word.confidence < 0.5) {
+          span.classList.add("bad-confidence")
+        } else if (word.confidence < 0.8) {
+          span.classList.add("low-confidence")
+        }
+
+        element.appendChild(span)
+      })
+    }
+
     clearTranscriptionDisplay() {
       document.body.replaceChildren()
     }
@@ -169,6 +187,11 @@
       } else {
         this.updateTranscription(words, this.insertion)
       }
+
+      updateTranscription(words, element) {
+        element.replaceChildren()
+        this.appendWordsToElement(words, element)
+      }
     }
 
     createSectionFromTemplate(template) {
@@ -190,25 +213,6 @@
     await session.start()
   }
 
-  function sayWords(words, element) {
-    if (words.length === 0) return
-
-    for (const word of words) {
-      const span = document.createElement("span")
-      span.classList.add("word")
-      span.textContent = word.punctuated_word + " "
-      span.dataset.speaker = word.speaker
-      span.dataset.confidence = word.confidence
-
-      if (word.confidence < 0.5) {
-        span.classList.add("bad-confidence")
-      } else if (word.confidence < 0.8) {
-        span.classList.add("low-confidence")
-      }
-
-      element.appendChild(span)
-    }
-  }
 
   async function action(text) {
     const link = document.createElement("a")
