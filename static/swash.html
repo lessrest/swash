@@ -77,21 +77,32 @@
 
       document.body.replaceChildren()
 
-      this.article = document.createElement("article")
-      document.body.appendChild(this.article)
+      this.initializeElements()
 
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : "audio/mp4;codecs=mp4a.40.2"
 
-      this.recorder = new MediaRecorder(this.stream, {
-        audioBitsPerSecond: 64000,
-        mimeType,
-      })
-
       this.setupRecorder(mimeType)
       this.setupSnippetRecorder(mimeType)
       await this.handleTranscriptionEvents()
+    }
+
+    initializeElements() {
+      this.article = document.createElement("article")
+      document.body.appendChild(this.article)
+
+      const sectionTemplate = document.getElementById("section-template")
+      const { section, audio, textSpan, transcription, insertion } =
+        this.createSectionFromTemplate(sectionTemplate)
+
+      this.section = section
+      this.audio = audio
+      this.textSpan = textSpan
+      this.transcription = transcription
+      this.insertion = insertion
+
+      this.article.appendChild(this.section)
     }
 
     setupRecorder(mimeType) {
@@ -105,19 +116,6 @@
     }
 
     setupSnippetRecorder(mimeType) {
-      const sectionTemplate = document.getElementById("section-template")
-
-      const { section, audio, textSpan, transcription, insertion } =
-        this.createSectionFromTemplate(sectionTemplate)
-
-      this.section = section
-      this.audio = audio
-      this.textSpan = textSpan
-      this.transcription = transcription
-      this.insertion = insertion
-
-      this.article.appendChild(this.section)
-
       this.snippetRecorder = new MediaRecorder(this.stream, {
         audioBitsPerSecond: 64000,
         mimeType,
