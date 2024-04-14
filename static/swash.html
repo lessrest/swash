@@ -187,11 +187,11 @@
       } else {
         this.updateTranscription(words, this.insertion)
       }
+    }
 
-      updateTranscription(words, element) {
-        element.replaceChildren()
-        this.appendWordsToElement(words, element)
-      }
+    updateTranscription(words, element) {
+      element.replaceChildren()
+      this.appendWordsToElement(words, element)
     }
 
     createSectionFromTemplate(template) {
@@ -212,7 +212,6 @@
     const session = new TranscriptionSession(stream)
     await session.start()
   }
-
 
   async function action(text) {
     const link = document.createElement("a")
@@ -342,7 +341,3 @@
     opacity: 1;
   }
 </style>
-    updateTranscription(words, element) {
-      element.replaceChildren()
-      sayWords(words, element)
-    }
