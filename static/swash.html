@@ -89,7 +89,6 @@
       await this.handleTranscriptionEvents()
     }
 
-
     setupRecorder(mimeType) {
       this.recorder = new MediaRecorder(this.stream, {
         audioBitsPerSecond: 64000,
@@ -133,18 +132,17 @@
     async handleTranscriptionEvents() {
       for (;;) {
         const transcriptionEvent = await nextEvent(this.socket, "message")
-        const { type, channel, is_final } = JSON.parse(transcriptionEvent.data)
+        const { type, channel, is_final } = JSON.parse(
+          transcriptionEvent.data,
+        )
         if (type === "Results") {
           this.handleResultsEvent(channel, is_final)
         }
       }
     }
 
-    handleResultsEvent(channel, isFinal) {
-      const { words, transcript } = channel.alternatives[0]
-      const empty = transcript.trim() === ""
-
-      if (!empty) {
+    handleResultsEvent({ alternatives: [{ words, transcript }] }, isFinal) {
+      if (transcript.trim() !== "") {
         clearTimeout(this.silenceTimer)
         this.silenceTimer = setTimeout(() => {
           this.snippetRecorder.requestData()
