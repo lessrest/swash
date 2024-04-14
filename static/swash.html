@@ -181,7 +181,7 @@
         if (transcript.trim() !== "") {
           const span = document.createElement("span")
           this.transcription.appendChild(span)
-          sayWords(words, span)
+          this.appendWordsToElement(words, span)
         }
         this.clearInsertion()
       } else {
