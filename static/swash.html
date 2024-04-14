@@ -135,28 +135,32 @@
         const transcriptionEvent = await nextEvent(this.socket, "message")
         const { type, channel, is_final } = JSON.parse(transcriptionEvent.data)
         if (type === "Results") {
-          const { words, transcript } = channel.alternatives[0]
-          const empty = transcript.trim() === ""
-
-          if (!empty) {
-            clearTimeout(this.silenceTimer)
-            this.silenceTimer = setTimeout(() => {
-              this.snippetRecorder.requestData()
-            }, 1500)
-          }
-
-          if (is_final) {
-            if (transcript.trim() !== "") {
-              const span = document.createElement("span")
-              this.transcription.appendChild(span)
-              sayWords(words, span)
-            }
-            this.insertion.replaceChildren()
-          } else {
-            this.insertion.replaceChildren()
-            sayWords(words, this.insertion)
-          }
+          this.handleResultsEvent(channel, is_final)
         }
+      }
+    }
+
+    handleResultsEvent(channel, isFinal) {
+      const { words, transcript } = channel.alternatives[0]
+      const empty = transcript.trim() === ""
+
+      if (!empty) {
+        clearTimeout(this.silenceTimer)
+        this.silenceTimer = setTimeout(() => {
+          this.snippetRecorder.requestData()
+        }, 1500)
+      }
+
+      if (isFinal) {
+        if (transcript.trim() !== "") {
+          const span = document.createElement("span")
+          this.transcription.appendChild(span)
+          sayWords(words, span)
+        }
+        this.insertion.replaceChildren()
+      } else {
+        this.insertion.replaceChildren()
+        sayWords(words, this.insertion)
       }
     }
 
