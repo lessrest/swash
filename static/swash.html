@@ -12,6 +12,21 @@
     document.body.appendChild(span)
   }
 
+  async retranscribeSnippet(mimeType) {
+    const snippet = new Blob(this.snippetBlobs, { type: mimeType })
+    this.audio.src = URL.createObjectURL(snippet)
+    this.section.classList.add("retranscribing")
+    
+    const retranscription = await transcribeAudio(snippet)
+    
+    this.section.classList.remove("retranscribing")
+    console.log("Retranscription:", retranscription)
+    
+    const { words } = retranscription.results.channels[0].alternatives[0]
+    this.clearTranscription()
+    sayWords(words, this.transcription)
+  }
+
   clearTranscriptionDisplay() {
     document.body.replaceChildren()
   }
@@ -119,23 +134,7 @@
 
       this.snippetRecorder.ondataavailable = async ({ data }) => {
         this.snippetBlobs.push(data)
-        const snippet = new Blob(this.snippetBlobs, { type: mimeType })
-        this.audio.src = URL.createObjectURL(snippet)
-        this.section.classList.add("retranscribing")
-        const retranscription = await transcribeAudio(snippet)
-        this.section.classList.remove("retranscribing")
-        console.log("Retranscription:", retranscription)
-        const {
-          results: {
-            channels: [
-              {
-                alternatives: [{ words }],
-              },
-            ],
-          },
-        } = retranscription
-        this.clearTranscription()
-        sayWords(words, this.transcription)
+        await this.retranscribeSnippet(mimeType)
       }
 
       this.snippetRecorder.start()
