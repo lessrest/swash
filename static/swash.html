@@ -53,37 +53,116 @@
     })
   }
 
-  async function startTranscription(stream) {
-    await action("Start transcription.")
+  class TranscriptionSession {
+    constructor(stream) {
+      this.stream = stream
+      this.socket = null
+      this.recorder = null
+      this.snippetRecorder = null
+      this.snippetBlobs = []
+      this.silenceTimer = null
+      this.article = null
+      this.section = null
+      this.audio = null
+      this.textSpan = null
+      this.transcription = null
+      this.insertion = null
+    }
 
-    let socket = await openTranscriptionSession()
-    socket.onclose = () => say("Transcription stopped.")
+    async start() {
+      await action("Start transcription.")
 
-    document.body.replaceChildren()
+      this.socket = await openTranscriptionSession()
+      this.socket.onclose = () => say("Transcription stopped.")
 
-    const article = document.createElement("article")
-    document.body.appendChild(article)
+      document.body.replaceChildren()
 
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-      ? "audio/webm;codecs=opus"
-      : "audio/mp4;codecs=mp4a.40.2"
+      this.article = document.createElement("article")
+      document.body.appendChild(this.article)
 
-    let recorder = new MediaRecorder(stream, {
-      audioBitsPerSecond: 64000,
-      mimeType,
-    })
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/mp4;codecs=mp4a.40.2"
 
-    recorder.ondataavailable = ({ data }) => socket.send(data)
-    recorder.start(100)
+      this.recorder = new MediaRecorder(this.stream, {
+        audioBitsPerSecond: 64000,
+        mimeType,
+      })
 
-    const sectionTemplate = document.getElementById("section-template")
+      this.recorder.ondataavailable = ({ data }) => this.socket.send(data)
+      this.recorder.start(100)
 
-    const { section, audio, textSpan, transcription, insertion } =
-      createSectionFromTemplate(sectionTemplate)
+      const sectionTemplate = document.getElementById("section-template")
 
-    article.appendChild(section)
+      const { section, audio, textSpan, transcription, insertion } =
+        this.createSectionFromTemplate(sectionTemplate)
 
-    function createSectionFromTemplate(template) {
+      this.section = section
+      this.audio = audio
+      this.textSpan = textSpan
+      this.transcription = transcription
+      this.insertion = insertion
+
+      this.article.appendChild(this.section)
+
+      this.snippetRecorder = new MediaRecorder(this.stream, {
+        audioBitsPerSecond: 64000,
+        mimeType,
+      })
+
+      this.snippetRecorder.ondataavailable = async ({ data }) => {
+        this.snippetBlobs.push(data)
+        const snippet = new Blob(this.snippetBlobs, { type: mimeType })
+        this.audio.src = URL.createObjectURL(snippet)
+        this.section.classList.add("retranscribing")
+        const retranscription = await transcribeAudio(snippet)
+        this.section.classList.remove("retranscribing")
+        console.log("Retranscription:", retranscription)
+        const {
+          results: {
+            channels: [
+              {
+                alternatives: [{ words }],
+              },
+            ],
+          },
+        } = retranscription
+        this.transcription.replaceChildren()
+        sayWords(words, this.transcription)
+      }
+
+      this.snippetRecorder.start()
+
+      for (;;) {
+        const transcriptionEvent = await nextEvent(this.socket, "message")
+        const { type, channel, is_final } = JSON.parse(transcriptionEvent.data)
+        if (type === "Results") {
+          const { words, transcript } = channel.alternatives[0]
+          const empty = transcript.trim() === ""
+
+          if (!empty) {
+            clearTimeout(this.silenceTimer)
+            this.silenceTimer = setTimeout(() => {
+              this.snippetRecorder.requestData()
+            }, 1500)
+          }
+
+          if (is_final) {
+            if (transcript.trim() !== "") {
+              const span = document.createElement("span")
+              this.transcription.appendChild(span)
+              sayWords(words, span)
+            }
+            this.insertion.replaceChildren()
+          } else {
+            this.insertion.replaceChildren()
+            sayWords(words, this.insertion)
+          }
+        }
+      }
+    }
+
+    createSectionFromTemplate(template) {
       const section = template.content
         .cloneNode(true)
         .querySelector("section")
@@ -93,66 +172,11 @@
       const insertion = textSpan.querySelector("ins")
       return { section, audio, textSpan, transcription, insertion }
     }
+  }
 
-    let snippetRecorder = new MediaRecorder(stream, {
-      audioBitsPerSecond: 64000,
-      mimeType,
-    })
-
-    let snippetBlobs = []
-
-    snippetRecorder.ondataavailable = async ({ data }) => {
-      snippetBlobs.push(data)
-      const snippet = new Blob(snippetBlobs, { type: mimeType })
-      audio.src = URL.createObjectURL(snippet)
-      section.classList.add("retranscribing")
-      const retranscription = await transcribeAudio(snippet)
-      section.classList.remove("retranscribing")
-      console.log("Retranscription:", retranscription)
-      const {
-        results: {
-          channels: [
-            {
-              alternatives: [{ words }],
-            },
-          ],
-        },
-      } = retranscription
-      transcription.replaceChildren()
-      sayWords(words, transcription)
-    }
-
-    snippetRecorder.start()
-
-    let silenceTimer = null
-
-    for (;;) {
-      const transcriptionEvent = await nextEvent(socket, "message")
-      const { type, channel, is_final } = JSON.parse(transcriptionEvent.data)
-      if (type === "Results") {
-        const { words, transcript } = channel.alternatives[0]
-        const empty = transcript.trim() === ""
-
-        if (!empty) {
-          clearTimeout(silenceTimer)
-          silenceTimer = setTimeout(() => {
-            snippetRecorder.requestData()
-          }, 1500)
-        }
-
-        if (is_final) {
-          if (transcript.trim() !== "") {
-            const span = document.createElement("span")
-            transcription.appendChild(span)
-            sayWords(words, span)
-          }
-          insertion.replaceChildren()
-        } else {
-          insertion.replaceChildren()
-          sayWords(words, insertion)
-        }
-      }
-    }
+  async function startTranscription(stream) {
+    const session = new TranscriptionSession(stream)
+    await session.start()
   }
 
   function sayWords(words, element) {
