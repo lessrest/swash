@@ -6,10 +6,10 @@ const typingSpeed = 50 // Typing speed in graphemes per second
 
 const graphemeDelayTable = {
   ",": 200,
-  ".": 500,
-  "?": 1000,
-  "!": 1000,
-  "—": 700,
+  ".": 300,
+  "?": 400,
+  "!": 400,
+  "—": 400,
 }
 
 const graphemeDelay = (grapheme) => {
@@ -23,7 +23,11 @@ export function useTypingEffect(text) {
   const delta = maxLength - displayedLength
   const lastGrapheme =
     displayedLength > 0 ? graphemes[displayedLength - 1] : ""
-  const delay = graphemeDelay(lastGrapheme)
+  let delay = graphemeDelay(lastGrapheme)
+
+  if (delta > 20) {
+    delay = Math.max(delay * 0.8, 20)
+  }
 
   useEffect(() => {
     let intervalId = null

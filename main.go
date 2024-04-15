@@ -173,6 +173,12 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
+	// get the language from the request
+	language := r.URL.Query().Get("language")
+	if language == "" {
+		language = "en-US"
+	}
+
 	// Read the audio file content
 	audioData, err := io.ReadAll(file)
 	if err != nil {
@@ -181,7 +187,7 @@ func whisperDeepgram(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := sendDeepgramRequest(audioData)
+	resp, err := sendDeepgramRequest(audioData, language)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -295,7 +301,7 @@ func sendOpenAIRequest(method, path, contentType string, body io.Reader) (*http.
 	return resp, nil
 }
 
-func sendDeepgramRequest(audioData []byte) (*http.Response, error) {
+func sendDeepgramRequest(audioData []byte, language string) (*http.Response, error) {
 	req, err := http.NewRequest("POST", "https://api.deepgram.com/v1/listen", bytes.NewBuffer(audioData))
 	if err != nil {
 		log.Error("Error creating request", "error", err)
@@ -309,7 +315,7 @@ func sendDeepgramRequest(audioData []byte) (*http.Response, error) {
 	q.Set("model", "nova-2")
 	q.Set("diarize", "true")
 	q.Set("smart_format", "true")
-	q.Set("language", "en-US")
+	q.Set("language", language)
 	req.URL.RawQuery = q.Encode()
 
 	client := &http.Client{}

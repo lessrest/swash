@@ -52,9 +52,9 @@ export function useChatCompletion({
         : "/openai/v1/chat/completions"
     const requestBody = {
       model,
-      temperature: 0.5,
+      temperature: 0.6,
       stream: true,
-      max_tokens: 1024,
+      max_tokens: 512,
     }
 
     if (provider === "anthropic") {

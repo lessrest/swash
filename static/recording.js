@@ -6,7 +6,7 @@ export const mimeType = MediaRecorder.isTypeSupported(
   ? "audio/webm;codecs=opus"
   : "audio/mp4"
 
-const audioBitsPerSecond = mimeType === "audio/mp4" ? 128000 : 32000
+const audioBitsPerSecond = mimeType === "audio/mp4" ? 128000 : 64000
 
 /**
  * Custom hook for managing speech audio recording.

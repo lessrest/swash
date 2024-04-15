@@ -129,15 +129,19 @@
     }
 
     async handleTranscriptionEvents() {
-      console.group("Transcription Events")
-      console.info("Listening for transcription events...")
+      console.group("Listening for transcription events...")
       for (;;) {
         const transcriptionEvent = await nextEvent(this.socket, "message")
         const { type, channel, is_final } = JSON.parse(
           transcriptionEvent.data,
         )
         if (type === "Results") {
-          console.debug("Received 'Results' event. Channel:", channel, "Is final:", is_final)
+          console.debug(
+            "Received 'Results' event. Channel:",
+            channel,
+            "Is final:",
+            is_final,
+          )
           this.handleResultsEvent(channel, is_final)
         } else {
           console.debug("Received unknown event type:", type)
@@ -194,7 +198,6 @@
     }
 
     handleResultsEvent({ alternatives: [{ words, transcript }] }, isFinal) {
-      console.group("Results Event Handler")
       console.debug("Transcript:", transcript)
       console.debug("Is final:", isFinal)
       if (transcript.trim() !== "") {
@@ -215,7 +218,6 @@
         console.debug("Updating insertion with interim results...")
         this.updateTranscription(words, this.insertion)
       }
-      console.groupEnd()
     }
 
     updateTranscription(words, element) {
@@ -257,7 +259,7 @@
     const socket = new WebSocket(
       `ws${location.protocol === "https:" ? "s" : ""}://${
         location.host
-      }/transcribe`,
+      }/transcribe?language=sv-SE`,
     )
     return new Promise((resolve, reject) => {
       socket.onopen = () => resolve(socket)
@@ -269,7 +271,7 @@
     const formData = new FormData()
     formData.append("file", blob)
 
-    const response = await fetch("/whisper-deepgram", {
+    const response = await fetch("/whisper-deepgram?language=sv-SE", {
       method: "POST",
       body: formData,
     })
@@ -350,6 +352,10 @@
 
   .retranscribing {
     border-color: skyblue;
+  }
+
+  [data-speaker="1"] {
+    color: skyblue;
   }
 
   ins,

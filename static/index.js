@@ -2,7 +2,7 @@ import { createEventStore, saveEvent, getAllEvents } from "./eventStore.js"
 import GraphemeSplitter from "grapheme-splitter"
 import { render } from "preact"
 import { useState, useCallback, useEffect, useMemo } from "preact/hooks"
-import { computed, signal } from "@preact/signals"
+import { computed, effect, signal } from "@preact/signals"
 import { html } from "htm/preact"
 import { useSpeechAudio } from "./recording.js"
 import { useLiveTranscription } from "./transcribing.js"
@@ -10,7 +10,7 @@ import { useChatCompletion } from "./chatCompletion.js"
 import { useTypingEffect } from "./typing.js"
 
 import { reducer } from "./state.js"
-import { prompts as initialPrompts } from "./prompts.js"
+import { prompts as initialPrompts, defaultPrompt } from "./prompts.js"
 
 const models = {
   "gpt4-turbo": {
@@ -23,6 +23,11 @@ const models = {
     model: "claude-3-opus-20240229",
     provider: "anthropic",
   },
+  "claude3-sonnet": {
+    name: "Claude III Sonnet",
+    model: "claude-3-sonnet-20240229",
+    provider: "anthropic",
+  },
   "claude3-haiku": {
     name: "Claude III Haiku",
     model: "claude-3-haiku-20240307",
@@ -31,13 +36,14 @@ const models = {
 }
 
 const firstAppState = () => ({
-  promptName: "captainslog",
+  promptName: defaultPrompt,
   model: "claude3-opus",
   language: "en-US",
   paragraphs: [],
   current: { words: [], timestamp: null },
   interim: [],
   prompts: initialPrompts,
+  chatCompleting: null,
 })
 
 const appState = signal(firstAppState())
@@ -56,12 +62,41 @@ const model = computed(() => appState.value.model)
 const language = computed(() => appState.value.language)
 const prompts = computed(() => appState.value.prompts)
 const currentTimestamp = computed(() => appState.value.current.timestamp)
+const chatCompleting = computed(() => appState.value.chatCompleting)
+
+// set chatCompleting to the next segment timestamp
+effect(() => {
+  console.log({
+    chatCompleting: chatCompleting.value,
+    nonEmptyParagraphs: nonEmptyParagraphs.value,
+  })
+  if (chatCompleting.value === null) {
+    // find first segment without a chat completion
+    const firstSegment = nonEmptyParagraphs.value.find(
+      ({ chatCompletion }) => !chatCompletion,
+    )
+    if (firstSegment) {
+      console.log(
+        "Found first segment without chat completion:",
+        firstSegment,
+      )
+      setTimeout(() => {
+        appState.value = {
+          ...appState.value,
+          chatCompleting: firstSegment.t0,
+        }
+        show()
+      }, 50)
+    } else {
+      console.log("No first segment without chat completion")
+    }
+  }
+})
 
 function Session() {
   const textAnimation = html`
     <${AnimatedWords} interim=${currentWords.value} />
   `
-
   return html`
     <article>
       ${nonEmptyParagraphs.value.map(
@@ -81,9 +116,7 @@ function Session() {
             index=${nonEmptyParagraphs.value.length} />`
         : ""}
       <br style="padding-top: 2rem" />
-      <div class="recording-toolbar">
-        <${Toolbar} />
-      </div>
+      <${Toolbar} />
     </article>
   `
 }
@@ -113,42 +146,48 @@ function Toolbar() {
   }, [])
 
   return html`
-    ${mediaStream === null
-      ? html`<button
-          class="record"
-          onClick=${async () => {
-            const stream = await getAudioStream()
-            setMediaStream(stream)
-          }}></button>`
-      : ""}
-    ${mediaStream
-      ? html`<${RecordingInProgress} mediaStream=${mediaStream} />`
-      : ""}
-    <div
-      style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
-      <select
-        disabled=${!!mediaStream}
-        value=${language.value}
-        onChange=${changeLanguage}>
-        <option value="en-US">English</option>
-        <option value="sv-SE">Swedish</option>
-      </select>
-      <select
-        disabled=${!!mediaStream}
-        value=${model.value}
-        onChange=${changeModel}>
-        <option value="claude3-haiku">Claude III Haiku</option>
-        <option value="claude3-opus">Claude III Opus</option>
-        <option value="gpt4-turbo">GPT IV Turbo</option>
-      </select>
-      <select
-        disabled=${!!mediaStream}
-        value=${promptName.value}
-        onChange=${changePrompt}>
-        ${Object.entries(prompts.value).map(
-          ([key, value]) => html` <option value=${key}>${key}</option> `,
-        )}
-      </select>
+    <div class=${`toolbar ${mediaStream ? "recording" : ""}`}>
+      ${mediaStream === null
+        ? html`<button
+            class="record"
+            onClick=${async () => {
+              const stream = await getAudioStream()
+              setMediaStream(stream)
+            }}></button>`
+        : ""}
+      ${mediaStream
+        ? html`<${RecordingInProgress} mediaStream=${mediaStream} />`
+        : ""}
+      <div
+        style="display: flex; flex-direction: row; align-items: baseline; gap: 0.5rem">
+        <select
+          disabled=${!!mediaStream}
+          value=${language.value}
+          onChange=${changeLanguage}>
+          <option value="en-US">English</option>
+          <option value="sv-SE">Swedish</option>
+        </select>
+        <select
+          disabled=${!!mediaStream}
+          value=${model.value}
+          onChange=${changeModel}>
+          ${Object.entries(models)
+            .sort(([, a], [, b]) => a.name.localeCompare(b.name))
+            .map(
+              ([key, { name }]) => html`
+                <option value=${key}>${name}</option>
+              `,
+            )}
+        </select>
+        <select
+          disabled=${!!mediaStream}
+          value=${promptName.value}
+          onChange=${changePrompt}>
+          ${Object.entries(prompts.value).map(
+            ([key, value]) => html` <option value=${key}>${key}</option> `,
+          )}
+        </select>
+      </div>
     </div>
   `
 }
@@ -187,6 +226,10 @@ function AnimatedWords({ interim }) {
 function Paragraph({ segment, index }) {
   const { words, t0 } = segment
 
+  const completing = chatCompleting.value === t0
+
+  console.log("chat completing", chatCompleting.value, t0)
+
   const wordSpans = html`<${Words} words=${words} />`
   const text = words.map((word) => word.punctuated_word).join(" ")
   const systemPrompt = prompts.value[promptName.value]
@@ -219,9 +262,11 @@ function Paragraph({ segment, index }) {
     [text, systemPrompt, previousMessages],
   )
 
-  const response = html`<${ChatCompletionSegment}
-    t0=${t0}
-    messages=${messages} />`
+  const response = completing
+    ? html`<${ChatCompletionSegment} t0=${t0} messages=${messages} />`
+    : segment.chatCompletion
+    ? segment.chatCompletion
+    : ""
 
   return html`
     <${TranscriptItem}
@@ -264,6 +309,9 @@ function ChatCompletionSegment({ messages, t0 }) {
   useEffect(() => {
     if (message && message.content && finishedDisplaying) {
       emit({ type: "ChatCompletionResult", message: message.content, t0 })
+      if (appState.value.chatCompleting === t0) {
+        appState.value.chatCompleting = null
+      }
     }
     // scroll to bottom
     window.scrollTo(0, document.body.scrollHeight)

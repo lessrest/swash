@@ -77,14 +77,33 @@ button:not(.record):not(.stop) {
 }
 
 .response {
-  color: darkcyan;
+  color: darkgoldenrod;
   margin-left: 1rem;
-  font-style: italic;
+  white-space: pre-wrap;
+  /* an exquisitely subtle glow and animation */
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.5);
+  animation: glow 1s ease-in-out infinite;
+}
+
+.toolbar.recording {
+  display: none;
+}
+
+@keyframes glow {
+  0% {
+    text-shadow: 0 0 2px rgba(255, 255, 255, 0.5);
+  }
+  50% {
+    text-shadow: 0 0 4px rgba(255, 255, 255, 0.5);
+  }
+  100% {
+    text-shadow: 0 0 2px rgba(255, 255, 255, 0.5);
+  }
 }
 
 @media (prefers-color-scheme: dark) {
   .response {
-    color: ivory;
+    color: darkorange;
   }
 }
 
@@ -133,7 +152,7 @@ time {
 .pause {
   display: inline-block;
 }
-.recording-toolbar {
+.toolbar {
   position: fixed;
   bottom: 0;
   left: 0;
@@ -146,7 +165,7 @@ time {
 }
 
 @media (prefers-color-scheme: dark) {
-  .recording-toolbar {
+  .toolbar {
     background-color: #222;
   }
 }
