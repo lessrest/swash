@@ -233,20 +233,7 @@ await main(function* () {
     const formData = new FormData()
     formData.append("file", new Blob(blobs))
 
-    const response = yield* call(
-      fetch("/whisper-deepgram?language=en", {
-        method: "POST",
-        body: formData,
-      }),
-    )
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`)
-    }
-
-    const result = yield* call(response.json())
-    console.log(result)
-    const { words, transcript } = result.results.channels[0].alternatives[0]
+    const { words, transcript } = yield* transcribeWithWhisperDeepgram(blobs)
 
     const wordSpans = document.createElement("span")
     for (const { punctuated_word, start, end, confidence } of words) {
@@ -258,3 +245,22 @@ await main(function* () {
     yield* message(wordSpans)
   }
 })
+function* transcribeWithWhisperDeepgram(blobs: Blob[]) {
+  const formData = new FormData()
+  formData.append("file", new Blob(blobs))
+
+  const response = yield* call(
+    fetch("/whisper-deepgram?language=en", {
+      method: "POST",
+      body: formData,
+    }),
+  )
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`)
+  }
+
+  const result = yield* call(response.json())
+  console.log(result)
+  return result.results.channels[0].alternatives[0]
+}
