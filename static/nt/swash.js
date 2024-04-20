@@ -1,5 +1,4 @@
 import { createChannel, each, main, on, sleep, spawn, } from "effection";
-import { css } from "./css.js";
 import { append, message, pushNode, setNode, spawnWithElement, useMediaRecorder, useMediaStream, } from "./kernel.js";
 import { modelsByName, stream } from "./ntchat.js";
 import { tag } from "./tag.js";
@@ -208,7 +207,7 @@ function* spawnSocketMessageListener(socket, interimChannel, finalWordsChannel) 
     });
 }
 function* app() {
-    yield* pushNode(tag("app", {}, tag("style", {}, css)));
+    yield* pushNode(tag("app"));
     const stream = yield* useMediaStream({ audio: true, video: true });
     for (;;) {
         yield* recordingSession(stream);

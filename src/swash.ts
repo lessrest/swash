@@ -10,7 +10,6 @@ import {
   sleep,
   spawn,
 } from "effection"
-import { css } from "./css.js"
 import {
   append,
   message,
@@ -309,7 +308,7 @@ function* spawnSocketMessageListener(
 }
 
 function* app() {
-  yield* pushNode(tag("app", {}, tag("style", {}, css)))
+  yield* pushNode(tag("app"))
 
   const stream = yield* useMediaStream({ audio: true, video: true })
 

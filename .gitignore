@@ -1,6 +1,5 @@
 node_modules
 .aider*
-*/server
-*/server
 server
-/static/swash.js
+/static/nt
+

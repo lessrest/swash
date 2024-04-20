@@ -1,6 +1,6 @@
-export const css = `
 * {
-  box-sizing: border-box; margin: 0;
+  box-sizing: border-box;
+  margin: 0;
 }
 
 body {
@@ -44,7 +44,9 @@ app {
   background-color: red;
 }
 
-.window2 { display: none !important; }
+.window2 {
+  display: none !important;
+}
 
 video {
   width: 100%;
@@ -56,7 +58,8 @@ video {
   right: 0;
   bottom: 0;
   z-index: -1;
-  filter: blur(6px) sepia(0.6) hue-rotate(3deg) saturate(1.2) contrast(0.8) brightness(0.6);
+  filter: blur(6px) sepia(0.6) hue-rotate(3deg) saturate(1.2) contrast(0.8)
+    brightness(0.6);
 }
 
 article {
@@ -80,19 +83,8 @@ article {
   text-shadow: 0 0 0.9rem #0008;
 }
 
-p { margin: 0; }
-
-article message::before {
-  display: none;
-  content: '1 ';
-}
-
-article message.started::before {
-  content: '2 ';
-}
-
-article message.finished::before {
-  content: '3 ';
+p {
+  margin: 0;
 }
 
 article message {
@@ -106,6 +98,5 @@ article message.started {
 
 hr {
   border: none;
-  margin: .25em 0;
+  margin: 0.25em 0;
 }
-`;
