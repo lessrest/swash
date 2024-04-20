@@ -3,10 +3,12 @@ import {
   Operation,
   Stream,
   Task,
+  call,
   createChannel,
   each,
   main,
   on,
+  resource,
   sleep,
   spawn,
 } from "effection"
@@ -18,12 +20,10 @@ import {
   pushNode,
   setNode,
   spawnWithElement,
-  useMediaRecorder,
-  useMediaStream,
 } from "./kernel.js"
-import { modelsByName, stream } from "./ntchat.js"
+import { modelsByName, stream } from "./llm.js"
+
 import { tag } from "./tag.js"
-import { WordHypothesis, transcribe } from "./transcribe.js"
 import { WebSocketHandle, useWebSocket } from "./websocket.js"
 
 function* typeMessage(text: string, confidence = 1): Operation<void> {
@@ -297,13 +297,13 @@ function* spawnSocketMessageListener(
         const {
           alternatives: [{ transcript, words }],
         } = data.channel
-        if (transcript) {
-          if (data.is_final) {
+        if (data.is_final) {
+          if (transcript) {
             yield* finalWordsChannel.send(words)
-            yield* interimChannel.send([])
-          } else {
-            yield* interimChannel.send(words)
           }
+          yield* interimChannel.send([])
+        } else if (transcript) {
+          yield* interimChannel.send(words)
         }
       }
       yield* each.next()
@@ -325,5 +325,68 @@ document.addEventListener("DOMContentLoaded", async function () {
   await main(app)
 })
 function getWebSocketUrl(): string {
-  return `${document.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${document.location.host}`
+  return `${document.location.protocol === "https:" ? "wss:" : "ws:"}//${
+    document.location.host
+  }`
+}
+export function useMediaRecorder(
+  stream: MediaStream,
+  options: MediaRecorderOptions,
+): Operation<MediaRecorder> {
+  return resource(function* (provide) {
+    const recorder = new MediaRecorder(stream, options)
+    try {
+      yield* provide(recorder)
+    } finally {
+      if (recorder.state !== "inactive") {
+        recorder.stop()
+      }
+    }
+  })
+}
+export function useMediaStream(
+  constraints: MediaStreamConstraints,
+): Operation<MediaStream> {
+  return resource(function* (provide) {
+    const stream: MediaStream = yield* call(
+      navigator.mediaDevices.getUserMedia(constraints),
+    )
+    try {
+      yield* provide(stream)
+    } finally {
+      for (const track of stream.getTracks()) {
+        yield* message(`stopping ${track.kind}`)
+        track.stop()
+      }
+    }
+  })
+}
+export interface WordHypothesis {
+  word: string
+  punctuated_word: string
+  confidence: number
+  start: number
+  end: number
+}
+export function* transcribe(
+  blobs: Blob[],
+  language: string = "en",
+): Operation<{ words: WordHypothesis[] }> {
+  const formData = new FormData()
+  formData.append("file", new Blob(blobs))
+
+  const response = yield* call(
+    fetch(`/whisper-deepgram?language=${language}`, {
+      method: "POST",
+      body: formData,
+    }),
+  )
+
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`)
+  }
+
+  const result = yield* call(response.json())
+  console.log(result)
+  return result.results.channels[0].alternatives[0]
 }
