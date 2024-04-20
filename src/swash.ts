@@ -208,7 +208,7 @@ function* recordingSession(stream: MediaStream): Operation<void> {
     console.log("Starting session", language)
     const task = yield* spawn(function* () {
       const socket = yield* useWebSocket(
-        `wss://swash2.less.rest/transcribe?language=${language}`,
+        `${document.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${document.location.host}/transcribe?language=${language}`,
       )
 
       const recorder = yield* useMediaRecorder(audioStream, {
