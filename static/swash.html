@@ -105,7 +105,7 @@
     setupRecorder(mimeType) {
       console.debug("Initializing main MediaRecorder...")
       this.recorder = new MediaRecorder(this.stream, {
-        audioBitsPerSecond: 64000,
+        audioBitsPerSecond: 128000,
         mimeType,
       })
 
@@ -116,7 +116,7 @@
     setupSnippetRecorder(mimeType) {
       console.debug("Initializing snippet MediaRecorder...")
       this.snippetRecorder = new MediaRecorder(this.stream, {
-        audioBitsPerSecond: 64000,
+        audioBitsPerSecond: 128000,
         mimeType,
       })
 
@@ -259,7 +259,7 @@
     const socket = new WebSocket(
       `ws${location.protocol === "https:" ? "s" : ""}://${
         location.host
-      }/transcribe?language=sv-SE`,
+      }/transcribe?language=en`,
     )
     return new Promise((resolve, reject) => {
       socket.onopen = () => resolve(socket)
@@ -271,7 +271,7 @@
     const formData = new FormData()
     formData.append("file", blob)
 
-    const response = await fetch("/whisper-deepgram?language=sv-SE", {
+    const response = await fetch("/whisper-deepgram?language=en", {
       method: "POST",
       body: formData,
     })

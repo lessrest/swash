@@ -1,16 +1,16 @@
-import { createEventStore, saveEvent, getAllEvents } from "./eventStore.js"
-import GraphemeSplitter from "grapheme-splitter"
-import { render } from "preact"
-import { useState, useCallback, useEffect, useMemo } from "preact/hooks"
 import { computed, effect, signal } from "@preact/signals"
+import GraphemeSplitter from "grapheme-splitter"
 import { html } from "htm/preact"
+import { render } from "preact"
+import { useCallback, useEffect, useMemo, useState } from "preact/hooks"
+import { useChatCompletion } from "./chatCompletion.js"
+import { createEventStore, saveEvent } from "./eventStore.js"
 import { useSpeechAudio } from "./recording.js"
 import { useLiveTranscription } from "./transcribing.js"
-import { useChatCompletion } from "./chatCompletion.js"
 import { useTypingEffect } from "./typing.js"
 
+import { defaultPrompt, prompts as initialPrompts } from "./prompts.js"
 import { reducer } from "./state.js"
-import { prompts as initialPrompts, defaultPrompt } from "./prompts.js"
 
 const models = {
   "gpt4-turbo": {
@@ -226,6 +226,8 @@ function AnimatedWords({ interim }) {
 function Paragraph({ segment, index }) {
   const { words, t0 } = segment
 
+  // const [completing, setCompleting] = useState(false)
+
   const completing = chatCompleting.value === t0
 
   console.log("chat completing", chatCompleting.value, t0)
@@ -268,6 +270,9 @@ function Paragraph({ segment, index }) {
     ? segment.chatCompletion
     : ""
 
+  // ${!completing &&
+  // !segment.chatCompletion &&
+  // html`<button onClick=${() => setCompleting(true)}>🪄</button>`}
   return html`
     <${TranscriptItem}
       words=${wordSpans}
@@ -292,7 +297,10 @@ function TranscriptItem({ words, index, response = "" }) {
 }
 
 function ChatCompletionSegment({ messages, t0 }) {
-  const onError = useCallback((error) => console.error(error), [])
+  const onError = useCallback((error) => {
+    console.error(error)
+    emit({ type: "ChatCompletionError", t0 })
+  }, [])
 
   const { isStreaming, isDone, message } = useChatCompletion({
     model: models[model.value],
@@ -305,6 +313,10 @@ function ChatCompletionSegment({ messages, t0 }) {
   const finishedDisplaying = isDone && displayedText === message.content
   const thinking = isStreaming && !finishedDisplaying
   const indicator = thinking ? " 💬" : isDone ? "" : " ⏳"
+
+  useEffect(() => {
+    emit({ type: "ChatCompletionStarted", t0 })
+  }, [])
 
   useEffect(() => {
     if (message && message.content && finishedDisplaying) {
@@ -354,7 +366,7 @@ function RecordingInProgress({ mediaStream }) {
 
   const onUpdate = useCallback((message) => {
     emit({ type: "DeepgramMessage", message })
-    setDeadline(Date.now() + 3000)
+    setDeadline(Date.now() + 7000)
   }, [])
 
   const onError = useCallback((error) => {
@@ -402,6 +414,16 @@ function RecordingInProgress({ mediaStream }) {
       setDeadline(null)
     }
   }, [isRecording])
+
+  useEffect(() => {
+    if (chatCompleting.value !== null) {
+      console.log("GPT talking, clearing deadline")
+      setDeadline(null)
+    } else {
+      console.log("GPT not talking, setting deadline")
+      setDeadline(Date.now() + 3000)
+    }
+  }, [chatCompleting.value])
 
   useEffect(() => {
     // start the recorder when the socket is open

@@ -60,6 +60,13 @@ export const handlers = {
       }
     }
   },
+  DeepgramError(state, { error }, timestamp) {
+    return {
+      ...state,
+      current: { words: [], timestamp: null },
+      interim: [],
+    }
+  },
   AudioBlob(state, { blob, data }, timestamp) {
     // Move the current segment to the transcript with audio attached.
     return {

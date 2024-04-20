@@ -3,11 +3,10 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "node",
-    "baseUrl": ".",
     "paths": {
-      "*": ["node_modules/*"]
+      "*": ["./node_modules/*"]
     },
-    "outDir": "static",
+    "outDir": "static/nt",
     "strict": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true

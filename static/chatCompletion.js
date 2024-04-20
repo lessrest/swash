@@ -1,10 +1,4 @@
-import {
-  useState,
-  useEffect,
-  useCallback,
-  useReducer,
-  useMemo,
-} from "preact/hooks"
+import { useCallback, useEffect, useReducer, useState } from "preact/hooks"
 
 // example of the chat chunks send by SSE
 // {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1694268190,"model":"gpt-3.5-turbo-0125", "system_fingerprint": "fp_44709d6fcb", "choices":[{"index":0,"delta":{"role":"assistant","content":""},"logprobs":null,"finish_reason":null}]}
@@ -52,7 +46,7 @@ export function useChatCompletion({
         : "/openai/v1/chat/completions"
     const requestBody = {
       model,
-      temperature: 0.6,
+      temperature: 0.8,
       stream: true,
       max_tokens: 512,
     }
@@ -103,62 +97,71 @@ export function useChatCompletion({
     const decoder = new TextDecoder("utf-8")
     let buffer = ""
 
-    while (true) {
-      const { done, value } = await reader.read()
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
 
-      if (done) {
-        break
-      }
-
-      buffer += decoder.decode(value)
-
-      let position
-      while ((position = buffer.indexOf("\n")) !== -1) {
-        const line = buffer.slice(0, position).trim()
-        buffer = buffer.slice(position + 1)
-
-        if (line === "") continue
-        if (line.startsWith("event:")) continue
-
-        const message = line.replace(/^data: /, "")
-        if (message === "[DONE]") {
-          setIsStreaming(false)
-          setIsDone(true)
+        if (done) {
           break
         }
 
-        try {
-          if (provider === "anthropic") {
-            const parsed = JSON.parse(message)
-            if (parsed.type === "message_start") {
-              dispatch({ type: "SET_ROLE", role: parsed.message.role })
-            } else if (parsed.type === "content_block_delta") {
-              const text = parsed.delta.text
-              dispatch({ type: "APPEND_CONTENT", content: text })
-            } else if (parsed.type === "message_stop") {
-              setIsStreaming(false)
-              setIsDone(true)
-              break
-            }
-          } else {
-            const parsed = JSON.parse(message)
-            const delta = parsed.choices[0].delta
-            if (delta.role === "assistant") {
-              dispatch({ type: "SET_ROLE", role: delta.role })
-            }
-            if (delta.content) {
-              dispatch({ type: "APPEND_CONTENT", content: delta.content })
-            }
-            if (parsed.choices[0].finish_reason === "stop") {
-              setIsStreaming(false)
-              setIsDone(true)
-              break
-            }
+        buffer += decoder.decode(value)
+
+        let position
+        while ((position = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, position).trim()
+          buffer = buffer.slice(position + 1)
+
+          if (line === "") continue
+          if (line.startsWith("event:")) continue
+
+          const message = line.replace(/^data: /, "")
+          if (message === "[DONE]") {
+            setIsStreaming(false)
+            setIsDone(true)
+            break
           }
-        } catch (error) {
-          console.error("Could not JSON parse stream message", message, error)
+
+          try {
+            if (provider === "anthropic") {
+              const parsed = JSON.parse(message)
+              if (parsed.type === "message_start") {
+                dispatch({ type: "SET_ROLE", role: parsed.message.role })
+              } else if (parsed.type === "content_block_delta") {
+                const text = parsed.delta.text
+                dispatch({ type: "APPEND_CONTENT", content: text })
+              } else if (parsed.type === "message_stop") {
+                setIsStreaming(false)
+                setIsDone(true)
+                break
+              }
+            } else {
+              const parsed = JSON.parse(message)
+              const delta = parsed.choices[0].delta
+              if (delta.role === "assistant") {
+                dispatch({ type: "SET_ROLE", role: delta.role })
+              }
+              if (delta.content) {
+                dispatch({ type: "APPEND_CONTENT", content: delta.content })
+              }
+              if (parsed.choices[0].finish_reason === "stop") {
+                setIsStreaming(false)
+                setIsDone(true)
+                break
+              }
+            }
+          } catch (error) {
+            console.error(
+              "Could not JSON parse stream message",
+              message,
+              error,
+            )
+          }
         }
       }
+    } catch (error) {
+      console.error("Error in chat completion", error)
+      onError(error)
     }
 
     setIsStreaming(false)

@@ -1,266 +1,323 @@
 import {
+  Channel,
   Operation,
-  action,
-  call,
+  Stream,
+  Task,
   createChannel,
-  createContext,
-  createSignal,
   each,
-  ensure,
   main,
   on,
-  once,
-  resource,
   sleep,
   spawn,
-  suspend,
 } from "effection"
+import { css } from "./css.js"
+import {
+  append,
+  message,
+  pushNode,
+  setNode,
+  spawnWithElement,
+  useMediaRecorder,
+  useMediaStream,
+} from "./kernel.js"
+import { modelsByName, stream } from "./ntchat.js"
+import { tag } from "./tag.js"
+import { WordHypothesis, transcribe } from "./transcribe.js"
+import { WebSocketHandle, useWebSocket } from "./websocket.js"
 
-const bufferContext = createContext("buffer", document.body)
+function* typeMessage(text: string, confidence = 1): Operation<void> {
+  yield* yield* spawnWithElement(
+    tag("message", {
+      style: `opacity: ${confidence}; text-decoration: ${
+        confidence < 0.6 ? "line-through" : "none"
+      }`,
+    }),
 
-function* insert(content: string | Node) {
-  const buffer = yield* bufferContext
-  buffer.append(content)
-}
-
-function* message(...content: (string | Node)[]) {
-  const element = document.createElement("message")
-  element.append(...content)
-  yield* insert(element)
-}
-
-function* enter(element: HTMLElement) {
-  yield* bufferContext.set(element)
-}
-
-function useElement(tagName: string): Operation<HTMLElement> {
-  return resource(function* (provide) {
-    const element = document.createElement(tagName)
-    try {
-      yield* provide(element)
-    } finally {
-      element.remove()
-    }
-  })
-}
-
-function* style(css: string) {
-  const element = yield* useElement("style")
-  element.textContent = css
-  yield* insert(element)
-}
-
-function* useResourceBuffer(title: string) {
-  const element = yield* useElement("resource")
-  yield* insert(element)
-  yield* enter(element)
-  const header = document.createElement("header")
-  header.textContent = title
-  yield* insert(header)
-}
-
-function* withResourceBuffer<T>(
-  title: string,
-  body: () => Operation<T>,
-): Operation<T> {
-  const task = yield* spawn(function* () {
-    yield* useResourceBuffer(title)
-    return yield* body()
-  })
-  return yield* task
-}
-
-function useWebSocket(url: string | URL): Operation<WebSocket> {
-  return resource(function* (provide) {
-    const socket = new WebSocket(url)
-
-    try {
-      yield* useResourceBuffer(`WebSocket ${socket.url}`)
-      yield* spawn(function* () {
-        yield* message("connecting")
-        yield* once(socket, "open")
-        yield* message("connected")
-        yield* once(socket, "close")
-        yield* message("closed")
+    function* (self) {
+      self.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+        inline: "center",
       })
-      yield* provide(socket)
-    } finally {
-      socket.close()
-    }
-  })
-}
 
-function useMediaStream(
-  constraints: MediaStreamConstraints,
-): Operation<MediaStream> {
-  return resource(function* (provide) {
-    const stream: MediaStream = yield* call(
-      navigator.mediaDevices.getUserMedia(constraints),
-    )
-    yield* useResourceBuffer("MediaStream")
-    try {
-      yield* message(`stream ID: ${stream.id}`)
-      for (const track of stream.getTracks()) {
-        const { kind, id } = track
-        yield* message(`track ${kind} ${id}`)
-      }
-      yield* spawn(function* () {
-        for (const event of yield* each(on(stream, "addtrack"))) {
-          yield* message(`track added: ${event.track.kind}`)
+      requestAnimationFrame(() => {
+        self.classList.add("started")
+      })
+
+      for (const char of text) {
+        self.textContent += char
+
+        let delay = 20
+        if (char === "." || char === "!" || char === "?") {
+          delay = 200 * Math.sin(Date.now() / 100) + 150
+        } else if (char === ",") {
+          delay = 70 * Math.sin(Date.now() / 50) + 75
         }
-      })
-      yield* spawn(function* () {
-        for (const event of yield* each(on(stream, "removetrack"))) {
-          yield* message(`track removed: ${event.track.kind}`)
-        }
-      })
-      yield* provide(stream)
-    } finally {
-      for (const track of stream.getTracks()) {
-        yield* message(`stopping ${track.kind}`)
-        track.stop()
+
+        yield* sleep(delay)
       }
-    }
-  })
+
+      self.classList.add("finished")
+    },
+  )
 }
 
-function useMediaRecorder(
+function* spawnVideoStream(
   stream: MediaStream,
-  options: MediaRecorderOptions,
-): Operation<MediaRecorder> {
-  return resource(function* (provide) {
-    const recorder = new MediaRecorder(stream, options)
-    yield* useResourceBuffer("MediaRecorder")
-    try {
-      yield* message(`recorder state: ${recorder.state}`)
-      yield* spawn(function* () {
-        for (const event of yield* each(on(recorder, "start"))) {
-          yield* message(`started recording`)
-          yield* each.next()
+  interimChannel: Channel<WordHypothesis[], void>,
+  finalWordsChannel: Channel<WordHypothesis[], void>,
+): Operation<void> {
+  const article = tag(
+    "article",
+    {},
+    tag("video", {
+      srcObject: stream,
+      autoplay: true,
+      oncanplay: function () {
+        this.muted = true
+      },
+      onClick: function () {
+        if (this.requestFullscreen) {
+          this.requestFullscreen()
         }
-      })
-      yield* spawn(function* () {
-        for (const event of yield* each(on(recorder, "stop"))) {
-          yield* message(`stopped recording`)
-          yield* each.next()
-        }
-      })
-      yield* spawn(function* () {
-        for (const event of yield* each(on(recorder, "dataavailable"))) {
-          yield* each.next()
-        }
-      })
-      yield* provide(recorder)
-    } finally {
-      if (recorder.state !== "inactive") {
-        recorder.stop()
-      }
-    }
-  })
-}
-
-function* actionButton(label: string): Operation<void> {
-  const button = yield* useElement("button")
-  button.textContent = label
-  yield* message(button)
-  yield* once(button, "click")
-  button.setAttribute("disabled", "")
-}
-
-await main(function* () {
-  yield* style(`
-    message::before { content: "✱ "; }
-    resource, message { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-    resource { flex-direction: column; }
-    resource { border: 2px solid black; padding: 0.5rem; }
-    resource > header { font-weight: bold; }
-    resource > header::before { content: "🛜 "; }
-  `)
-  yield* useResourceBuffer("swa.sh")
-
-  const stream = yield* useMediaStream({ audio: true, video: false })
-
-  for (;;) {
-    yield* actionButton("start")
-    const blobs = yield* withResourceBuffer("session", function* () {
-      const socket = yield* useWebSocket("wss://swash2.less.rest/transcribe")
-
-      yield* once(socket, "open")
-      yield* message("socket open")
-
-      const recorder = yield* useMediaRecorder(stream, {
-        mimeType: "audio/webm",
-      })
-
-      recorder.start(100)
-      yield* message("recording")
-
-      let blobs: Blob[] = []
-      yield* spawn(function* () {
-        for (const event of yield* each(on(recorder, "dataavailable"))) {
-          blobs.push(event.data)
-          socket.send(event.data)
-          yield* each.next()
-        }
-      })
-
-      // listen for socket messages
-      yield* spawn(function* () {
-        for (const event of yield* each(on(socket, "message"))) {
-          const json = JSON.parse(event.data)
-          console.log(json)
-          if (json.type === "Results") {
-            const { transcript } = json.channel.alternatives[0]
-            if (transcript) {
-              yield* message(transcript)
-            }
-          }
-          yield* each.next()
-        }
-      })
-
-      yield* actionButton("stop")
-      recorder.stop()
-      yield* message("stopped")
-      return blobs
-    })
-
-    const audio = new Audio()
-    audio.src = URL.createObjectURL(new Blob(blobs))
-    audio.controls = true
-    yield* message(audio)
-
-    const formData = new FormData()
-    formData.append("file", new Blob(blobs))
-
-    const { words, transcript } = yield* transcribeWithWhisperDeepgram(blobs)
-
-    const wordSpans = document.createElement("span")
-    for (const { punctuated_word, start, end, confidence } of words) {
-      const innerSpan = document.createElement("span")
-      innerSpan.textContent = punctuated_word + " "
-      innerSpan.style.opacity = `${confidence}`
-      wordSpans.appendChild(innerSpan)
-    }
-    yield* message(wordSpans)
-  }
-})
-function* transcribeWithWhisperDeepgram(blobs: Blob[]) {
-  const formData = new FormData()
-  formData.append("file", new Blob(blobs))
-
-  const response = yield* call(
-    fetch("/whisper-deepgram?language=en", {
-      method: "POST",
-      body: formData,
+      },
     }),
   )
-
-  if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`)
-  }
-
-  const result = yield* call(response.json())
-  console.log(result)
-  return result.results.channels[0].alternatives[0]
+  yield* append(article)
+  yield* spawnTextOverlay(article, interimChannel, finalWordsChannel)
 }
+
+function* spawnTextOverlay(
+  article: HTMLElement,
+  interim: Stream<WordHypothesis[], void>,
+  phrases: Stream<WordHypothesis[], void>,
+): Operation<void> {
+  yield* spawn(function* () {
+    yield* setNode(article)
+    yield* pushNode(tag("p"))
+
+    let t = 0
+    let i = 1
+
+    let messages: { role: "user" | "assistant"; content: string }[] = []
+
+    for (let words of yield* each(phrases)) {
+      const phrase = words.map(({ word }) => word).join(" ")
+      if (phrase === "clear screen") {
+        article.querySelectorAll("message").forEach((message) => {
+          message.remove()
+        })
+
+        yield* each.next()
+        continue
+      }
+
+      let t1 = Date.now()
+      let dt = t ? t1 - t : 0
+
+      if (dt > 5000 || i === 1) {
+        // if the last message didn't end with punctuation,
+        // add an em dash
+        const lastMessage = article.querySelector("message:last-child")
+        if (lastMessage && lastMessage.textContent) {
+          const text = lastMessage.textContent.trim()
+          if (!text.match(/[.!?]/)) {
+            lastMessage.textContent = text + "—"
+          }
+        }
+
+        yield* append(tag("hr"))
+        yield* append(
+          tag(
+            "message",
+            {
+              class: "started finished",
+              style:
+                "font-size: 80%; padding: 0 1rem; opacity: 0.7; font-weight: bold;",
+            },
+            `❡${i++} `,
+          ),
+        )
+      }
+
+      messages.push({ role: "user", content: phrase })
+
+      const subscription = yield* stream(modelsByName["Claude III Opus"], {
+        temperature: 1,
+        maxTokens: 512,
+        systemMessage: `You are Claude III Opus, a noble and wise interlocutor, patient, concise, and calm. 
+           Respond with a single sentence. Hesitate to offer help or advice.
+           Primarily, you are here to acknowledge, mirror, and listen.`,
+        messages,
+      })
+
+      for (const word of words) {
+        yield* typeMessage(word.punctuated_word + " ", word.confidence)
+      }
+
+      yield* yield* spawn(function* () {
+        yield* pushNode(
+          tag("aside", {
+            style:
+              "font-style: italic; white-space: pre-wrap;  padding: .25em .5em; font-size: 80%;",
+          }),
+        )
+        let next = yield* subscription.next()
+        let response = ""
+        while (!next.done && next.value) {
+          const { content } = next.value
+          response += content
+          console.info("Received response:", content)
+          yield* typeMessage(content, 1)
+          next = yield* subscription.next()
+        }
+
+        messages.push({ role: "assistant", content: response })
+      })
+
+      t = t1
+
+      yield* each.next()
+    }
+  })
+}
+
+function* recordingSession(stream: MediaStream): Operation<void> {
+  const audioStream = new MediaStream(stream.getAudioTracks())
+  let language = "en"
+
+  const interimChannel = createChannel<WordHypothesis[]>()
+  const phraseChannel = createChannel<WordHypothesis[]>()
+
+  yield* spawnVideoStream(stream, interimChannel, phraseChannel)
+
+  for (;;) {
+    console.log("Starting session", language)
+    const task = yield* spawn(function* () {
+      const socket = yield* useWebSocket(
+        `wss://swash2.less.rest/transcribe?language=${language}`,
+      )
+
+      const recorder = yield* useMediaRecorder(audioStream, {
+        mimeType: "audio/webm;codecs=opus",
+        audioBitsPerSecond: 64000,
+      })
+      recorder.start(100)
+
+      let blobs: Blob[] = []
+
+      yield* spawn(function* () {
+        yield* foreach(on(recorder, "dataavailable"), function* ({ data }) {
+          blobs.push(data)
+          yield* socket.send(data)
+        })
+      })
+
+      yield* spawnSocketMessageListener(socket, interimChannel, phraseChannel)
+      yield* spawnVoiceCommandListener(phraseChannel, blobs)
+
+      for (let words of yield* each(phraseChannel)) {
+        const phrase = words.map(({ word }) => word).join(" ")
+        if (phrase === "swedish please") {
+          language = "sv"
+          break
+        } else if (phrase === "engelska tack") {
+          language = "en"
+          break
+        }
+
+        yield* each.next()
+      }
+    })
+
+    yield* task
+  }
+}
+
+function* spawnVoiceCommandListener(
+  finalWordsChannel: Channel<WordHypothesis[], void>,
+  blobs: Blob[],
+): Operation<void> {
+  yield* spawn(function* () {
+    while (true) {
+      yield* waitForSpecificPhrase(finalWordsChannel, "fix it up")
+      const { words } = yield* transcribe(blobs)
+      yield* message(
+        words.map(({ punctuated_word }) => punctuated_word).join(" "),
+      )
+    }
+  })
+
+  yield* spawn(function* () {
+    yield* waitForSpecificPhrase(finalWordsChannel, "reload")
+    document.location.reload()
+  })
+}
+
+function* waitForSpecificPhrase(
+  finalWordsChannel: Channel<WordHypothesis[], void>,
+  phrase: string,
+): Operation<void> {
+  let subscription = yield* finalWordsChannel
+  while (true) {
+    let { value } = yield* subscription.next()
+    if (!value) {
+      throw new Error("Channel closed")
+    } else {
+      const spokenPhrase = value.map(({ word }) => word).join(" ")
+      if (spokenPhrase === phrase) {
+        return
+      }
+    }
+  }
+}
+
+function* foreach<T, R>(
+  stream: Stream<T, R>,
+  callback: (value: T) => Operation<void>,
+): Operation<void> {
+  for (let event of yield* each(stream)) {
+    yield* callback(event)
+    yield* each.next()
+  }
+}
+
+function* spawnSocketMessageListener(
+  socket: WebSocketHandle,
+  interimChannel: Channel<WordHypothesis[], void>,
+  finalWordsChannel: Channel<WordHypothesis[], void>,
+): Operation<Task<void>> {
+  return yield* spawn(function* () {
+    for (const event of yield* each(socket)) {
+      const data = JSON.parse(event.data)
+      if (data.type === "Results" && data.channel) {
+        const {
+          alternatives: [{ transcript, words }],
+        } = data.channel
+        if (transcript) {
+          if (data.is_final) {
+            yield* finalWordsChannel.send(words)
+            yield* interimChannel.send([])
+          } else {
+            yield* interimChannel.send(words)
+          }
+        }
+      }
+      yield* each.next()
+    }
+  })
+}
+
+function* app() {
+  yield* pushNode(tag("app", {}, tag("style", {}, css)))
+
+  const stream = yield* useMediaStream({ audio: true, video: true })
+
+  for (;;) {
+    yield* recordingSession(stream)
+  }
+}
+
+document.addEventListener("DOMContentLoaded", async function () {
+  await main(app)
+})

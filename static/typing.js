@@ -1,5 +1,5 @@
-import { useState, useEffect } from "preact/hooks"
 import GraphemeSplitter from "grapheme-splitter"
+import { useEffect, useState } from "preact/hooks"
 
 const splitter = new GraphemeSplitter()
 const typingSpeed = 50 // Typing speed in graphemes per second
@@ -36,7 +36,7 @@ export function useTypingEffect(text) {
       intervalId = setInterval(() => {
         setDisplayedLength((prevLength) => prevLength + 1)
       }, delay)
-    } else if (delta < 0) {
+    } else if (delta < -1) {
       setDisplayedLength(maxLength)
     }
 
