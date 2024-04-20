@@ -12,6 +12,8 @@ import {
 } from "effection"
 import {
   append,
+  clear,
+  foreach,
   message,
   pushNode,
   setNode,
@@ -91,6 +93,18 @@ function* spawnTextOverlay(
   interim: Stream<WordHypothesis[], void>,
   phrases: Stream<WordHypothesis[], void>,
 ): Operation<void> {
+  // show the current interim in an aside tag
+  yield* spawn(function* () {
+    yield* setNode(article)
+    yield* pushNode(
+      tag("aside", { style: "font-style: italic; display: none" }),
+    )
+    yield* foreach(interim, function* (words) {
+      yield* clear()
+      yield* message(words.map(({ word }) => word).join(" "))
+    })
+  })
+
   yield* spawn(function* () {
     yield* setNode(article)
     yield* pushNode(tag("p"))
@@ -268,16 +282,6 @@ function* waitForSpecificPhrase(
         return
       }
     }
-  }
-}
-
-function* foreach<T, R>(
-  stream: Stream<T, R>,
-  callback: (value: T) => Operation<void>,
-): Operation<void> {
-  for (let event of yield* each(stream)) {
-    yield* callback(event)
-    yield* each.next()
   }
 }
 

@@ -87,12 +87,12 @@ p {
   margin: 0;
 }
 
-article message {
+article p message {
   transition: opacity 1s ease-in-out;
   opacity: 0;
 }
 
-article message.started {
+article p message.started {
   opacity: 1;
 }
 

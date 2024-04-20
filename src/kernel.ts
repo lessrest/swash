@@ -1,8 +1,10 @@
 import {
   Operation,
+  Stream,
   Task,
   call,
   createContext,
+  each,
   once,
   resource,
   spawn,
@@ -133,4 +135,13 @@ export function useMediaRecorder(
       }
     }
   })
+}
+export function* foreach<T, R>(
+  stream: Stream<T, R>,
+  callback: (value: T) => Operation<void>,
+): Operation<void> {
+  for (let event of yield* each(stream)) {
+    yield* callback(event)
+    yield* each.next()
+  }
 }
