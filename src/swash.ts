@@ -208,7 +208,7 @@ function* recordingSession(stream: MediaStream): Operation<void> {
     console.log("Starting session", language)
     const task = yield* spawn(function* () {
       const socket = yield* useWebSocket(
-        `${document.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${document.location.host}/transcribe?language=${language}`,
+        getWebSocketUrl(language),
       )
 
       const recorder = yield* useMediaRecorder(audioStream, {
@@ -324,3 +324,6 @@ function* app() {
 document.addEventListener("DOMContentLoaded", async function () {
   await main(app)
 })
+function getWebSocketUrl(language: string): string {
+  return `${document.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${document.location.host}/transcribe?language=${language}`
+}
