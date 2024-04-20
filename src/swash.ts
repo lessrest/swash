@@ -117,10 +117,7 @@ function* spawnTextOverlay(
     for (let words of yield* each(phrases)) {
       const phrase = words.map(({ word }) => word).join(" ")
       if (phrase === "clear screen") {
-        article.querySelectorAll("message").forEach((message) => {
-          message.remove()
-        })
-
+        yield* handleClearScreenCommand(article)
         yield* each.next()
         continue
       }
@@ -129,28 +126,7 @@ function* spawnTextOverlay(
       let dt = t ? t1 - t : 0
 
       if (dt > 5000 || i === 1) {
-        // if the last message didn't end with punctuation,
-        // add an em dash
-        const lastMessage = article.querySelector("message:last-child")
-        if (lastMessage && lastMessage.textContent) {
-          const text = lastMessage.textContent.trim()
-          if (!text.match(/[.!?]/)) {
-            lastMessage.textContent = text + "—"
-          }
-        }
-
-        yield* append(tag("hr"))
-        yield* append(
-          tag(
-            "message",
-            {
-              class: "started finished",
-              style:
-                "font-size: 80%; padding: 0 1rem; opacity: 0.7; font-weight: bold;",
-            },
-            `❡${i++} `,
-          ),
-        )
+        yield* addMessageSeparator(article, i++)
       }
 
       messages.push({ role: "user", content: phrase })
@@ -168,30 +144,68 @@ function* spawnTextOverlay(
         yield* typeMessage(word.punctuated_word + " ", word.confidence)
       }
 
-      yield* yield* spawn(function* () {
-        yield* pushNode(
-          tag("aside", {
-            style:
-              "font-style: italic; white-space: pre-wrap;  padding: .25em .5em; font-size: 80%;",
-          }),
-        )
-        let next = yield* subscription.next()
-        let response = ""
-        while (!next.done && next.value) {
-          const { content } = next.value
-          response += content
-          console.info("Received response:", content)
-          yield* typeMessage(content, 1)
-          next = yield* subscription.next()
-        }
-
-        messages.push({ role: "assistant", content: response })
-      })
+      yield* streamModelResponse(subscription, messages)
 
       t = t1
 
       yield* each.next()
     }
+  })
+}
+
+function* handleClearScreenCommand(article: HTMLElement): Operation<void> {
+  article.querySelectorAll("message").forEach((message) => {
+    message.remove()
+  })
+}
+
+function* addMessageSeparator(article: HTMLElement, index: number): Operation<void> {
+  // if the last message didn't end with punctuation,
+  // add an em dash
+  const lastMessage = article.querySelector("message:last-child")
+  if (lastMessage && lastMessage.textContent) {
+    const text = lastMessage.textContent.trim()
+    if (!text.match(/[.!?]/)) {
+      lastMessage.textContent = text + "—"
+    }
+  }
+
+  yield* append(tag("hr"))
+  yield* append(
+    tag(
+      "message",
+      {
+        class: "started finished",
+        style:
+          "font-size: 80%; padding: 0 1rem; opacity: 0.7; font-weight: bold;",
+      },
+      `❡${index} `,
+    ),
+  )
+}
+
+function* streamModelResponse(
+  subscription: Stream<{ content: string }, void>,
+  messages: { role: "user" | "assistant"; content: string }[],
+): Operation<void> {
+  yield* yield* spawn(function* () {
+    yield* pushNode(
+      tag("aside", {
+        style:
+          "font-style: italic; white-space: pre-wrap;  padding: .25em .5em; font-size: 80%;",
+      }),
+    )
+    let next = yield* subscription.next()
+    let response = ""
+    while (!next.done && next.value) {
+      const { content } = next.value
+      response += content
+      console.info("Received response:", content)
+      yield* typeMessage(content, 1)
+      next = yield* subscription.next()
+    }
+
+    messages.push({ role: "assistant", content: response })
   })
 }
 
