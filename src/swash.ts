@@ -2,6 +2,7 @@ import {
   Channel,
   Operation,
   Stream,
+  Subscription,
   Task,
   call,
   createChannel,
@@ -11,20 +12,22 @@ import {
   resource,
   sleep,
   spawn,
+  suspend,
 } from "effection"
+
 import {
   append,
-  clear,
   foreach,
   message,
   pushNode,
   setNode,
   spawnWithElement,
-} from "./kernel.js"
-import { modelsByName, stream } from "./llm.js"
+} from "./kernel.ts"
 
-import { tag } from "./tag.js"
-import { WebSocketHandle, useWebSocket } from "./websocket.js"
+import { modelsByName, stream } from "./llm.ts"
+import { tag } from "./tag.ts"
+import { Epoch, info, task } from "./task.ts"
+import { WebSocketHandle, useWebSocket } from "./websocket.ts"
 
 function* typeMessage(text: string, confidence = 1): Operation<void> {
   yield* yield* spawnWithElement(
@@ -63,48 +66,40 @@ function* typeMessage(text: string, confidence = 1): Operation<void> {
   )
 }
 
-function* spawnVideoStream(
+function* spawnSpeechDocument(
   stream: MediaStream,
   interimChannel: Channel<WordHypothesis[], void>,
   finalWordsChannel: Channel<WordHypothesis[], void>,
 ): Operation<void> {
-  const article = tag(
-    "article",
-    {},
-    tag("video", {
-      srcObject: stream,
-      autoplay: true,
-      oncanplay: function () {
-        this.muted = true
-      },
-      onClick: function () {
-        if (this.requestFullscreen) {
-          this.requestFullscreen()
-        }
-      },
-    }),
-  )
+  const article = tag("article", {}, videoTag(stream))
   yield* append(article)
-  yield* spawnTextOverlay(article, interimChannel, finalWordsChannel)
+  yield* spawnSpeechDocumentProcess(
+    article,
+    interimChannel,
+    finalWordsChannel,
+  )
 }
 
-function* spawnTextOverlay(
+function videoTag(stream: MediaStream): HTMLElement {
+  return tag("video", {
+    srcObject: stream,
+    autoplay: true,
+    oncanplay: function () {
+      this.muted = true
+    },
+    onClick: function () {
+      if (this.requestFullscreen) {
+        this.requestFullscreen()
+      }
+    },
+  })
+}
+
+function* spawnSpeechDocumentProcess(
   article: HTMLElement,
-  interim: Stream<WordHypothesis[], void>,
+  _interim: Stream<WordHypothesis[], void>,
   phrases: Stream<WordHypothesis[], void>,
 ): Operation<void> {
-  // show the current interim in an aside tag
-  yield* spawn(function* () {
-    yield* setNode(article)
-    yield* pushNode(
-      tag("aside", { style: "font-style: italic; display: none" }),
-    )
-    yield* foreach(interim, function* (words) {
-      yield* clear()
-      yield* message(words.map(({ word }) => word).join(" "))
-    })
-  })
-
   yield* spawn(function* () {
     yield* setNode(article)
     yield* pushNode(tag("p"))
@@ -112,39 +107,80 @@ function* spawnTextOverlay(
     let t = 0
     let i = 1
 
-    let messages: { role: "user" | "assistant"; content: string }[] = []
+    const messages: { role: "user" | "assistant"; content: string }[] = []
+    let nextMessage = ""
 
-    for (let words of yield* each(phrases)) {
+    for (const words of yield* each(phrases)) {
       const phrase = words.map(({ word }) => word).join(" ")
       if (phrase === "clear screen") {
-        yield* handleClearScreenCommand(article)
+        article.querySelectorAll("message").forEach((message) => {
+          message.remove()
+        })
         yield* each.next()
         continue
       }
 
-      let t1 = Date.now()
-      let dt = t ? t1 - t : 0
+      const punctuatedPhrase = words
+        .map(({ punctuated_word }) => punctuated_word)
+        .join(" ")
+
+      const t1 = Date.now()
+      const dt = t ? t1 - t : 0
 
       if (dt > 5000 || i === 1) {
+        yield* info("decides to add message separator at", new Date())
         yield* addMessageSeparator(article, i++)
       }
 
-      messages.push({ role: "user", content: phrase })
+      //     const systemMessage = `1. Assistant Role and Characteristics
+      //     1.1 You are a helpful, thoughtful, and creative assistant.
+      //     1.2 Your role is to engage in conversation with the human user to help them develop a quest log dashboard system for managing their home, family life, and personal goals.
+      //     1.3 The system should be imbued with beauty, story, and respect for the meaningful objects and centers that make up their life.
 
-      const subscription = yield* stream(modelsByName["Claude III Opus"], {
-        temperature: 1,
-        maxTokens: 512,
-        systemMessage: `You are Claude III Opus, a noble and wise interlocutor, patient, concise, and calm. 
-           Respond with a single sentence. Hesitate to offer help or advice.
-           Primarily, you are here to acknowledge, mirror, and listen.`,
-        messages,
-      })
+      //  2. Conversation Medium and Considerations
+      //     2.1 The conversation takes place via a live transcription system, so the user's input may contain some inaccuracies or anomalies.
+      //     2.2 When you notice these, tactfully clarify the user's intended meaning.
 
-      for (const word of words) {
-        yield* typeMessage(word.punctuated_word + " ", word.confidence)
+      //  3. System Definition and Inspiration
+      //     3.1 In this conversation, we will work to define a system of interlinked cards representing meaningful centers and the quests, tasks, and aspirations associated with them.
+      //     3.2 The system should have qualities reminiscent of a quest log and inventory in a beautifully-crafted action RPG video game.
+      //     3.3 The system should evoke the ideas of thinkers like Christopher Alexander, Graham Nelson, and Hubert Dreyfus through mood and atmosphere, rather than direct reference.
+      //     3.4 The cards are reminiscent of the patterns in a pattern language, and are hypertext or hypermedia in nature.
+
+      //  5. Tone and Collaboration
+      //     5.1 Throughout, adopt a gentle, playful, and literary tone while maintaining focus on the practical goal of creating an aspirational yet functional system for this family's domestic life.
+      //     5.2 Engage the user collaboratively and draw connections between the various concepts and values they express.
+      //     5.3 Be tactful and mindful of timing, cadence, concision; take it easy, one thing at a time.
+      //  `
+
+      const systemMessage =
+        "Help the user formulate their thoughts. Be concise. Just rephrase, clarify, summarize."
+
+      if (phrase === "over") {
+        yield* info("believed user was done speaking at", new Date())
+        messages.push({ role: "user", content: nextMessage })
+        nextMessage = ""
+
+        const response = yield* stream(modelsByName["Claude III Opus"], {
+          temperature: 0.6,
+          maxTokens: 1024,
+          systemMessage,
+          messages,
+        })
+
+        yield* info("began displaying transcription at", new Date())
+        for (const word of words) {
+          yield* typeMessage(word.punctuated_word + " ", word.confidence)
+        }
+
+        yield* info("began displaying LLM response at", new Date())
+        yield* streamModelResponse(response, messages)
+      } else {
+        nextMessage += punctuatedPhrase
+        for (const word of words) {
+          yield* typeMessage(word.punctuated_word + " ", word.confidence)
+        }
       }
-
-      yield* streamModelResponse(subscription, messages)
 
       t = t1
 
@@ -153,13 +189,10 @@ function* spawnTextOverlay(
   })
 }
 
-function* handleClearScreenCommand(article: HTMLElement): Operation<void> {
-  article.querySelectorAll("message").forEach((message) => {
-    message.remove()
-  })
-}
-
-function* addMessageSeparator(article: HTMLElement, index: number): Operation<void> {
+function* addMessageSeparator(
+  article: HTMLElement,
+  index: number,
+): Operation<void> {
   // if the last message didn't end with punctuation,
   // add an em dash
   const lastMessage = article.querySelector("message:last-child")
@@ -184,11 +217,11 @@ function* addMessageSeparator(article: HTMLElement, index: number): Operation<vo
   )
 }
 
-function* streamModelResponse(
-  subscription: Stream<{ content: string }, void>,
+export function* streamModelResponse(
+  subscription: Subscription<{ content: string }, void>,
   messages: { role: "user" | "assistant"; content: string }[],
 ): Operation<void> {
-  yield* yield* spawn(function* () {
+  yield* yield* task("a streaming chat response view", function* () {
     yield* pushNode(
       tag("aside", {
         style:
@@ -200,10 +233,10 @@ function* streamModelResponse(
     while (!next.done && next.value) {
       const { content } = next.value
       response += content
-      console.info("Received response:", content)
       yield* typeMessage(content, 1)
       next = yield* subscription.next()
     }
+    yield* info("received response", { text: response })
 
     messages.push({ role: "assistant", content: response })
   })
@@ -216,22 +249,31 @@ function* recordingSession(stream: MediaStream): Operation<void> {
   const interimChannel = createChannel<WordHypothesis[]>()
   const phraseChannel = createChannel<WordHypothesis[]>()
 
-  yield* spawnVideoStream(stream, interimChannel, phraseChannel)
+  yield* spawnSpeechDocument(stream, interimChannel, phraseChannel)
 
+  let i = 1
   for (;;) {
-    console.log("Starting session", language)
-    const task = yield* spawn(function* () {
+    yield* Epoch.set(new Date())
+    const task1 = yield* task(`transcription session ${i++}`, function* () {
       const socket = yield* useWebSocket(
-        `${getWebSocketUrl()}/transcribe?language=${language}`,
+        new WebSocket(`${getWebSocketUrl()}/transcribe?language=${language}`),
       )
+
+      yield* info("specifies language with code", language)
+      yield* info("established service connection at", new Date())
 
       const recorder = yield* useMediaRecorder(audioStream, {
         mimeType: "audio/webm;codecs=opus",
         audioBitsPerSecond: 64000,
       })
-      recorder.start(100)
+      recorder.start(300)
 
-      let blobs: Blob[] = []
+      yield* info("started recording at", new Date())
+      yield* info("has audio format", "Opus-compressed WebM container")
+      yield* info("has audio bitrate", recorder.audioBitsPerSecond)
+      yield* info("has audio timeslice", "300ms")
+
+      const blobs: Blob[] = []
 
       yield* spawn(function* () {
         yield* foreach(on(recorder, "dataavailable"), function* ({ data }) {
@@ -243,8 +285,9 @@ function* recordingSession(stream: MediaStream): Operation<void> {
       yield* spawnSocketMessageListener(socket, interimChannel, phraseChannel)
       yield* spawnVoiceCommandListener(phraseChannel, blobs)
 
-      for (let words of yield* each(phraseChannel)) {
+      for (const words of yield* each(phraseChannel)) {
         const phrase = words.map(({ word }) => word).join(" ")
+        yield* info("phrase at", new Date(), `"${phrase}"`)
         if (phrase === "swedish please") {
           language = "sv"
           break
@@ -257,7 +300,7 @@ function* recordingSession(stream: MediaStream): Operation<void> {
       }
     })
 
-    yield* task
+    yield* task1
   }
 }
 
@@ -285,9 +328,9 @@ function* waitForSpecificPhrase(
   finalWordsChannel: Channel<WordHypothesis[], void>,
   phrase: string,
 ): Operation<void> {
-  let subscription = yield* finalWordsChannel
+  const subscription = yield* finalWordsChannel
   while (true) {
-    let { value } = yield* subscription.next()
+    const { value } = yield* subscription.next()
     if (!value) {
       throw new Error("Channel closed")
     } else {
@@ -326,13 +369,17 @@ function* spawnSocketMessageListener(
 }
 
 function* app() {
-  yield* pushNode(tag("app"))
+  yield* task("swa.sh user agent", function* () {
+    yield* pushNode(tag("app"))
 
-  const stream = yield* useMediaStream({ audio: true, video: true })
+    const stream = yield* useMediaStream({ audio: true, video: true })
 
-  for (;;) {
-    yield* recordingSession(stream)
-  }
+    for (;;) {
+      yield* recordingSession(stream)
+    }
+  })
+
+  yield* suspend()
 }
 
 document.addEventListener("DOMContentLoaded", async function () {

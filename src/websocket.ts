@@ -1,3 +1,4 @@
+// deno-lint-ignore-file prefer-const
 import {
   action,
   createChannel,
@@ -15,14 +16,10 @@ export interface WebSocketHandle extends Stream<MessageEvent, CloseEvent> {
   close(code?: number, reason?: string): Operation<void>
 }
 
-export function useWebSocket(
-  url: string | URL,
-  protocols?: string | string[],
-) {
+export function useWebSocket(socket: WebSocket): Operation<WebSocketHandle> {
   return resource<WebSocketHandle>(function* (provide) {
     let input = createChannel<string, { code?: number; reason?: string }>()
     let output = createSignal<MessageEvent, CloseEvent>()
-    let socket = new WebSocket(url, protocols)
 
     yield* spawn(function* () {
       let cause = yield* once(socket, "error")
@@ -45,15 +42,15 @@ export function useWebSocket(
     socket.onmessage = output.send
     socket.onclose = output.close
 
-    yield* once(socket, "open")
+    if (socket.readyState === WebSocket.CONNECTING) {
+      yield* once(socket, "open")
+    }
 
     let handle: WebSocketHandle = {
       send: input.send,
       close: (code, reason) => input.close({ code, reason }),
       [Symbol.iterator]: output[Symbol.iterator],
     }
-
-    //
 
     try {
       yield* action(function* (resolve) {
@@ -75,7 +72,7 @@ export function useWebSocket(
       })
     } finally {
       socket.close(1000)
-      if (socket.readyState !== socket.CLOSED) {
+      if (socket.readyState !== WebSocket.CLOSED) {
         yield* once(socket, "close")
       }
     }

@@ -2,15 +2,14 @@ import {
   Operation,
   Stream,
   Task,
-  call,
   createContext,
   each,
   once,
-  resource,
   spawn,
 } from "effection"
 
-import { tag } from "./tag.js"
+import { tag } from "./tag.ts"
+import { task } from "./task.ts"
 
 export const Target = createContext("target", {
   node: document.body,
@@ -80,7 +79,7 @@ export function* spawnFramedWindow<T>(
   title: string,
   body: (window: HTMLElement) => Operation<T>,
 ): Operation<Task<T>> {
-  return yield* spawn(function* () {
+  return yield* task(title, function* () {
     const window = yield* pushFramedWindow(title)
     try {
       return yield* body(window)
@@ -89,11 +88,12 @@ export function* spawnFramedWindow<T>(
     }
   })
 }
+
 export function* spawnFramedWindow2<T>(
   title: string,
   body: (window: HTMLElement) => Operation<T>,
 ): Operation<Task<T>> {
-  return yield* spawn(function* () {
+  return yield* task(title, function* () {
     const window = yield* pushNode(tag("div", { class: "window2" }, title))
     try {
       return yield* body(window)
@@ -103,44 +103,11 @@ export function* spawnFramedWindow2<T>(
   })
 }
 
-export function useMediaStream(
-  constraints: MediaStreamConstraints,
-): Operation<MediaStream> {
-  return resource(function* (provide) {
-    const stream: MediaStream = yield* call(
-      navigator.mediaDevices.getUserMedia(constraints),
-    )
-    try {
-      yield* provide(stream)
-    } finally {
-      for (const track of stream.getTracks()) {
-        yield* message(`stopping ${track.kind}`)
-        track.stop()
-      }
-    }
-  })
-}
-
-export function useMediaRecorder(
-  stream: MediaStream,
-  options: MediaRecorderOptions,
-): Operation<MediaRecorder> {
-  return resource(function* (provide) {
-    const recorder = new MediaRecorder(stream, options)
-    try {
-      yield* provide(recorder)
-    } finally {
-      if (recorder.state !== "inactive") {
-        recorder.stop()
-      }
-    }
-  })
-}
 export function* foreach<T, R>(
   stream: Stream<T, R>,
   callback: (value: T) => Operation<void>,
 ): Operation<void> {
-  for (let event of yield* each(stream)) {
+  for (const event of yield* each(stream)) {
     yield* callback(event)
     yield* each.next()
   }

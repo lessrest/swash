@@ -1,7 +1,1 @@
-.PHONY: server run
-
-server:
-	go build -o $@ main.go
-
-run: server
-	PORT=3002 ./server
+run:; deno run --unstable-net --allow-env --allow-read --allow-write src/server.ts

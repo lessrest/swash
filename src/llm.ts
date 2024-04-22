@@ -7,6 +7,7 @@ import {
   spawn,
   useAbortSignal,
 } from "effection"
+import { info, task } from "./task.ts"
 
 interface Model {
   name: string
@@ -77,7 +78,8 @@ export function* streamingRequest(
 
     const subscription = yield* channel
 
-    yield* spawn(function* () {
+    yield* task("a streaming HTTP request", function* () {
+      yield* info("uses API endpoint", apiPath)
       const response = yield* call(
         fetch(apiPath, {
           method: "POST",
@@ -106,7 +108,7 @@ export function* streamingRequest(
         const { done, value } = yield* call(reader.read())
 
         if (done) {
-          console.log("Streaming done")
+          yield* info("finished streaming at", new Date())
           break
         }
 
@@ -130,14 +132,11 @@ export function* streamingRequest(
 
           // If the message is "[DONE]", close the channel and break the loop
           if (message === "[DONE]") {
-            console.debug("Received [DONE] message, closing channel")
+            yield* info("received [DONE] message at", new Date())
             yield* channel.close()
             return
           }
 
-          console.debug(
-            `[streamingRequest] Sending message through channel: ${message}`,
-          )
           // Send the message through the channel
           yield* channel.send(message)
         }
@@ -167,7 +166,7 @@ function* streamOpenAI(
 ): Operation<Subscription<MessageState, void>> {
   return yield* resource(function* (provide) {
     const messageSubscription = yield* streamingRequest(
-      "https://swash2.less.rest/openai/v1/chat/completions",
+      "/openai/v1/chat/completions",
       {
         model,
         temperature: requestBody.temperature,
@@ -220,14 +219,8 @@ function* streamAnthropic(
   { model }: Model,
   { temperature, maxTokens, systemMessage, messages }: ChatCompletionRequest,
 ): Operation<Subscription<MessageState, void>> {
-  console.log(
-    `[streamAnthropic] Starting stream with model: ${model}, temperature: ${temperature}, maxTokens: ${maxTokens}, systemMessage: ${systemMessage}, messages: ${JSON.stringify(
-      messages,
-    )}`,
-  )
-
   const messagesSubscription = yield* streamingRequest(
-    "https://swash2.less.rest/anthropic/v1/messages",
+    "/anthropic/v1/messages",
     {
       model,
       temperature,
@@ -248,11 +241,6 @@ function* streamAnthropic(
       try {
         while (!next.done && next.value) {
           const event: AnthropicStreamingResponse = JSON.parse(next.value)
-          console.log(
-            `[streamAnthropic] Received event: ${JSON.stringify(event)}`,
-          )
-
-          console.info(event.type, event)
 
           try {
             switch (event.type) {
@@ -262,9 +250,6 @@ function* streamAnthropic(
                 }
 
                 content += event.delta.text
-                console.log(
-                  `[streamAnthropic] Sending content_block_delta state: role="assistant", content="${content}"`,
-                )
                 yield* stateChannel.send({
                   role: "assistant",
                   content: event.delta.text,
@@ -272,17 +257,11 @@ function* streamAnthropic(
 
                 break
               case "message_stop":
-                console.log(
-                  `[streamAnthropic] Received message_stop event, closing channel`,
-                )
                 return
               default:
-                console.warn(
-                  `[streamAnthropic] Warning: Unhandled event type: ${event.type}`,
-                )
             }
           } catch (e) {
-            console.error(`[streamAnthropic] Error: ${e}`)
+            console.error(e)
           }
 
           next = yield* messagesSubscription.next()
