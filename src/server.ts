@@ -228,8 +228,13 @@ function* useWebSocketClientStream(
       let next = yield* inputs.next()
 
       while (!next.done) {
-        yield* call(writer.write(next.value))
-        next = yield* inputs.next()
+        try {
+          yield* call(writer.write(next.value))
+          next = yield* inputs.next()
+        } catch (error) {
+          yield* info("error sending data", error)
+          return
+        }
       }
 
       yield* info("ran out of inputs at", new Date())
@@ -359,7 +364,9 @@ function* handleRequest(req: Request, seq: number): Operation<Response> {
         bundle("./src/swash.ts", {
           importMap: {
             imports: {
-              effection: "https://esm.sh/effection@3.0.3?target=esnext",
+              "effection": "https://esm.sh/effection@3.0.3?target=esnext",
+              "grapheme-splitter":
+                "https://esm.sh/grapheme-splitter@1.0.4?target=esnext",
             },
           },
           allowRemote: true,
