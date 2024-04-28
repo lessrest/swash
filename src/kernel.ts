@@ -22,10 +22,16 @@ export const Widget = createContext("widget", {
 export function* append(content: string | Node) {
   const { node } = yield* Target
   node.append(content)
+  yield* scrollToBottom()
 }
 
 export function* message(...content: (string | Node)[]) {
   yield* append(tag("message", {}, ...content))
+}
+
+export function* getTarget() {
+  const { node } = yield* Target
+  return node
 }
 
 export function* setNode(element: HTMLElement): Operation<HTMLElement> {
@@ -50,6 +56,11 @@ export function* waitForButton(label: string): Operation<void> {
 export function* clear(): Operation<void> {
   const { node } = yield* Target
   node.replaceChildren()
+}
+
+export function* scrollToBottom() {
+  const { node } = yield* Target
+  node.scrollIntoView({ block: "end", inline: "end", behavior: "smooth" })
 }
 
 export function* spawnWithElement<T>(

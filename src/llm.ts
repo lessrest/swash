@@ -48,6 +48,7 @@ interface ChatCompletionRequest {
   maxTokens: number
   systemMessage?: string
   messages: { role: "user" | "assistant"; content: string }[]
+  stopSequences?: string[]
 }
 
 interface MessageState {
@@ -217,7 +218,13 @@ function* streamOpenAI(
 
 function* streamAnthropic(
   { model }: Model,
-  { temperature, maxTokens, systemMessage, messages }: ChatCompletionRequest,
+  {
+    temperature,
+    maxTokens,
+    systemMessage,
+    stopSequences,
+    messages,
+  }: ChatCompletionRequest,
 ): Operation<Subscription<MessageState, void>> {
   const messagesSubscription = yield* streamingRequest(
     "/anthropic/v1/messages",
@@ -228,6 +235,7 @@ function* streamAnthropic(
       system: systemMessage,
       messages: messages.map(({ role, content }) => ({ role, content })),
       stream: true,
+      stop_sequences: stopSequences || [],
     },
   )
 

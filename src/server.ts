@@ -335,8 +335,52 @@ function* handleAnthropicProxy(
 
   yield* provide(res)
 }
+function* handleWhisperDeepgram(
+  req: Request,
+  provide: (value: Response) => Operation<void>,
+): Operation<void> {
+  const url = new URL(req.url)
+  const formData = yield* call(req.formData())
+  const file = formData.get("file")
+  if (!file || !(file instanceof File)) {
+    yield* provide(new Response("No file uploaded", { status: 400 }))
+    return
+  }
 
-function* handleRequest(req: Request, seq: number): Operation<Response> {
+  const { language = "en-US" } = Object.fromEntries(url.searchParams)
+
+  const audioData = yield* call(file.arrayBuffer())
+
+  const response = yield* call(
+    fetch(
+      `https://api.deepgram.com/v1/listen?model=nova-2&language=${language}&diarize=true&smart_format=true`,
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Token ${deepgramApiKey}`,
+          "Content-Type": "audio/webm",
+        },
+        body: audioData,
+        signal: yield* useAbortSignal(),
+      },
+    ),
+  )
+
+  if (!response.ok) {
+    yield* provide(response)
+    return
+  }
+
+  const result = yield* call(response.json())
+
+  yield* provide(
+    new Response(JSON.stringify(result), {
+      headers: { "Content-Type": "application/json" },
+    }),
+  )
+}
+
+function* handleRequest(req: Request, _seq: number): Operation<Response> {
   return yield* resource(function* (provide) {
     const url = new URL(req.url)
     yield* info("is an", "HTTP request handling process")
@@ -347,16 +391,26 @@ function* handleRequest(req: Request, seq: number): Operation<Response> {
     yield* info("has pathname", url.pathname)
     yield* info("has origin", "[redacted]")
 
-    if (url.pathname === "/transcribe") {
-      yield* handleTranscribe(req, provide)
-    }
+    try {
+      if (url.pathname === "/transcribe") {
+        yield* handleTranscribe(req, provide)
+      }
 
-    if (url.pathname.startsWith("/openai/")) {
-      yield* handleOpenAIProxy(req, provide)
-    }
+      if (url.pathname.startsWith("/openai/")) {
+        yield* handleOpenAIProxy(req, provide)
+      }
 
-    if (url.pathname.startsWith("/anthropic/")) {
-      yield* handleAnthropicProxy(req, provide)
+      if (url.pathname.startsWith("/anthropic/")) {
+        yield* handleAnthropicProxy(req, provide)
+      }
+
+      if (url.pathname.startsWith("/whisper-deepgram")) {
+        yield* handleWhisperDeepgram(req, provide)
+      }
+    } catch (err) {
+      yield* info("failed at", new Date())
+      yield* info("has error", err)
+      yield* provide(new Response("Internal server error", { status: 500 }))
     }
 
     if (url.pathname === "/") {

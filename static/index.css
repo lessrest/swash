@@ -12,6 +12,10 @@ article {
   gap: 0.25rem;
 }
 
+article p:last-of-type {
+  padding-bottom: 1.5rem;
+}
+
 kbd {
   font: inherit;
 }

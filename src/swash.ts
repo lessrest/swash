@@ -4,7 +4,10 @@ import {
   Subscription,
   call,
   createChannel,
+  createContext,
+  createSignal,
   each,
+  ensure,
   main,
   on,
   race,
@@ -14,7 +17,16 @@ import {
   suspend,
 } from "effection"
 
-import { append, foreach, message, pushNode, setNode } from "./kernel.ts"
+import {
+  append,
+  clear,
+  foreach,
+  getTarget,
+  message,
+  pushNode,
+  scrollToBottom,
+  setNode,
+} from "./kernel.ts"
 
 import { modelsByName, stream } from "./llm.ts"
 import { tag } from "./tag.ts"
@@ -23,139 +35,37 @@ import { useWebSocket } from "./websocket.ts"
 
 import GraphemeSplitter from "grapheme-splitter"
 
-const splitter = new GraphemeSplitter()
-
-function* readSpeech(
-  phrases: Stream<WordHypothesis[], void>,
-): Operation<WordHypothesis[]> {
-  let spokenMessage: WordHypothesis[] = []
-
-  yield* info("started reading at", new Date())
-  for (const phrase of yield* each(phrases)) {
-    spokenMessage = [...spokenMessage, ...phrase]
-    const text = punctuatedConcatenation(phrase)
-    yield* info("heard", {
-      text,
-    })
-    if (phrase.every((w) => w.word === "over")) {
-      break
-    } else {
-      yield* info("inserting")
-      yield* insertGraphemesSlowly(text)
-      yield* info("insertied")
-
-      // if text doesn't end with punctuation, add an em dash
-      if (!text.match(/[.!?]$/)) {
-        yield* append("— ")
-      } else {
-        yield* append(" ")
-      }
-
-      yield* info("reading next phrase")
-
-      yield* each.next()
-    }
-  }
-
-  return spokenMessage
-}
-
-function* insertGraphemesSlowly(text: string) {
-  const graphemes = splitter.splitGraphemes(text)
-  for (const g of graphemes) {
-    yield* append(g)
-    if (g.match(/[.!?]/)) {
-      yield* sleep(700)
-    } else if (g === ",") {
-      yield* sleep(400)
-    } else {
-      yield* sleep(20 + Math.random() * 10)
-    }
-  }
-}
-
-function* dialogue(
-  article: HTMLElement,
-  phrases: Stream<WordHypothesis[], void>,
-): Operation<void> {
-  yield* info("has document", article)
-
-  for (;;) {
-    {
-      yield* setNode(article)
-      const p = yield* pushNode(tag("p", { class: "user speaking" }))
-      const speech = yield* readSpeech(phrases)
-      p.classList.remove("speaking")
-      const text = punctuatedConcatenation(speech)
-      yield* info("interlocutor said", {
-        text,
-      })
-      if (plainConcatenation(speech) === "over and out") {
-        return
-      }
-    }
-
-    let messages: { role: "user" | "assistant"; content: string }[] = []
-    for (const paragraph of [...article.querySelectorAll("p")]) {
-      yield* info("has paragraph", paragraph)
-      const content = paragraph.innerHTML
-      const role = paragraph.classList.contains("user") ? "user" : "assistant"
-      messages = [...messages, { role, content }]
-    }
-
-    {
-      yield* setNode(article)
-      const p = yield* pushNode(tag("p", { class: "assistant speaking" }))
-      const response = yield* useChatResponse(messages)
-      let next = yield* response.next()
-      while (!next.done && next.value) {
-        const { content } = next.value
-        const phraseSubscription = yield* phrases
-
-        const result = yield* race([
-          insertGraphemesSlowly(content),
-          phraseSubscription.next(),
-        ])
-
-        if (result) {
-          p.innerText += "—[interruption]"
-          break
-        }
-
-        next = yield* response.next()
-      }
-      p.classList.remove("speaking")
-    }
-  }
-}
-
-function punctuatedConcatenation(speech: WordHypothesis[]) {
-  return speech.map(({ punctuated_word }) => punctuated_word).join(" ")
-}
-
-function plainConcatenation(speech: WordHypothesis[]) {
-  return speech.map(({ word }) => word).join(" ")
-}
-
-function useChatResponse(
-  messages: { role: "user" | "assistant"; content: string }[],
-): Operation<Subscription<{ content: string }, void>> {
-  return stream(modelsByName["Claude III Opus"], {
-    temperature: 0.6,
-    maxTokens: 1024,
-    systemMessage:
-      "Help the user formulate their thoughts. Be concise. Just rephrase, clarify, summarize.",
-    messages,
-  })
-}
-
 const recorderOptions = // check if we can do webm/opus
   MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
     ? { mimeType: "audio/webm;codecs=opus", audioBitsPerSecond: 64000 }
     : { mimeType: "audio/mp4", audioBitsPerSecond: 128000 }
 
+function* app() {
+  yield* task("swa.sh user agent", function* () {
+    yield* pushNode(tag("app"))
+
+    const stream = yield* useMediaStream({ audio: true, video: false })
+
+    for (;;) {
+      yield* recordingSession(stream)
+    }
+  })
+
+  yield* suspend()
+}
+
+const splitter = new GraphemeSplitter()
+
+document.addEventListener("DOMContentLoaded", async function () {
+  await main(app)
+})
+
+const ctxAudioStream = createContext<MediaStream>("audioStream")
+
 function* recordingSession(stream: MediaStream): Operation<void> {
   const audioStream = new MediaStream(stream.getAudioTracks())
+  yield* ctxAudioStream.set(audioStream)
+
   const language = "en"
 
   const interimChannel = createChannel<WordHypothesis[]>()
@@ -199,9 +109,11 @@ function* recordingSession(stream: MediaStream): Operation<void> {
       })
 
       yield* task("socket reader", function* () {
+        // Read incoming JSON events from the transcription service.
         for (const event of yield* each(socket)) {
           const data = JSON.parse(event.data)
-          yield* info("received data", data)
+
+          // Does the event have new transcription results?
           if (data.type === "Results" && data.channel) {
             const {
               alternatives: [{ transcript, words }],
@@ -227,23 +139,223 @@ function* recordingSession(stream: MediaStream): Operation<void> {
   }
 }
 
-function* app() {
-  yield* task("swa.sh user agent", function* () {
-    yield* pushNode(tag("app"))
+// This is like modal editing, a subprocess for entering a section of speech.
+// When the user says "over", it returns with its full transcript, which it
+// has also inserted into the current target.
+function* readSpeech(
+  subscription: Subscription<WordHypothesis[], void>,
+  quick: boolean = false,
+): Operation<string> {
+  const audioStream = yield* ctxAudioStream.get()
+  if (!audioStream) {
+    throw new Error("No audio stream")
+  }
 
-    const stream = yield* useMediaStream({ audio: true, video: true })
+  const gotData = createSignal<void, Blob>()
+  const recorder = yield* useMediaRecorder(audioStream, recorderOptions)
+  recorder.start()
 
-    for (;;) {
-      yield* recordingSession(stream)
+  recorder.ondataavailable = (event) => {
+    gotData.close(event.data)
+  }
+
+  yield* ensure(() => {
+    if (recorder.state !== "inactive") {
+      recorder.stop()
     }
   })
 
-  yield* suspend()
+  yield* info("started reading at", new Date())
+  let next = yield* subscription.next()
+  let result = ""
+  while (!next.done) {
+    const phrase = next.value
+    const text = punctuatedConcatenation(phrase)
+    const plain = plainConcatenation(phrase)
+
+    yield* info("heard", { text })
+
+    if (plain === "over") {
+      recorder.stop()
+      const subscription = yield* gotData
+      const { value } = yield* subscription.next()
+      if (value) {
+        const { words } = yield* transcribe([value], "en")
+        recorder.start()
+        yield* clear()
+        yield* append(punctuatedConcatenation(words.slice(0, -1)))
+      }
+      break
+    } else if (plain === "edit") {
+      yield* edit(subscription)
+    } else {
+      result += plain + " "
+      yield* insertGraphemesSlowly(text)
+
+      // if text doesn't end with punctuation, add an em dash
+      if (!text.match(/[.!?]$/)) {
+        yield* append("— ")
+      } else {
+        yield* append(" ")
+      }
+
+      if (quick) {
+        break
+      }
+    }
+
+    yield* info("reading next phrase")
+    next = yield* subscription.next()
+  }
+
+  return result.trim()
 }
 
-document.addEventListener("DOMContentLoaded", async function () {
-  await main(app)
-})
+function* edit(subscription: Subscription<WordHypothesis[], void>) {
+  // There is a phrase written in the target paragraph as a text node.
+
+  const task = yield* spawn(function* () {
+    const target = yield* getTarget()
+    target.classList.toggle("editing", true)
+    const gadget = yield* pushNode(tag("kbd"))
+
+    try {
+      const desire = yield* readSpeech(subscription, false)
+      const response = yield* stream(modelsByName["Claude III Opus"], {
+        temperature: 0,
+        maxTokens: 1024,
+        systemMessage: "User requested edit to auto-transcribed paragraph.",
+        messages: [
+          {
+            role: "user",
+            content: `<p>${target.innerHTML}</p>
+<edit>${desire}</edit>`,
+          },
+          {
+            role: "assistant",
+            content: "<p edited=true>",
+          },
+        ],
+        stopSequences: ["</p>"],
+      })
+
+      const samp = yield* pushNode(tag("samp"))
+
+      let next = yield* response.next()
+      while (!next.done && next.value) {
+        const { content } = next.value
+        yield* append(content)
+        next = yield* response.next()
+      }
+
+      const kbd2 = yield* pushNode(tag("kbd"))
+      const decision = yield* readSpeech(subscription, true)
+      kbd2.remove()
+      console.log({ decision })
+      if (decision.match(/ok/)) {
+        target.innerHTML = samp.innerText
+      }
+    } finally {
+      target.classList.toggle("editing", false)
+      gadget.remove()
+    }
+  })
+
+  yield* task
+}
+
+function* insertGraphemesSlowly(text: string) {
+  const graphemes = splitter.splitGraphemes(text)
+  for (const g of graphemes) {
+    yield* append(g)
+    yield* scrollToBottom()
+    if (g.match(/[.!?]/)) {
+      yield* sleep(500)
+    } else if (g === ",") {
+      yield* sleep(300)
+    } else {
+      yield* sleep(Math.random() * 10)
+    }
+  }
+}
+
+function* dialogue(
+  article: HTMLElement,
+  phrases: Stream<WordHypothesis[], void>,
+): Operation<void> {
+  yield* info("has document", article)
+
+  for (;;) {
+    {
+      yield* setNode(article)
+      const p = yield* pushNode(tag("p", { class: "user speaking" }))
+
+      const subscription = yield* phrases
+      yield* readSpeech(subscription)
+
+      p.classList.remove("speaking")
+      const text = p.innerText
+      yield* info("user said", { text })
+      if (text === "Over and out.") {
+        return
+      }
+    }
+
+    let messages: { role: "user" | "assistant"; content: string }[] = []
+    for (const paragraph of [...article.querySelectorAll("p")]) {
+      yield* info("has paragraph", paragraph)
+      const content = paragraph.innerHTML
+      const role = paragraph.classList.contains("user") ? "user" : "assistant"
+      messages = [...messages, { role, content }]
+    }
+
+    {
+      yield* setNode(article)
+      const p = yield* pushNode(tag("p", { class: "assistant speaking" }))
+      const response = yield* useChatResponse(messages)
+      let next = yield* response.next()
+      while (!next.done && next.value) {
+        const { content } = next.value
+        const phraseSubscription = yield* phrases
+
+        const result = yield* race([
+          insertGraphemesSlowly(content),
+          phraseSubscription.next(),
+        ])
+
+        if (result && result.value) {
+          const interruption = plainConcatenation(result.value)
+          p.innerText += `—[user interrupts: ${interruption}] `
+          break
+        }
+
+        next = yield* response.next()
+      }
+      p.classList.remove("speaking")
+    }
+  }
+}
+
+function punctuatedConcatenation(speech: WordHypothesis[]) {
+  return speech.map(({ punctuated_word }) => punctuated_word).join(" ")
+}
+
+function plainConcatenation(speech: WordHypothesis[]) {
+  return speech.map(({ word }) => word).join(" ")
+}
+
+function useChatResponse(
+  messages: { role: "user" | "assistant"; content: string }[],
+): Operation<Subscription<{ content: string }, void>> {
+  return stream(modelsByName["Claude III Opus"], {
+    temperature: 0.6,
+    maxTokens: 1024,
+    systemMessage:
+      "Help the user formulate their thoughts. Be concise. Just rephrase, clarify, summarize.",
+    messages,
+  })
+}
+
 function getWebSocketUrl(): string {
   return `${document.location.protocol === "https:" ? "wss:" : "ws:"}//${
     document.location.host

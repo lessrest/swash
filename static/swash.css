@@ -7,7 +7,7 @@ body {
   background-color: #000;
   color: ivory;
   margin: 0;
-  font: 24px/1.4 "Big Caslon";
+  font: 24px/1.5 "Big Caslon";
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue",
     sans-serif;
@@ -56,27 +56,37 @@ article p message.started {
   opacity: 1;
 }
 
-p {
+p,
+kbd,
+samp {
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 0.25em solid transparent;
+  padding-left: 0.5em;
+  min-width: 1em;
+  min-height: 1.5em;
 }
 
 p.assistant {
-  padding-left: 1em;
-  font-family: "Big Caslon", serif;
-  font-size: 90%;
   opacity: 0.8;
   white-space: pre-line;
+  font-weight: 400;
 }
 
-p.speaking::after {
-  display: inline-block;
-  content: " 🔮";
-  padding-left: 0.5em;
-  animation: blink 3s ease-in-out infinite;
+.speaking.user {
+  border-left: 0.25em solid #ff9999;
 }
 
-p.speaking.user::after {
-  content: " 🎙️";
+.speaking.assistant {
+  border-left: 0.25em solid #99ff99;
+}
+
+kbd {
+  border-color: #3ff;
+}
+samp {
+  border-color: #8f4;
 }
 
 span.over {
@@ -97,4 +107,15 @@ span.over {
   100% {
     transform: rotate(-3deg);
   }
+}
+
+kbd,
+samp {
+  font: inherit;
+}
+kbd {
+  font-style: italic;
+}
+samp {
+  font-style: normal;
 }
