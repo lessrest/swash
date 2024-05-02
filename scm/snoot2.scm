@@ -16,44 +16,66 @@
 ;;
 ;; We use a prompt to implement this.
 
-(use-modules (ice-9 match))
+(import 
+ (scheme base)
+ (scheme write)
+ (hoot ffi)
+ (only (hoot control) make-prompt-tag call-with-prompt abort-to-prompt))
 
-(define task-tag (make-prompt-tag 'task))
+(let ()
+  (define task-tag (make-prompt-tag 'task))
 
-(define (info . items)
-  (abort-to-prompt task-tag 'display)
-  (newline)
-  (display items)
-  (newline))
+  (define-foreign console-log
+	"console" "log"
+	(ref string) -> none)
 
-(define (nest id continuation)
-  (call-with-prompt task-tag
-	continuation
-	(match-lambda*
-	  ((k 'display)
-	   (begin
-		 (abort-to-prompt task-tag 'display)
-		 (display id)
-		 (display " ")
-		 (nest id k)))
-	  ((k 'suspend)
-	   ;; this is really the core of the thing...
-	   ;; we're going to save the continuation...
-	   ;; and then call it later...
-	   ;; tricky business...
-		   ))))
+  (define-foreign console-group
+	"console" "group"
+	(ref string) -> none)
 
-(define (root continuation)
-  (call-with-prompt task-tag 
-	continuation
-	(match-lambda*
-	  ((k 'display)
-	   (display "% ")
-	   (root k)))))
+  (define-foreign console-group-end
+	"console" "groupEnd"
+	-> none)
 
-(root 
-	(lambda ()
-	  (nest 'foo (lambda ()
-				   (info "hello")
-				   (nest 'bar (lambda ()
-								(info "world")))))))
+  (define (to-string x)
+	(let ((output (open-output-string)))
+	  (parameterize ((current-output-port output))
+		(display x))
+	  (get-output-string output)))
+  
+  (define (log . items) 
+	(console-log (apply string-append (map to-string items))))
+
+  (define info (lambda items 
+				 (abort-to-prompt task-tag 'display)
+				 (log items)))
+
+  (define (nest id continuation)
+	(call-with-prompt task-tag
+      continuation
+      (lambda (k v)
+		(cond
+         ((eq? v 'display)
+          (begin
+			(abort-to-prompt task-tag 'display)
+			(console-group (to-string id))
+			(nest id k)
+			(console-group-end)))))))
+
+  (define (root continuation)
+	(call-with-prompt task-tag 
+	  continuation
+	  (lambda (k v)
+		(cond
+		 ((eq? v 'display)
+		  (begin 
+			(console-group "%") 
+			(root k)
+			(console-group-end)))))))
+
+  (root 
+	  (lambda ()
+		(nest 'foo (lambda ()
+					 (info "hello")
+					 (nest 'bar (lambda ()
+								  (info "world"))))))))
