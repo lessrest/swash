@@ -1,4 +1,5 @@
 import {
+  Channel,
   Operation,
   Stream,
   Subscription,
@@ -28,26 +29,33 @@ import {
   setNode,
 } from "./kernel.ts"
 
-import { modelsByName, stream } from "./llm.ts"
+import { ChatMessage, modelsByName, stream } from "./llm.ts"
 import { tag } from "./tag.ts"
 import { Epoch, info, task } from "./task.ts"
 import { useWebSocket } from "./websocket.ts"
 
 import GraphemeSplitter from "grapheme-splitter"
+import { TelegramService } from "./telegram-service.ts"
 
-const recorderOptions = // check if we can do webm/opus
-  MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-    ? { mimeType: "audio/webm;codecs=opus", audioBitsPerSecond: 64000 }
-    : { mimeType: "audio/mp4", audioBitsPerSecond: 128000 }
+const recorderOptions: MediaRecorderOptions = MediaRecorder.isTypeSupported(
+  "audio/webm;codecs=opus",
+)
+  ? { mimeType: "audio/webm;codecs=opus", audioBitsPerSecond: 64000 }
+  : { mimeType: "audio/mp4", audioBitsPerSecond: 128000 }
 
 function* app() {
   yield* task("swa.sh user agent", function* () {
     yield* pushNode(tag("app"))
 
     const stream = yield* useMediaStream({ audio: true, video: false })
+    const saveChannel: Channel<string, void> = createChannel<string>()
+
+    if (location.hash.includes("telegram")) {
+      yield* telegramClient(saveChannel)
+    }
 
     for (;;) {
-      yield* recordingSession(stream)
+      yield* recordingSession(stream, saveChannel)
     }
   })
 
@@ -62,7 +70,10 @@ document.addEventListener("DOMContentLoaded", async function () {
 
 const ctxAudioStream = createContext<MediaStream>("audioStream")
 
-function* recordingSession(stream: MediaStream): Operation<void> {
+function* recordingSession(
+  stream: MediaStream,
+  saveChannel: Channel<string, void>,
+): Operation<void> {
   const audioStream = new MediaStream(stream.getAudioTracks())
   yield* ctxAudioStream.set(audioStream)
 
@@ -77,7 +88,7 @@ function* recordingSession(stream: MediaStream): Operation<void> {
     const task1 = yield* task(`transcription session ${i++}`, function* () {
       yield* task("a dialogue", function* () {
         const article = yield* pushNode(tag("article"))
-        yield* dialogue(article, phraseChannel)
+        yield* dialogue(article, phraseChannel, saveChannel)
       })
 
       const socket = yield* useWebSocket(
@@ -95,15 +106,13 @@ function* recordingSession(stream: MediaStream): Operation<void> {
       yield* info("has audio bitrate", recorderOptions.audioBitsPerSecond)
       yield* info("has audio timeslice", "300ms")
 
-      const blobs: Blob[] = []
-
       yield* spawn(function* () {
         yield* foreach(on(recorder, "dataavailable"), function* ({ data }) {
-          blobs.push(data)
           try {
             yield* socket.send(data)
           } catch (error) {
             yield* info("error sending data", error)
+            throw error
           }
         })
       })
@@ -176,18 +185,11 @@ function* readSpeech(
     yield* info("heard", { text })
 
     if (plain === "over") {
-      recorder.stop()
-      const subscription = yield* gotData
-      const { value } = yield* subscription.next()
-      if (value) {
-        const { words } = yield* transcribe([value], "en")
-        recorder.start()
-        yield* clear()
-        yield* append(punctuatedConcatenation(words.slice(0, -1)))
-      }
       break
     } else if (plain === "edit") {
       yield* edit(subscription)
+    } else if (plain === "retranscribe") {
+      yield* retranscribe()
     } else {
       result += plain + " "
       yield* insertGraphemesSlowly(text)
@@ -205,10 +207,43 @@ function* readSpeech(
     }
 
     yield* info("reading next phrase")
+    if (recorder.state !== "recording") {
+      recorder.start()
+    }
     next = yield* subscription.next()
   }
 
   return result.trim()
+
+  function* retranscribe() {
+    yield* withClassName("retranscribing", function* () {
+      recorder.stop()
+      const subscription = yield* gotData
+      const { value } = yield* subscription.next()
+      if (value) {
+        const { words } = yield* transcribe([value], "en")
+        yield* clear()
+        yield* append(punctuatedConcatenation(words.slice(0, -1)))
+      }
+    })
+  }
+}
+
+function* withClassName<T>(
+  className: string,
+  body: () => Operation<T>,
+): Operation<T> {
+  const element = yield* getTarget()
+  if (element.classList.contains(className)) {
+    return yield* body()
+  } else {
+    element.classList.add(className)
+    try {
+      return yield* body()
+    } finally {
+      element.classList.remove(className)
+    }
+  }
 }
 
 function* edit(subscription: Subscription<WordHypothesis[], void>) {
@@ -282,6 +317,7 @@ function* insertGraphemesSlowly(text: string) {
 function* dialogue(
   article: HTMLElement,
   phrases: Stream<WordHypothesis[], void>,
+  saveChannel: Channel<string, void>,
 ): Operation<void> {
   yield* info("has document", article)
 
@@ -299,15 +335,11 @@ function* dialogue(
       if (text === "Over and out.") {
         return
       }
+
+      yield* saveChannel.send(text)
     }
 
-    let messages: { role: "user" | "assistant"; content: string }[] = []
-    for (const paragraph of [...article.querySelectorAll("p")]) {
-      yield* info("has paragraph", paragraph)
-      const content = paragraph.innerHTML
-      const role = paragraph.classList.contains("user") ? "user" : "assistant"
-      messages = [...messages, { role, content }]
-    }
+    const messages = articleMessages(article)
 
     {
       yield* setNode(article)
@@ -332,8 +364,18 @@ function* dialogue(
         next = yield* response.next()
       }
       p.classList.remove("speaking")
+
+      yield* saveChannel.send("[assistant] " + p.innerText)
     }
   }
+}
+
+function articleMessages(article: HTMLElement): ChatMessage[] {
+  return [...article.querySelectorAll("p")].map((paragraph) => {
+    const { innerHTML: content, classList } = paragraph
+    const role = classList.contains("user") ? "user" : "assistant"
+    return { role, content }
+  })
 }
 
 function punctuatedConcatenation(speech: WordHypothesis[]) {
@@ -425,4 +467,38 @@ export function* transcribe(
   const result = yield* call(response.json())
   console.log(result)
   return result.results.channels[0].alternatives[0]
+}
+
+function* telegramClient(saveChannel: Stream<string, void>) {
+  yield* task("telegram client", function* () {
+    const service = new TelegramService()
+    const updateSignal = createSignal<AnyUpdate>()
+    service.subscribe((update) => {
+      updateSignal.send(update)
+    })
+
+    const updateSubscription = yield* updateSignal
+
+    service.start()
+
+    yield* task("saver", function* () {
+      yield* foreach(saveChannel, function* (text) {
+        yield* info("saving", text)
+        service.send({
+          "@type": "sendMessage",
+          "chat_id": service.self.id,
+          "input_message_content": {
+            "@type": "inputMessageText",
+            "text": { "@type": "formattedText", "text": text },
+          },
+        })
+      })
+    })
+
+    let next = yield* updateSubscription.next()
+    while (!next.done) {
+      yield* info("received update", next.value)
+      next = yield* updateSubscription.next()
+    }
+  })
 }

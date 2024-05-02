@@ -43,15 +43,15 @@ export const modelsByName = modelList.reduce((acc, model) => {
   return acc
 }, {} as Record<string, Model>)
 
-interface ChatCompletionRequest {
+export interface ChatCompletionRequest {
   temperature: number
   maxTokens: number
   systemMessage?: string
-  messages: { role: "user" | "assistant"; content: string }[]
+  messages: ChatMessage[]
   stopSequences?: string[]
 }
 
-interface MessageState {
+export interface ChatMessage {
   role: "user" | "assistant"
   content: string
 }
@@ -151,7 +151,7 @@ export function* streamingRequest(
 export function* stream(
   model: Model,
   requestBody: ChatCompletionRequest,
-): Operation<Subscription<MessageState, void>> {
+): Operation<Subscription<ChatMessage, void>> {
   if (model.provider === "openai") {
     return yield* streamOpenAI(model, requestBody)
   } else if (model.provider === "anthropic") {
@@ -164,7 +164,7 @@ export function* stream(
 function* streamOpenAI(
   { model }: Model,
   requestBody: ChatCompletionRequest,
-): Operation<Subscription<MessageState, void>> {
+): Operation<Subscription<ChatMessage, void>> {
   return yield* resource(function* (provide) {
     const messageSubscription = yield* streamingRequest(
       "/openai/v1/chat/completions",
@@ -180,7 +180,7 @@ function* streamOpenAI(
       },
     )
 
-    const stateChannel = createChannel<MessageState>()
+    const stateChannel = createChannel<ChatMessage>()
     const stateSubscription = yield* stateChannel
 
     yield* spawn(function* () {
@@ -225,7 +225,7 @@ function* streamAnthropic(
     stopSequences,
     messages,
   }: ChatCompletionRequest,
-): Operation<Subscription<MessageState, void>> {
+): Operation<Subscription<ChatMessage, void>> {
   const messagesSubscription = yield* streamingRequest(
     "/anthropic/v1/messages",
     {
@@ -240,7 +240,7 @@ function* streamAnthropic(
   )
 
   return yield* resource(function* (provide) {
-    const stateChannel = createChannel<MessageState>()
+    const stateChannel = createChannel<ChatMessage>()
     const stateSubscription = yield* stateChannel
 
     yield* spawn(function* () {

@@ -29,6 +29,8 @@ globalThis.document = new DOMParser().parseFromString(
 const deepgramApiKey = Deno.env.get("DEEPGRAM_API_KEY")!
 const openaiApiKey = Deno.env.get("OPENAI_API_KEY")!
 const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY")!
+const telegramApiId = parseInt(Deno.env.get("TELEGRAM_API_ID")!, 10)
+const telegramApiHash = Deno.env.get("TELEGRAM_API_HASH")!
 
 function deepgramUrl(language: string): string {
   const queryParams = new URLSearchParams({
@@ -413,6 +415,31 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
       yield* provide(new Response("Internal server error", { status: 500 }))
     }
 
+    if (url.pathname.startsWith("/tdweb/")) {
+      const filePath = url.pathname.slice(7)
+      const fileExt = filePath.split(".").pop()!
+      const mimeType =
+        {
+          js: "application/javascript",
+          wasm: "application/octet-stream",
+          mem: "application/octet-stream",
+          cjs: "application/javascript",
+        }[fileExt] || "application/octet-stream"
+
+      try {
+        const file = yield* call(Deno.readFile(`./static/tdweb/${filePath}`))
+        yield* provide(
+          new Response(file, { headers: { "Content-Type": mimeType } }),
+        )
+      } catch (err) {
+        if (err instanceof Deno.errors.NotFound) {
+          yield* provide(new Response("Not found", { status: 404 }))
+        } else {
+          throw err
+        }
+      }
+    }
+
     if (url.pathname === "/") {
       const { code } = yield* call(
         bundle("./src/swash.ts", {
@@ -438,9 +465,20 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
 <meta charset=UTF-8 />
 <meta name=viewport content="width=device-width" />
 <title>swa.sh</title>
+<link rel="preconnect" href="https://rsms.me/">
+<link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <style>
 ${css}
 </style>
+<script src="./tdweb/tdweb.cjs"></script>
+<script>
+  window.env = {
+    telegram: {
+      api_hash: ${JSON.stringify(telegramApiHash)},
+      api_id: ${JSON.stringify(telegramApiId)},
+    },
+  }
+</script>
 <script type="module">
 ${code}
 </script>
