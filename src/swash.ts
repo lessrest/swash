@@ -1,7 +1,6 @@
 import {
   Channel,
   Operation,
-  Stream,
   call,
   createChannel,
   createContext,
@@ -9,33 +8,18 @@ import {
   main,
   on,
   resource,
-  sleep,
   suspend,
   useAbortSignal,
 } from "effection"
 
-import {
-  append,
-  appendNewTarget,
-  foreach,
-  message,
-  replaceChildren,
-  useClassName,
-} from "./kernel.ts"
+import { append, appendNewTarget, foreach, message } from "./kernel.ts"
 
-import { graphemesOf } from "./graphemes.ts"
+import { speechInput } from "./speechInput.ts"
 import { tag } from "./tag.ts"
 import { Epoch, info, task } from "./task.ts"
 import { telegramClient } from "./telegramClient.ts"
+import { SpokenWord } from "./transcription.ts"
 import { WebSocketHandle, useWebSocket } from "./websocket.ts"
-
-export interface SpokenWord {
-  word: string
-  punctuated_word: string
-  confidence: number
-  start: number
-  end: number
-}
 
 const recorderOptions: MediaRecorderOptions = MediaRecorder.isTypeSupported(
   "audio/webm;codecs=opus",
@@ -153,11 +137,11 @@ function* recordingSession(
   yield* suspend()
 }
 
-function punctuatedConcatenation(speech: SpokenWord[]) {
+export function punctuatedConcatenation(speech: SpokenWord[]) {
   return speech.map(({ punctuated_word }) => punctuated_word).join(" ")
 }
 
-function paragraphsToText(x: {
+export function paragraphsToText(x: {
   paragraphs: {
     sentences: {
       text: string
@@ -169,7 +153,7 @@ function paragraphsToText(x: {
     .join("\n\n")
 }
 
-function plainConcatenation(speech: SpokenWord[]) {
+export function plainConcatenation(speech: SpokenWord[]) {
   return speech.map(({ word }) => word).join(" ")
 }
 
@@ -250,105 +234,9 @@ export function* transcribe(
   return result.results.channels[0].alternatives[0]
 }
 
-const nbsp = String.fromCharCode(160)
+export const nbsp = String.fromCharCode(160)
 
-function* speechInput(
-  interimStream: Stream<SpokenWord[], void>,
-  finalStream: Stream<SpokenWord[], void>,
-): Operation<string> {
-  const root = yield* appendNewTarget(
-    tag("ins.user"),
-  )
-
-  yield* useClassName("listening")
-
-  yield* task("recorder", function* () {
-    const blobs: Blob[] = yield* useAudioRecorder()
-
-    for (;;) {
-      yield* (yield* finalStream).next()
-      try {
-        const result = yield* transcribe(blobs, "en")
-        root.querySelector<HTMLElement>(".final")!.innerText =
-          paragraphsToText(result.paragraphs) + " "
-      } catch (error) {
-        yield* info("error transcribing", error)
-      }
-    }
-  })
-
-  let done = false
-
-  const typingAnimationTask = yield* task("typing animation", function* () {
-    yield* appendNewTarget(
-      tag(
-        "p.typing-animation",
-        {},
-        nbsp,
-      ),
-    )
-
-    let limit = 0
-    for (;;) {
-      const spans = [
-        ...root.querySelectorAll<HTMLElement>(".final, .interim"),
-      ]
-      const text = spans
-        .map(innerTextWithBr)
-        .join("")
-      const graphemes = graphemesOf(text)
-      const remaining = graphemes.length - limit
-      const textToShow = graphemes.slice(0, limit).join("")
-
-      if (done && remaining <= 0) {
-        const finalSpan = root.querySelector<HTMLElement>(".final")
-        if (finalSpan) {
-          yield* replaceChildren(...finalSpan.children)
-        }
-        break
-      } else {
-        if (textToShow !== text) {
-          yield* info("replacing text", { textToShow, text })
-          yield* replaceChildren(textToShow)
-        }
-        const graphemesPerSecond = 20 + 30 * Math.exp(-remaining / 10)
-        yield* sleep(1000 / graphemesPerSecond)
-        limit = Math.min(graphemes.length, limit + 1)
-      }
-    }
-  })
-
-  const finalTask = yield* task("final", function* () {
-    yield* appendNewTarget(tag("span.final"))
-
-    yield* foreach(finalStream, function* (phrase) {
-      if (plainConcatenation(phrase) === "over") {
-        return "stop"
-      }
-      yield* append(punctuatedConcatenation(phrase) + " ")
-    })
-  })
-
-  yield* task("interim", function* () {
-    const span = yield* appendNewTarget(tag("span.interim"))
-
-    try {
-      yield* foreach(interimStream, function* (phrase) {
-        yield* replaceChildren(punctuatedConcatenation(phrase))
-      })
-    } finally {
-      span.remove()
-    }
-  })
-
-  yield* finalTask
-  done = true
-  yield* typingAnimationTask
-
-  return root.querySelector("p")!.innerText
-}
-
-function* useAudioRecorder() {
+export function* useAudioRecorder() {
   const audioStream = yield* ctxAudioStream.get()
   if (!audioStream) {
     throw new Error("No audio stream")
@@ -364,7 +252,8 @@ function* useAudioRecorder() {
 
   return blobs
 }
-function innerTextWithBr(element: HTMLElement): string {
+
+export function innerTextWithBr(element: HTMLElement): string {
   return [...element.childNodes]
     .map((child) =>
       child.nodeType === Node.TEXT_NODE
