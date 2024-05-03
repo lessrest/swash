@@ -39,11 +39,28 @@ export function* setNode(element: HTMLElement): Operation<HTMLElement> {
   return element
 }
 
-export function* pushNode(node: HTMLElement) {
+export function* appendNewTarget(node: HTMLElement) {
   yield* append(node)
   yield* setNode(node)
 
   return node
+}
+
+export function* withClassName<T>(
+  className: string,
+  body: () => Operation<T>,
+): Operation<T> {
+  const element = yield* getTarget()
+  if (element.classList.contains(className)) {
+    return yield* body()
+  } else {
+    element.classList.add(className)
+    try {
+      return yield* body()
+    } finally {
+      element.classList.remove(className)
+    }
+  }
 }
 
 export function* waitForButton(label: string): Operation<void> {
@@ -58,6 +75,27 @@ export function* clear(): Operation<void> {
   node.replaceChildren()
 }
 
+export function* replaceChildren(
+  ...content: (string | Node)[]
+): Operation<void> {
+  const { node } = yield* Target
+  node.replaceChildren(...content)
+}
+
+export function* querySelectorAll<T extends Element>(
+  selector: string,
+): Operation<T[]> {
+  const { node } = yield* Target
+  return [...node.querySelectorAll(selector)] as unknown as T[]
+}
+
+export function* querySelector<T extends Element>(
+  selector: string,
+): Operation<T | null> {
+  const { node } = yield* Target
+  return node.querySelector(selector) as unknown as T | null
+}
+
 export function* scrollToBottom() {
   const { node } = yield* Target
   node.scrollIntoView({ block: "end", inline: "end", behavior: "smooth" })
@@ -68,12 +106,12 @@ export function* spawnWithElement<T>(
   body: (element: HTMLElement) => Operation<T>,
 ): Operation<Task<T>> {
   return yield* spawn(function* () {
-    return yield* body(yield* pushNode(element))
+    return yield* body(yield* appendNewTarget(element))
   })
 }
 
 export function* pushFramedWindow(title: string) {
-  yield* pushNode(tag("div", { class: "window" }))
+  yield* appendNewTarget(tag("div", { class: "window" }))
 
   yield* append(
     tag(
@@ -83,7 +121,7 @@ export function* pushFramedWindow(title: string) {
     ),
   )
 
-  return yield* pushNode(tag("div", { class: "window-body" }))
+  return yield* appendNewTarget(tag("div", { class: "window-body" }))
 }
 
 export function* spawnFramedWindow<T>(
@@ -105,7 +143,9 @@ export function* spawnFramedWindow2<T>(
   body: (window: HTMLElement) => Operation<T>,
 ): Operation<Task<T>> {
   return yield* task(title, function* () {
-    const window = yield* pushNode(tag("div", { class: "window2" }, title))
+    const window = yield* appendNewTarget(
+      tag("div", { class: "window2" }, title),
+    )
     try {
       return yield* body(window)
     } finally {
@@ -116,10 +156,13 @@ export function* spawnFramedWindow2<T>(
 
 export function* foreach<T, R>(
   stream: Stream<T, R>,
-  callback: (value: T) => Operation<void>,
+  callback: (value: T) => Operation<void | string>,
 ): Operation<void> {
   for (const event of yield* each(stream)) {
-    yield* callback(event)
+    const x = yield* callback(event)
+    if (x === "stop") {
+      break
+    }
     yield* each.next()
   }
 }

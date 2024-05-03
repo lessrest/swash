@@ -337,6 +337,7 @@ function* handleAnthropicProxy(
 
   yield* provide(res)
 }
+
 function* handleWhisperDeepgram(
   req: Request,
   provide: (value: Response) => Operation<void>,
@@ -421,7 +422,7 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
       const mimeType =
         {
           js: "application/javascript",
-          wasm: "application/octet-stream",
+          wasm: "application/wasm",
           mem: "application/octet-stream",
           cjs: "application/javascript",
         }[fileExt] || "application/octet-stream"

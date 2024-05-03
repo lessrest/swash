@@ -610,7 +610,6 @@ type AnyFunction =
   | GetMessages
   | SendMessage
   | SendChatAction
-  | DownloadFile
 
 interface TelegramFunction<ResultType> {
   "@type": string

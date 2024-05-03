@@ -1,10 +1,15 @@
-export function tag(
+export function tag<T extends HTMLElement>(
   tagName: string,
   // deno-lint-ignore no-explicit-any
   attributes: Record<string, any> = {},
   ...content: (string | Node)[]
-): HTMLElement {
-  const element = document.createElement(tagName)
+): T {
+  const [tag, ...classes] = tagName.split(".")
+  const element = document.createElement(tag)
+
+  if (classes.length > 0) {
+    element.classList.add(...classes)
+  }
 
   for (const [key, value] of Object.entries(attributes)) {
     if (key.startsWith("on") && typeof value === "function") {
@@ -32,5 +37,5 @@ export function tag(
   }
 
   element.append(...content)
-  return element
+  return element as T
 }

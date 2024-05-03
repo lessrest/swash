@@ -24,8 +24,6 @@ body {
 
 app {
   display: grid;
-  /* center */
-  place-items: center;
 }
 
 video {
@@ -38,7 +36,7 @@ video {
   right: 0;
   bottom: 0;
   z-index: -1;
-  filter: blur(6px) sepia(0.6) hue-rotate(3deg) saturate(1.2) contrast(0.8)
+  filter: blur(0px) sepia(0.6) hue-rotate(145deg) saturate(1.2) contrast(0.8)
     brightness(0.6);
 }
 
@@ -53,15 +51,6 @@ article {
 
 p {
   margin: 0;
-}
-
-article p message {
-  transition: opacity 1s ease-in-out;
-  opacity: 0;
-}
-
-article p message.started {
-  opacity: 1;
 }
 
 p,
@@ -105,18 +94,6 @@ span.over {
   padding-left: 0.5em;
 }
 
-@keyframes blink {
-  0% {
-    transform: rotate(-3deg);
-  }
-  50% {
-    transform: rotate(3deg);
-  }
-  100% {
-    transform: rotate(-3deg);
-  }
-}
-
 kbd,
 samp {
   font: inherit;
@@ -130,4 +107,14 @@ samp {
 
 .retranscribing {
   background: #5ff4;
+}
+
+span.interim {
+  color: skyblue;
+  display: none;
+}
+
+span.final {
+  color: springgreen;
+  display: none;
 }
