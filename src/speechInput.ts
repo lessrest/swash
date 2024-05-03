@@ -34,10 +34,14 @@ export function* speechInput(
     const blobs: Blob[] = yield* useAudioRecorder()
 
     for (;;) {
+      yield* info("waiting for final stream")
       yield* (yield* finalStream).next()
+      yield* info("got final stream, transcribing")
       try {
         const result = yield* transcribe(blobs, "en")
+        yield* info("transcription result", result)
         finalText = paragraphsToText(result.paragraphs) + " "
+        yield* info("updated finalText", finalText)
       } catch (error) {
         yield* info("error transcribing", error)
       }
@@ -73,16 +77,22 @@ export function* speechInput(
 
   const finalTask = yield* task("final", function* () {
     yield* foreach(finalStream, function* (phrase) {
+      yield* info("got phrase from finalStream", phrase)
       if (plainConcatenation(phrase) === "over") {
+        yield* info("got 'over', stopping")
         return "stop"
       }
-      finalText += punctuatedConcatenation(phrase) + " "
+      const punctuated = punctuatedConcatenation(phrase)
+      yield* info("updating finalText with", punctuated)
+      finalText += punctuated + " "
     })
   })
 
   yield* task("interim", function* () {
     yield* foreach(interimStream, function* (phrase) {
-      interimText = punctuatedConcatenation(phrase)
+      const punctuated = punctuatedConcatenation(phrase)
+      yield* info("updating interimText", punctuated)
+      interimText = punctuated
     })
   })
 
