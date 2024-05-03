@@ -20,6 +20,7 @@ import {
   foreach,
   message,
   replaceChildren,
+  useClassName,
 } from "./kernel.ts"
 
 import { graphemesOf } from "./graphemes.ts"
@@ -156,6 +157,18 @@ function punctuatedConcatenation(speech: SpokenWord[]) {
   return speech.map(({ punctuated_word }) => punctuated_word).join(" ")
 }
 
+function paragraphsToText(x: {
+  paragraphs: {
+    sentences: {
+      text: string
+    }[]
+  }[]
+}) {
+  return x.paragraphs
+    .map(({ sentences }) => sentences.map(({ text }) => text).join(" "))
+    .join("\n\n")
+}
+
 function plainConcatenation(speech: SpokenWord[]) {
   return speech.map(({ word }) => word).join(" ")
 }
@@ -203,7 +216,18 @@ export function useMediaStream(
 export function* transcribe(
   blobs: Blob[],
   language: string = "en",
-): Operation<{ words: SpokenWord[] }> {
+): Operation<{
+  words: SpokenWord[]
+  paragraphs: {
+    paragraphs: {
+      sentences: {
+        text: string
+        start: number
+        end: number
+      }[]
+    }[]
+  }
+}> {
   const formData = new FormData()
   formData.append("file", new Blob(blobs))
 
@@ -224,17 +248,21 @@ export function* transcribe(
   return result.results.channels[0].alternatives[0]
 }
 
+const nbsp = String.fromCharCode(160)
+
 function* speechInput(
   interimStream: Stream<SpokenWord[], void>,
   finalStream: Stream<SpokenWord[], void>,
 ): Operation<string> {
   const root = yield* appendNewTarget(
-    tag("ins", {
+    tag("ins.user", {
       style: {
         textDecoration: "none",
       },
     }),
   )
+
+  yield* useClassName("listening")
 
   yield* task("recorder", function* () {
     const blobs: Blob[] = yield* useAudioRecorder()
@@ -243,8 +271,8 @@ function* speechInput(
       yield* (yield* finalStream).next()
       try {
         const result = yield* transcribe(blobs, "en")
-        root.querySelector<HTMLElement>("span.final")!.innerText =
-          punctuatedConcatenation(result.words) + " "
+        root.querySelector<HTMLElement>(".final")!.innerText =
+          paragraphsToText(result.paragraphs) + " "
       } catch (error) {
         yield* info("error transcribing", error)
       }
@@ -254,24 +282,52 @@ function* speechInput(
   let done = false
 
   const typingAnimationTask = yield* task("typing animation", function* () {
-    yield* appendNewTarget(tag("p"))
+    yield* appendNewTarget(
+      tag(
+        "p",
+        {
+          style: {
+            whiteSpace: "pre-wrap",
+          },
+        },
+        nbsp,
+      ),
+    )
 
     let limit = 0
     for (;;) {
-      const spans = [...root.querySelectorAll<HTMLSpanElement>("span")]
-      const text = spans.map(({ innerText }) => innerText).join("")
+      const spans = [
+        ...root.querySelectorAll<HTMLElement>(".final, .interim"),
+      ]
+      const text = spans
+        .map((element) =>
+          [...element.childNodes]
+            .map((child) =>
+              child.nodeType === Node.TEXT_NODE
+                ? child.textContent
+                : child.nodeName === "BR"
+                ? "\n"
+                : "",
+            )
+            .join(""),
+        )
+        .join("")
       const graphemes = graphemesOf(text)
       const remaining = graphemes.length - limit
       const textToShow = graphemes.slice(0, limit).join("")
 
-      if (textToShow !== text) {
-        yield* replaceChildren(textToShow)
-      }
-
       if (done && remaining <= 0) {
+        const finalSpan = root.querySelector<HTMLElement>(".final")
+        if (finalSpan) {
+          yield* replaceChildren(...finalSpan.children)
+        }
         break
       } else {
-        const graphemesPerSecond = remaining > 10 ? 50 : 20
+        if (textToShow !== text) {
+          yield* info("replacing text", { textToShow, text })
+          yield* replaceChildren(textToShow)
+        }
+        const graphemesPerSecond = 20 + 30 * Math.exp(-remaining / 10)
         yield* sleep(1000 / graphemesPerSecond)
         limit = Math.min(graphemes.length, limit + 1)
       }

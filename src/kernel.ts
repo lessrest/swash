@@ -4,6 +4,7 @@ import {
   Task,
   createContext,
   each,
+  ensure,
   once,
   spawn,
 } from "effection"
@@ -61,6 +62,14 @@ export function* withClassName<T>(
       element.classList.remove(className)
     }
   }
+}
+
+export function* useClassName(className: string): Operation<void> {
+  const element = yield* getTarget()
+  element.classList.add(className)
+  yield* ensure(function* () {
+    element.classList.remove(className)
+  })
 }
 
 export function* waitForButton(label: string): Operation<void> {

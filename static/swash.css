@@ -71,11 +71,11 @@ p.assistant {
   font-weight: 400;
 }
 
-.speaking.user {
+.listening.user {
   border-left: 0.25em solid #ff9999;
 }
 
-.speaking.assistant {
+.listening.assistant {
   border-left: 0.25em solid #99ff99;
 }
 
