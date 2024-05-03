@@ -2,14 +2,13 @@ import { Operation, Stream, sleep } from "effection"
 import { graphemesOf } from "./graphemes.ts"
 
 import {
-  append,
   appendNewTarget,
   foreach,
   replaceChildren,
   useClassName,
 } from "./kernel.ts"
 
-import { innerTextWithBr, nbsp, useAudioRecorder } from "./swash.ts"
+import { nbsp, useAudioRecorder } from "./swash.ts"
 import {
   SpokenWord,
   paragraphsToText,
@@ -25,8 +24,7 @@ export function* speechInput(
   interimStream: Stream<SpokenWord[], void>,
   finalStream: Stream<SpokenWord[], void>,
 ): Operation<string> {
-  const root = yield* appendNewTarget(tag("ins.user"))
-
+  yield* appendNewTarget(tag("ins.user"))
   yield* useClassName("listening")
 
   let finalText = ""
@@ -66,8 +64,8 @@ export function* speechInput(
           yield* info("replacing text", { textToShow, text })
           yield* replaceChildren(textToShow)
         }
-        const graphemesPerSecond = 20 + 30 * Math.exp(-remaining / 10)
-        yield* sleep(1000 / graphemesPerSecond)
+
+        yield* sleep(20)
         limit = Math.min(graphemes.length, limit + 1)
       }
     }
