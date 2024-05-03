@@ -29,6 +29,9 @@ export function* speechInput(
 
   yield* useClassName("listening")
 
+  let finalText = ""
+  let interimText = ""
+
   yield* task("recorder", function* () {
     const blobs: Blob[] = yield* useAudioRecorder()
 
@@ -36,8 +39,7 @@ export function* speechInput(
       yield* (yield* finalStream).next()
       try {
         const result = yield* transcribe(blobs, "en")
-        root.querySelector<HTMLElement>(".final")!.innerText =
-          paragraphsToText(result.paragraphs) + " "
+        finalText = paragraphsToText(result.paragraphs) + " "
       } catch (error) {
         yield* info("error transcribing", error)
       }
@@ -51,19 +53,13 @@ export function* speechInput(
 
     let limit = 0
     for (;;) {
-      const spans = [
-        ...root.querySelectorAll<HTMLElement>(".final, .interim"),
-      ]
-      const text = spans.map(innerTextWithBr).join("")
+      const text = finalText + interimText
       const graphemes = graphemesOf(text)
       const remaining = graphemes.length - limit
       const textToShow = graphemes.slice(0, limit).join("")
 
       if (done && remaining <= 0) {
-        const finalSpan = root.querySelector<HTMLElement>(".final")
-        if (finalSpan) {
-          yield* replaceChildren(...finalSpan.children)
-        }
+        yield* replaceChildren(finalText)
         break
       } else {
         if (textToShow !== text) {
@@ -78,31 +74,23 @@ export function* speechInput(
   })
 
   const finalTask = yield* task("final", function* () {
-    yield* appendNewTarget(tag("div.final"))
-
     yield* foreach(finalStream, function* (phrase) {
       if (plainConcatenation(phrase) === "over") {
         return "stop"
       }
-      yield* append(punctuatedConcatenation(phrase) + " ")
+      finalText += punctuatedConcatenation(phrase) + " "
     })
   })
 
   yield* task("interim", function* () {
-    const span = yield* appendNewTarget(tag("span.interim"))
-
-    try {
-      yield* foreach(interimStream, function* (phrase) {
-        yield* replaceChildren(punctuatedConcatenation(phrase))
-      })
-    } finally {
-      span.remove()
-    }
+    yield* foreach(interimStream, function* (phrase) {
+      interimText = punctuatedConcatenation(phrase)
+    })
   })
 
   yield* finalTask
   done = true
   yield* typingAnimationTask
 
-  return root.querySelector("p")!.innerText
+  return finalText
 }
