@@ -16,9 +16,9 @@ import {
   paragraphsToText,
   plainConcatenation,
   punctuatedConcatenation,
-  transcribe,
   useAudioRecorder,
 } from "./swash.ts"
+import { transcribe } from "./transcription.ts"
 
 import { tag } from "./tag.ts"
 import { info, task } from "./task.ts"
