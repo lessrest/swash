@@ -9,16 +9,14 @@ import {
   useClassName,
 } from "./kernel.ts"
 
-import { SpokenWord } from "./SpokenWord.ts"
+import { innerTextWithBr, nbsp, useAudioRecorder } from "./swash.ts"
 import {
-  innerTextWithBr,
-  nbsp,
+  SpokenWord,
   paragraphsToText,
   plainConcatenation,
   punctuatedConcatenation,
-  useAudioRecorder,
-} from "./swash.ts"
-import { transcribe } from "./transcription.ts"
+  transcribe,
+} from "./transcription.ts"
 
 import { tag } from "./tag.ts"
 import { info, task } from "./task.ts"
