@@ -39,3 +39,17 @@ export function tag<T extends HTMLElement>(
   element.append(...content)
   return element as T
 }
+
+export const nbsp = String.fromCharCode(160)
+
+export function innerTextWithBr(element: HTMLElement): string {
+  return [...element.childNodes]
+    .map((child) =>
+      child.nodeType === Node.TEXT_NODE
+        ? child.textContent
+        : child.nodeName === "BR"
+        ? "\n"
+        : "",
+    )
+    .join("")
+}
