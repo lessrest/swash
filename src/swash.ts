@@ -47,7 +47,7 @@ const videoFeatureFlag = document.location.hash.includes("video")
 
 function* app() {
   yield* task("swa.sh user agent", function* () {
-    yield* appendNewTarget(tag("app"))
+    yield* appendNewTarget(tag("app", {}))
 
     const stream = yield* useMediaStream({
       audio: true,
@@ -60,7 +60,7 @@ function* app() {
     }
 
     if (videoFeatureFlag) {
-      const videoElement = tag<HTMLVideoElement>("video")
+      const videoElement = tag<HTMLVideoElement>("video", {})
       videoElement.srcObject = yield* useMediaStream({
         audio: false,
         video: true,
@@ -141,7 +141,7 @@ function* recordingSession(
   })
 
   yield* task("speech input", function* () {
-    yield* appendNewTarget(tag("article"))
+    yield* appendNewTarget(tag("article", {}))
     for (;;) {
       yield* call(function* () {
         const text = yield* speechInput(interimChannel, finalChannel)
@@ -257,7 +257,7 @@ function* speechInput(
   finalStream: Stream<SpokenWord[], void>,
 ): Operation<string> {
   const root = yield* appendNewTarget(
-    tag("ins.user"),
+    tag("ins.user", {}),
   )
 
   yield* useClassName("listening")
@@ -283,6 +283,7 @@ function* speechInput(
     yield* appendNewTarget(
       tag(
         "p.typing-animation",
+        {},
         nbsp,
       ),
     )
@@ -328,7 +329,7 @@ function* speechInput(
   })
 
   const finalTask = yield* task("final", function* () {
-    yield* appendNewTarget(tag("span.final"))
+    yield* appendNewTarget(tag("span.final", {}))
 
     yield* foreach(finalStream, function* (phrase) {
       if (plainConcatenation(phrase) === "over") {
@@ -339,7 +340,7 @@ function* speechInput(
   })
 
   yield* task("interim", function* () {
-    const span = yield* appendNewTarget(tag("span.interim"))
+    const span = yield* appendNewTarget(tag("span.interim", {}))
 
     try {
       yield* foreach(interimStream, function* (phrase) {
