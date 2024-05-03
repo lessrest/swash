@@ -294,17 +294,7 @@ function* speechInput(
         ...root.querySelectorAll<HTMLElement>(".final, .interim"),
       ]
       const text = spans
-        .map((element) =>
-          [...element.childNodes]
-            .map((child) =>
-              child.nodeType === Node.TEXT_NODE
-                ? child.textContent
-                : child.nodeName === "BR"
-                ? "\n"
-                : "",
-            )
-            .join(""),
-        )
+        .map(innerTextWithBr)
         .join("")
       const graphemes = graphemesOf(text)
       const remaining = graphemes.length - limit
@@ -373,4 +363,15 @@ function* useAudioRecorder() {
   }
 
   return blobs
+}
+function innerTextWithBr(element: HTMLElement): string {
+  return [...element.childNodes]
+    .map((child) =>
+      child.nodeType === Node.TEXT_NODE
+        ? child.textContent
+        : child.nodeName === "BR"
+        ? "\n"
+        : "",
+    )
+    .join("")
 }
