@@ -9,7 +9,6 @@ import {
   on,
   resource,
   suspend,
-  useAbortSignal,
 } from "effection"
 
 import { append, appendNewTarget, foreach, message } from "./kernel.ts"
@@ -196,7 +195,6 @@ export function useMediaStream(
     }
   })
 }
-
 
 export const nbsp = String.fromCharCode(160)
 
