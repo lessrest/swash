@@ -213,10 +213,7 @@ export function useMediaStream(
   })
 }
 
-export function* transcribe(
-  blobs: Blob[],
-  language: string = "en",
-): Operation<{
+export interface TranscriptionResult {
   words: SpokenWord[]
   paragraphs: {
     paragraphs: {
@@ -227,7 +224,12 @@ export function* transcribe(
       }[]
     }[]
   }
-}> {
+}
+
+export function* transcribe(
+  blobs: Blob[],
+  language: string = "en",
+): Operation<TranscriptionResult> {
   const formData = new FormData()
   formData.append("file", new Blob(blobs))
 
