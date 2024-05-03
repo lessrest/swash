@@ -257,11 +257,7 @@ function* speechInput(
   finalStream: Stream<SpokenWord[], void>,
 ): Operation<string> {
   const root = yield* appendNewTarget(
-    tag("ins.user", {
-      style: {
-        textDecoration: "none",
-      },
-    }),
+    tag("ins.user"),
   )
 
   yield* useClassName("listening")
@@ -286,12 +282,7 @@ function* speechInput(
   const typingAnimationTask = yield* task("typing animation", function* () {
     yield* appendNewTarget(
       tag(
-        "p",
-        {
-          style: {
-            whiteSpace: "pre-wrap",
-          },
-        },
+        "p.typing-animation",
         nbsp,
       ),
     )

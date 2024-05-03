@@ -118,3 +118,10 @@ span.final {
   color: springgreen;
   display: none;
 }
+ins.user {
+  text-decoration: none;
+}
+
+p.typing-animation {
+  white-space: pre-wrap;
+}
