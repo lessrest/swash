@@ -72,8 +72,10 @@ export function* speechInput(
   yield* task("interim", function* () {
     yield* foreach(interimStream, function* (phrase) {
       const punctuated = punctuatedConcatenation(phrase)
-      yield* info("updating interimText", punctuated)
-      interimText = punctuated
+      if (interimText !== punctuated) {
+        yield* info("updating interimText", punctuated)
+        interimText = punctuated
+      }
     })
   })
 
