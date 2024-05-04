@@ -84,7 +84,7 @@ export function* task<T>(
       yield* syslog("finished at", new Date())
       return x
     } catch (err) {
-      yield* syslog("failed at", new Date())
+      yield* syslog("failed at", new Date(), err)
       throw err
     } finally {
       yield* syslog("exited at", new Date())

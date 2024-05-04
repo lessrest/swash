@@ -42,8 +42,14 @@ export function* speechInput(
       if (done && remaining <= 0) {
         break
       } else {
-        if (textToShow !== self.innerText) {
-          yield* replaceChildren(textToShow)
+        if (textToShow.trim() !== self.innerText.trim()) {
+          yield* info("updating typing animation", {
+            textToShow,
+            self: self.innerText,
+          })
+          yield* replaceChildren(
+            ...textToShow.split("\n").map((line) => tag("span", {}, line)),
+          )
         }
         limit = Math.min(graphemes.length, limit + 1)
         yield* sleep(25)
