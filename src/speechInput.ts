@@ -29,7 +29,6 @@ export function* speechInput(
 
   let finalText = ""
   let interimText = ""
-  let lastChangeTime = Date.now()
 
   const blobs: Blob[] = yield* useAudioRecorder()
   // yield* task("recorder", function* () {
@@ -68,16 +67,7 @@ export function* speechInput(
       } else {
         if (textToShow !== self.innerText) {
           yield* info("replacing text", { textToShow, text })
-          lastChangeTime = Date.now()
-          dirty = true
           yield* replaceChildren(textToShow)
-        } else if (dirty && Date.now() - lastChangeTime > 3000) {
-          yield* info("no more text to write, retranscribing")
-          dirty = false
-          const result = yield* transcribe(blobs, "en")
-          finalText = paragraphsToText(result.paragraphs) + " "
-          lastChangeTime = Date.now()
-          yield* info("updated finalText after retranscription", finalText)
         }
         limit = Math.min(graphemes.length, limit + 1)
         yield* sleep(40)
@@ -95,7 +85,6 @@ export function* speechInput(
       const punctuated = punctuatedConcatenation(phrase)
       yield* info("updating finalText with", punctuated)
       finalText += punctuated + " "
-      lastChangeTime = Date.now()
     })
   })
 
