@@ -6,18 +6,14 @@ import {
   foreach,
   replaceChildren,
   useClassName,
-  waitForButton,
 } from "./kernel.ts"
 
 import {
   SpokenWord,
-  paragraphsToText,
   plainConcatenation,
   punctuatedConcatenation,
-  transcribe,
 } from "./transcription.ts"
 
-import { useAudioRecorder } from "./swash.ts"
 import { tag } from "./tag.ts"
 import { info, task } from "./task.ts"
 
@@ -47,7 +43,6 @@ export function* speechInput(
         break
       } else {
         if (textToShow !== self.innerText) {
-          yield* info("replacing text", { textToShow, text })
           yield* replaceChildren(textToShow)
         }
         limit = Math.min(graphemes.length, limit + 1)
@@ -65,7 +60,7 @@ export function* speechInput(
       }
       const punctuated = punctuatedConcatenation(phrase)
       yield* info("updating finalText with", punctuated)
-      finalText += punctuated + " "
+      finalText += (punctuated + " ").replaceAll(". ", ".\n")
     })
   })
 
@@ -79,16 +74,16 @@ export function* speechInput(
     })
   })
 
-  yield* task("retranscription", function* () {
-    const blobs: Blob[] = yield* useAudioRecorder()
-    for (;;) {
-      yield* waitForButton("retranscribe")
-      yield* info("retranscribing")
-      const result = yield* transcribe(blobs, "en")
-      finalText = paragraphsToText(result.paragraphs) + " "
-      yield* info("updated finalText", finalText)
-    }
-  })
+  // yield* task("retranscription", function* () {
+  //   const blobs: Blob[] = yield* useAudioRecorder()
+  //   for (;;) {
+  //     yield* waitForButton("Retranscribe")
+  //     yield* info("retranscribing")
+  //     const result = yield* transcribe(blobs, "en")
+  //     finalText = paragraphsToText(result.paragraphs) + " "
+  //     yield* info("updated finalText", finalText)
+  //   }
+  // })
 
   yield* finalTask
   done = true

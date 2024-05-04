@@ -4,7 +4,7 @@
 }
 
 button {
-  background-color: #4caf50;
+  background-color: #3e2556;
   border: none;
   color: white;
   padding: 0.5em 1em;
@@ -19,17 +19,17 @@ button {
 }
 
 button:hover {
-  background-color: #45a049;
+  background-color: #502367;
 }
 
 button:active {
-  background-color: #3e8e41;
+  background-color: #502367;
   transform: translateY(2px);
 }
 
 button:focus {
   outline: none;
-  box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.5);
+  box-shadow: 0 0 0 4px #2c1038;
 }
 
 :root {
@@ -45,6 +45,8 @@ button:focus {
 
 body {
   background-color: #000;
+  background-image: linear-gradient(242deg, black, #2c1038);
+  min-height: 100vh;
   color: ivory;
   margin: 0;
   font-size: 24px;
