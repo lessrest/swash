@@ -4,10 +4,10 @@
 }
 
 button {
-  background-color: #4CAF50;
+  background-color: #4caf50;
   border: none;
   color: white;
-  padding: 15px 32px;
+  padding: 0.5em 1em;
   text-align: center;
   text-decoration: none;
   display: inline-block;
@@ -98,14 +98,6 @@ p.assistant {
   opacity: 0.8;
   white-space: pre-line;
   font-weight: 400;
-}
-
-.listening.user {
-  border-left: 0.25em solid #ff9999;
-}
-
-.listening.assistant {
-  border-left: 0.25em solid #99ff99;
 }
 
 kbd {
