@@ -46,7 +46,7 @@ export function* speechInput(
           yield* replaceChildren(textToShow)
         }
         limit = Math.min(graphemes.length, limit + 1)
-        yield* sleep(40)
+        yield* sleep(25)
       }
     }
   })
@@ -60,13 +60,16 @@ export function* speechInput(
       }
       const punctuated = punctuatedConcatenation(phrase)
       yield* info("updating finalText with", punctuated)
-      finalText += (punctuated + " ").replaceAll(". ", ".\n")
+      finalText += (punctuated + " ").replaceAll(/[.?!]\s/g, "$&\n")
     })
   })
 
   yield* task("interim", function* () {
     yield* foreach(interimStream, function* (phrase) {
-      const punctuated = punctuatedConcatenation(phrase)
+      const punctuated = punctuatedConcatenation(phrase).replaceAll(
+        /[.?!]\s/g,
+        "$&\n",
+      )
       if (interimText !== punctuated) {
         yield* info("updating interimText", punctuated)
         interimText = punctuated
