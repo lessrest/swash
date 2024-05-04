@@ -8,7 +8,7 @@ import {
   useClassName,
 } from "./kernel.ts"
 
-import { nbsp, useAudioRecorder } from "./swash.ts"
+import { useAudioRecorder } from "./swash.ts"
 import {
   SpokenWord,
   paragraphsToText,
@@ -31,29 +31,30 @@ export function* speechInput(
   let interimText = ""
   let lastChangeTime = Date.now()
 
-  yield* task("recorder", function* () {
-    const blobs: Blob[] = yield* useAudioRecorder()
-
-    for (;;) {
-      yield* info("waiting for final stream")
-      yield* (yield* finalStream).next()
-      yield* info("got final stream, transcribing")
-      try {
-        const result = yield* transcribe(blobs, "en")
-        yield* info("transcription result", result)
-        finalText = paragraphsToText(result.paragraphs) + " "
-        lastChangeTime = Date.now()
-        yield* info("updated finalText", finalText)
-      } catch (error) {
-        yield* info("error transcribing", error)
-      }
-    }
-  })
+  const blobs: Blob[] = yield* useAudioRecorder()
+  // yield* task("recorder", function* () {
+  //   for (;;) {
+  //     yield* info("waiting for final stream")
+  //     yield* (yield* finalStream).next()
+  //     yield* info("got final stream, transcribing")
+  //     try {
+  //       const result = yield* transcribe(blobs, "en")
+  //       yield* info("transcription result", result)
+  //       finalText = paragraphsToText(result.paragraphs) + " "
+  //       lastChangeTime = Date.now()
+  //       yield* info("updated finalText", finalText)
+  //     } catch (error) {
+  //       yield* info("error transcribing", error)
+  //     }
+  //   }
+  // })
 
   let done = false
 
   const typingAnimationTask = yield* task("typing animation", function* () {
-    const self = yield* appendNewTarget(tag("p.typing-animation", {}, nbsp))
+    const self = yield* appendNewTarget(tag("p.typing-animation"))
+
+    let dirty = false
 
     let limit = 0
     for (;;) {
@@ -62,19 +63,24 @@ export function* speechInput(
       const remaining = graphemes.length - limit
       const textToShow = graphemes.slice(0, limit).join("")
 
-      if (done && remaining <= 0 && Date.now() - lastChangeTime > 3000) {
-        yield* info("no more text to write, retranscribing")
-        const result = yield* transcribe(blobs, "en")
-        finalText = paragraphsToText(result.paragraphs) + " "
-        lastChangeTime = Date.now()
-        yield* info("updated finalText after retranscription", finalText)
+      if (done && remaining <= 0) {
+        break
       } else {
         if (textToShow !== self.innerText) {
+          yield* info("replacing text", { textToShow, text })
+          lastChangeTime = Date.now()
+          dirty = true
           yield* replaceChildren(textToShow)
+        } else if (dirty && Date.now() - lastChangeTime > 3000) {
+          yield* info("no more text to write, retranscribing")
+          dirty = false
+          const result = yield* transcribe(blobs, "en")
+          finalText = paragraphsToText(result.paragraphs) + " "
+          lastChangeTime = Date.now()
+          yield* info("updated finalText after retranscription", finalText)
         }
-
-        yield* sleep(40)
         limit = Math.min(graphemes.length, limit + 1)
+        yield* sleep(40)
       }
     }
   })
