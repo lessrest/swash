@@ -6,9 +6,9 @@ import {
   foreach,
   replaceChildren,
   useClassName,
+  waitForButton,
 } from "./kernel.ts"
 
-import { useAudioRecorder } from "./swash.ts"
 import {
   SpokenWord,
   paragraphsToText,
@@ -17,6 +17,7 @@ import {
   transcribe,
 } from "./transcription.ts"
 
+import { useAudioRecorder } from "./swash.ts"
 import { tag } from "./tag.ts"
 import { info, task } from "./task.ts"
 
@@ -30,30 +31,10 @@ export function* speechInput(
   let finalText = ""
   let interimText = ""
 
-  const blobs: Blob[] = yield* useAudioRecorder()
-  // yield* task("recorder", function* () {
-  //   for (;;) {
-  //     yield* info("waiting for final stream")
-  //     yield* (yield* finalStream).next()
-  //     yield* info("got final stream, transcribing")
-  //     try {
-  //       const result = yield* transcribe(blobs, "en")
-  //       yield* info("transcription result", result)
-  //       finalText = paragraphsToText(result.paragraphs) + " "
-  //       lastChangeTime = Date.now()
-  //       yield* info("updated finalText", finalText)
-  //     } catch (error) {
-  //       yield* info("error transcribing", error)
-  //     }
-  //   }
-  // })
-
   let done = false
 
   const typingAnimationTask = yield* task("typing animation", function* () {
     const self = yield* appendNewTarget(tag("p.typing-animation"))
-
-    let dirty = false
 
     let limit = 0
     for (;;) {
@@ -93,8 +74,18 @@ export function* speechInput(
       const punctuated = punctuatedConcatenation(phrase)
       yield* info("updating interimText", punctuated)
       interimText = punctuated
-      lastChangeTime = Date.now()
     })
+  })
+
+  yield* task("retranscription", function* () {
+    const blobs: Blob[] = yield* useAudioRecorder()
+    for (;;) {
+      yield* waitForButton("retranscribe")
+      yield* info("retranscribing")
+      const result = yield* transcribe(blobs, "en")
+      finalText = paragraphsToText(result.paragraphs) + " "
+      yield* info("updated finalText", finalText)
+    }
   })
 
   yield* finalTask

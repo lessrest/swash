@@ -75,8 +75,11 @@ export function* useClassName(className: string): Operation<void> {
 export function* waitForButton(label: string): Operation<void> {
   const button = tag("button", {}, label)
   yield* append(button)
-  yield* once(button, "click")
-  button.setAttribute("disabled", "")
+  try {
+    yield* once(button, "click")
+  } finally {
+    button.remove()
+  }
 }
 
 export function* clear(): Operation<void> {
