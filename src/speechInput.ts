@@ -29,6 +29,7 @@ export function* speechInput(
 
   let finalText = ""
   let interimText = ""
+  let lastChangeTime = Date.now()
 
   yield* task("recorder", function* () {
     const blobs: Blob[] = yield* useAudioRecorder()
@@ -41,6 +42,7 @@ export function* speechInput(
         const result = yield* transcribe(blobs, "en")
         yield* info("transcription result", result)
         finalText = paragraphsToText(result.paragraphs) + " "
+        lastChangeTime = Date.now()
         yield* info("updated finalText", finalText)
       } catch (error) {
         yield* info("error transcribing", error)
@@ -60,9 +62,12 @@ export function* speechInput(
       const remaining = graphemes.length - limit
       const textToShow = graphemes.slice(0, limit).join("")
 
-      if (done && remaining <= 0) {
-        yield* replaceChildren(finalText)
-        break
+      if (done && remaining <= 0 && Date.now() - lastChangeTime > 3000) {
+        yield* info("no more text to write, retranscribing")
+        const result = yield* transcribe(blobs, "en")
+        finalText = paragraphsToText(result.paragraphs) + " "
+        lastChangeTime = Date.now()
+        yield* info("updated finalText after retranscription", finalText)
       } else {
         if (textToShow !== self.innerText) {
           yield* replaceChildren(textToShow)
@@ -84,6 +89,7 @@ export function* speechInput(
       const punctuated = punctuatedConcatenation(phrase)
       yield* info("updating finalText with", punctuated)
       finalText += punctuated + " "
+      lastChangeTime = Date.now()
     })
   })
 
@@ -92,6 +98,7 @@ export function* speechInput(
       const punctuated = punctuatedConcatenation(phrase)
       yield* info("updating interimText", punctuated)
       interimText = punctuated
+      lastChangeTime = Date.now()
     })
   })
 
