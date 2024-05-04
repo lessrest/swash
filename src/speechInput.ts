@@ -51,7 +51,7 @@ export function* speechInput(
   let done = false
 
   const typingAnimationTask = yield* task("typing animation", function* () {
-    yield* appendNewTarget(tag("p.typing-animation", {}, nbsp))
+    const self = yield* appendNewTarget(tag("p.typing-animation", {}, nbsp))
 
     let limit = 0
     for (;;) {
@@ -64,12 +64,11 @@ export function* speechInput(
         yield* replaceChildren(finalText)
         break
       } else {
-        if (textToShow !== text) {
-          yield* info("replacing text", { textToShow, text })
+        if (textToShow !== self.innerText) {
           yield* replaceChildren(textToShow)
         }
 
-        yield* sleep(20)
+        yield* sleep(40)
         limit = Math.min(graphemes.length, limit + 1)
       }
     }
