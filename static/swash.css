@@ -43,11 +43,64 @@ button:focus {
   }
 }
 
+@property --gradient-color-1 {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: black;
+}
+
+@property --gradient-color-2 {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: #2c1038;
+}
+
+@property --gradient-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 242deg;
+}
+
 body {
-  background-color: #000;
-  background-image: linear-gradient(242deg, black, #2c1038);
+  background-image: linear-gradient(
+    var(--gradient-angle),
+    var(--gradient-color-1),
+    var(--gradient-color-2)
+  );
+  color: #ffc;
+  transition: --gradient-angle 1s ease-in, --gradient-color-1 0.5s ease-in,
+    --gradient-color-2 0.5s ease-in, color 0.5s ease-in;
+}
+
+/* light mode */
+@media (prefers-color-scheme: light) {
+  body {
+    color: #224764;
+    --gradient-angle: 111deg;
+    --gradient-color-1: white;
+    --gradient-color-2: #83cde6;
+  }
+
+  button {
+    background-color: #d1c1e0;
+    color: #2c1038;
+  }
+
+  button:hover {
+    background-color: #c0b0d0;
+  }
+
+  button:active {
+    background-color: #c0b0d0;
+  }
+
+  button:focus {
+    box-shadow: 0 0 0 4px #d1c1e0;
+  }
+}
+
+body {
   min-height: 100vh;
-  color: ivory;
   margin: 0;
   font-size: 20px;
   line-height: 1.5;
@@ -73,7 +126,6 @@ video {
 
 article {
   font-weight: 500;
-  color: #ffffcc;
   padding: 2rem 4rem;
 }
 
@@ -93,4 +145,36 @@ ins.user {
 
 p.typing-animation {
   white-space: pre-wrap;
+}
+
+telegram-client {
+  filter: grayscale(1);
+  transition: filter 0.5s ease-in;
+  animation: connecting 0.4s ease infinite;
+  justify-self: end;
+  margin: 1rem 2rem;
+  position: fixed;
+}
+
+@keyframes connecting {
+  0% {
+    transform: rotate3d(0, 0, 1, 0deg);
+  }
+  25% {
+    transform: rotate3d(0, 0, 1, 5deg);
+  }
+  50% {
+    transform: rotate3d(0, 0, 1, 0deg);
+  }
+  75% {
+    transform: rotate3d(0, 0, 1, -5deg);
+  }
+  100% {
+    transform: rotate3d(0, 0, 1, 0deg);
+  }
+}
+
+telegram-client.connected {
+  filter: grayscale(0);
+  animation: none;
 }

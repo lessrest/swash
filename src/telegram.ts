@@ -43,7 +43,7 @@ export function useTelegramClient(): Operation<TelegramHandle> {
     const client = new window.tdweb.default({
       onUpdate: (x) => updateSignal.send(x),
       instanceName: "charliebot",
-      jsLogVerbosityLevel: "info",
+      jsLogVerbosityLevel: "warning",
       useDatabase: true,
     })
 

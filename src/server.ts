@@ -287,10 +287,14 @@ function* handleOpenAIProxy(
   provide: (value: Response) => Operation<void>,
 ): Operation<void> {
   const path = new URL(req.url).pathname.replace("/openai", "")
-  if (
-    path !== "/v1/audio/transcriptions" &&
-    path !== "/v1/chat/completions"
-  ) {
+  const allowedPaths = [
+    "/v1/audio/transcriptions",
+    "/v1/chat/completions",
+    "/v1/audio/translations",
+    "/v1/embeddings",
+    "/v1/images/generations",
+  ]
+  if (!allowedPaths.includes(path)) {
     yield* provide(
       new Response("Unsupported OpenAI API endpoint", { status: 400 }),
     )
@@ -329,6 +333,7 @@ function* handleAnthropicProxy(
         "X-API-Key": anthropicApiKey,
         "Content-Type": req.headers.get("Content-Type") || "",
         "anthropic-version": "2023-06-01",
+        "anthropic-beta": "tools-2024-04-04",
       },
       body: req.body,
       signal: yield* useAbortSignal(),
@@ -442,6 +447,7 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
     }
 
     if (url.pathname === "/") {
+      yield* info("bundling swash.ts at", new Date())
       const { code } = yield* call(
         bundle("./src/swash.ts", {
           importMap: {
@@ -452,14 +458,9 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
             },
           },
           allowRemote: true,
-          compilerOptions: {
-            inlineSourceMap: true,
-            inlineSources: true,
-          },
-          minify: true,
         }),
       )
-      const css = yield* call(Deno.readTextFile("./static/swash.css"))
+      yield* info("bundled swash.ts at", new Date())
       yield* provide(
         new Response(
           `<!doctype html>
@@ -469,7 +470,7 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
 <link rel="preconnect" href="https://rsms.me/">
 <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <style>
-${css}
+${yield* call(Deno.readTextFile("./static/swash.css"))}
 </style>
 <script src="./tdweb/tdweb.cjs"></script>
 <script>

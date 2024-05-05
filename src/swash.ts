@@ -136,7 +136,6 @@ function* recordingSession(
   yield* suspend()
 }
 
-
 function getWebSocketUrl(): string {
   return `${document.location.protocol === "https:" ? "wss:" : "ws:"}//${
     document.location.host

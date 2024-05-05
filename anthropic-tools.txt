@@ -1,0 +1,100 @@
+╔═════════════════════════════════════════════════════════════════════════════╗
+║                                                                             ║
+║                   Providing Tools to Claude using the API                   ║
+║                                                                             ║
+╚═════════════════════════════════════════════════════════════════════════════╝
+
+To provide tools to Claude using the Messages API:
+
+  1. Define tools in the "tools" parameter of the API request:
+     - name: Tool name (^[a-zA-Z0-9_-]{1,64}$)
+     - description: Detailed plaintext description of tool behavior
+     - input_schema: JSON Schema object defining expected tool parameters
+
+  2. Include user prompt that may require tool use.
+
+  3. Claude will return a response with stop_reason "tool_use" if it decides 
+     to use a tool, with a tool_use content block containing:
+     - id: Unique identifier for this tool use
+     - name: Name of the tool being used
+     - input: Object containing the input passed to the tool
+
+  4. Extract tool name, id, and input. Run the actual tool code.
+
+  5. [Optional] Return tool results to Claude with a user message containing 
+     a tool_result content block:
+     - tool_use_id: The id of the tool use request this is a result for
+     - content: Tool result as a string or list of text content blocks
+     - is_error: Set to true if tool execution resulted in an error
+
+  6. Claude will use the tool result to formulate its final response.
+
+╔═════════════════════════════════════════════════════════════════════════════╗
+║                                                                             ║
+║                             Specifying Tools                                ║
+║                                                                             ║
+╚═════════════════════════════════════════════════════════════════════════════╝
+
+Tool definitions should include:
+
+  - Extremely detailed descriptions explaining what the tool does, when to use 
+    it, what each parameter means, and any caveats or limitations.
+  - Prioritize descriptions over examples.
+
+╔═════════════════════════════════════════════════════════════════════════════╗
+║                                                                             ║
+║                              Forcing Tool Use                               ║
+║                                                                             ║
+╚═════════════════════════════════════════════════════════════════════════════╝
+
+To encourage Claude to use a specific tool, add explicit instructions in the 
+user message, e.g. "What's the weather like in London? Use the get_weather 
+tool in your response."
+
+╔═════════════════════════════════════════════════════════════════════════════╗
+║                                                                             ║
+║                                JSON Output                                  ║
+║                                                                             ║
+╚═════════════════════════════════════════════════════════════════════════════╝
+
+Tools can be used anytime you want the model to return JSON output that 
+follows a provided schema.
+
+╔═════════════════════════════════════════════════════════════════════════════╗
+║                                                                             ║
+║                               Error Handling                                ║
+║                                                                             ║
+╚═════════════════════════════════════════════════════════════════════════════╝
+
+Possible errors:
+
+  - Tool execution error: Return error message in content with "is_error": true
+  - Max tokens exceeded: Retry with higher max_tokens if response is truncated
+  - Invalid tool use: Provide more detailed tool descriptions, or continue with 
+    a tool_result indicating the error for Claude to retry
+
+╔═════════════════════════════════════════════════════════════════════════════╗
+║                                                                             ║
+║                         Chain of Thought Tool Use                           ║
+║                                                                             ║
+╚═════════════════════════════════════════════════════════════════════════════╝
+
+Claude often shows its step-by-step reasoning when using tools, especially 
+with the Claude 3 Opus model. This can be prompted in other models by adding 
+"Before answering, explain your reasoning step-by-step in tags." to the user 
+message or system prompt.
+
+╔═════════════════════════════════════════════════════════════════════════════╗
+║                                                                             ║
+║                    Tool Use Best Practices and Limitations                  ║
+║                                                                             ║
+╚═════════════════════════════════════════════════════════════════════════════╝
+
+  - Use Claude 3 Opus for complex tool use, Haiku for straightforward tools
+  - All models can handle hundreds of simple tools or fewer complex tools
+  - Simplify tool interfaces and input schemas for best results
+  - Design for sequential tool use, not parallel
+  - Expect 2-3 retries on invalid tool use before an apology message
+  - Check chain of thought output and tool descriptions when debugging
+  - Disable search quality reflection by adding "Do not reflect on the quality 
+    of the returned search results in your response." to the prompt
