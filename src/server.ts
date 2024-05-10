@@ -458,6 +458,11 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
             },
           },
           allowRemote: true,
+          compilerOptions: {
+            inlineSourceMap: true,
+            inlineSources: true,
+          },
+          minify: false,
         }),
       )
       yield* info("bundled swash.ts at", new Date())

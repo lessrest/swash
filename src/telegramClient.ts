@@ -2,7 +2,7 @@ import { Stream, call, resource } from "effection"
 import { appendNewTarget, foreach, useClassName } from "./kernel.ts"
 import { tag } from "./tag.ts"
 import { info, task } from "./task.ts"
-import { useTelegramClient } from "./telegram-service.ts"
+import { useTelegramClient } from "./telegram.ts"
 
 export function* telegramClient(saveChannel: Stream<string, void>) {
   return yield* task("telegram client", function* () {
@@ -10,7 +10,8 @@ export function* telegramClient(saveChannel: Stream<string, void>) {
       tag("telegram-client", {
         style: {
           backgroundImage:
-            "url(https://upload.wikimedia.org/wikipedia/commons/8/82/Telegram_logo.svg)",
+            "url(http" +
+            "s://upload.wikimedia.org/wikipedia/commons/8/82/Telegram_logo.svg)",
           backgroundSize: "cover",
           backgroundPosition: "center",
           backgroundRepeat: "no-repeat",

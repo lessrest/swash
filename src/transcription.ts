@@ -33,8 +33,8 @@ export function paragraphsToText(x: {
   }[]
 }) {
   return x.paragraphs
-    .map(({ sentences }) => sentences.map(({ text }) => text).join(" "))
-    .join("\n\n")
+    .map(({ sentences }) => sentences.map(({ text }) => text).join("\n"))
+    .join("\n")
 }
 
 export function plainConcatenation(speech: SpokenWord[]) {

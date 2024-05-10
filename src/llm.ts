@@ -38,6 +38,12 @@ export const modelList: Model[] = [
   },
 ]
 
+export const Claude_III_Opus: Model = {
+  name: "Claude III Opus",
+  model: "claude-3-opus-20240229",
+  provider: "anthropic",
+}
+
 export const modelsByName = modelList.reduce((acc, model) => {
   acc[model.name] = model
   return acc

@@ -1,4 +1,6 @@
 import { Operation, Task, createContext, spawn } from "effection"
+import { append, appendNewTarget } from "./kernel.ts"
+import { tag } from "./tag.ts"
 
 export const Breadcrumb = createContext<string[]>("Breadcrumb", [])
 
@@ -77,14 +79,21 @@ export function* task<T>(
   fn: () => Operation<T>,
 ): Operation<Task<T>> {
   return yield* spawn(function* () {
+    const node = yield* appendNewTarget(
+      tag("task", { "data-task-name": name, "data-task-state": "started" }),
+    )
+    yield* append(tag("header", {}, name))
+    yield* appendNewTarget(tag("main"))
     yield* pushTaskName(name)
     try {
       yield* syslog("started at", new Date())
       const x = yield* fn()
+      node.setAttribute("data-task-state", "finished")
       yield* syslog("finished at", new Date())
       return x
     } catch (err) {
       yield* syslog("failed at", new Date(), err)
+      node.setAttribute("data-task-state", "failed")
       throw err
     } finally {
       yield* syslog("exited at", new Date())

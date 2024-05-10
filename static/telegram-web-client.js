@@ -1,5 +1,5 @@
-import { tag, asyncTag } from "./tag.ts"
-import { TelegramService } from "./telegram-service.ts"
+import { tag, asyncTag } from "../src/tag.ts"
+import { TelegramService } from "../src/telegram.ts"
 
 export class TelegramClientView extends HTMLElement {
   connectedCallback() {

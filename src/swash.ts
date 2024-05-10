@@ -8,12 +8,13 @@ import {
   main,
   on,
   resource,
+  sleep,
   suspend,
 } from "effection"
 
 import { append, appendNewTarget, foreach, message } from "./kernel.ts"
 
-import { speechInput } from "./speechInput.ts"
+import { speechInput } from "./speech.ts"
 import { tag } from "./tag.ts"
 import { Epoch, info, task } from "./task.ts"
 import { telegramClient } from "./telegramClient.ts"
@@ -29,9 +30,7 @@ const recorderOptions: MediaRecorderOptions = MediaRecorder.isTypeSupported(
 const videoFeatureFlag = document.location.hash.includes("video")
 
 function* app() {
-  yield* task("swa.sh user agent", function* () {
-    yield* appendNewTarget(tag("app"))
-
+  yield* task("swa.sh", function* () {
     const stream = yield* useMediaStream({
       audio: true,
       video: false,
@@ -84,7 +83,7 @@ function* recordingSession(
 
   const recorder = yield* useMediaRecorder(audioStream, recorderOptions)
 
-  yield* task("audio packet transmitter", function* () {
+  yield* task("audio transmitter", function* () {
     yield* foreach(on(recorder, "dataavailable"), function* ({ data }) {
       try {
         yield* socket.send(data)
@@ -100,7 +99,7 @@ function* recordingSession(
   yield* info("specifies language with code", language)
   yield* info("has audio format", recorderOptions.mimeType)
 
-  yield* task("socket reader", function* () {
+  yield* task("transcript receiver", function* () {
     for (const event of yield* each(socket)) {
       const data = JSON.parse(event.data)
 
@@ -123,13 +122,17 @@ function* recordingSession(
     }
   })
 
-  yield* task("speech input", function* () {
+  yield* task("speech", function* () {
     yield* appendNewTarget(tag("article"))
     for (;;) {
-      yield* call(function* () {
-        const text = yield* speechInput(interimChannel, finalChannel)
-        yield* saveChannel.send(text)
-      })
+      try {
+        yield* speechInput(interimChannel, finalChannel, function* (x) {
+          yield* saveChannel.send(x)
+        })
+      } catch (error) {
+        yield* info("error in speech input", error)
+        yield* sleep(500)
+      }
     }
   })
 

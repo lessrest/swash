@@ -91,7 +91,9 @@ export function* replaceChildren(
   ...content: (string | Node)[]
 ): Operation<void> {
   const { node } = yield* Target
-  node.replaceChildren(...content)
+  document.startViewTransition(() => {
+    node.replaceChildren(...content)
+  })
 }
 
 export function* querySelectorAll<T extends Element>(

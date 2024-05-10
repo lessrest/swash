@@ -1,3 +1,5 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap");
+
 * {
   box-sizing: border-box;
   margin: 0;
@@ -33,14 +35,8 @@ button:focus {
 }
 
 :root {
-  font-family: Inter, sans-serif;
-  font-feature-settings: "liga" 1, "calt" 1, "dlig" 1;
-}
-
-@supports (font-variation-settings: normal) {
-  :root {
-    font-family: InterVariable, sans-serif;
-  }
+  font-family: "DM Sans", sans-serif;
+  font-optical-sizing: auto;
 }
 
 @property --gradient-color-1 {
@@ -80,23 +76,6 @@ body {
     --gradient-color-1: white;
     --gradient-color-2: #83cde6;
   }
-
-  button {
-    background-color: #d1c1e0;
-    color: #2c1038;
-  }
-
-  button:hover {
-    background-color: #c0b0d0;
-  }
-
-  button:active {
-    background-color: #c0b0d0;
-  }
-
-  button:focus {
-    box-shadow: 0 0 0 4px #d1c1e0;
-  }
 }
 
 body {
@@ -104,10 +83,6 @@ body {
   margin: 0;
   font-size: 20px;
   line-height: 1.5;
-}
-
-app {
-  display: grid;
 }
 
 video {
@@ -120,31 +95,25 @@ video {
   right: 0;
   bottom: 0;
   z-index: -1;
-  filter: blur(0px) sepia(0.6) hue-rotate(145deg) saturate(1.2) contrast(0.8)
+  filter: blur(4px) sepia(1) hue-rotate(0deg) saturate(1.2) contrast(0.8)
     brightness(0.6);
 }
 
 article {
   font-weight: 500;
-  padding: 2rem 4rem;
 }
 
 p {
   margin: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 0.5em;
+  /* padding: 0.5em; */
   min-width: 1em;
   min-height: 1.5em;
-  gap: 0.25em;
-}
-
-ins.user {
-  text-decoration: none;
-}
-
-p.typing-animation {
+  gap: 0.5em;
   white-space: pre-wrap;
+}
+
+section:not(:last-of-type) {
+  margin-bottom: 1em;
 }
 
 telegram-client {
@@ -177,4 +146,72 @@ telegram-client {
 telegram-client.connected {
   filter: grayscale(0);
   animation: none;
+}
+
+.countdown {
+  color: #777;
+  border-radius: 0px;
+}
+
+button {
+  display: none;
+}
+
+section {
+  padding-left: 1em;
+  border-left: 8px solid transparent;
+  transition: border-left 0.25s ease-in-out;
+}
+
+section.working-1 {
+  border-left: 8px solid #afa8;
+}
+
+section.working-2 {
+  border-left: 8px solid #aff8;
+}
+
+p.response {
+  font-style: italic;
+  margin-left: 1em;
+  margin-top: 1em;
+}
+
+task {
+  border: 1px solid #aff3;
+  border-radius: 4px;
+  padding: 0 0.5em;
+  display: inline-flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 0.25em;
+  margin: 0.25em 0.5em;
+}
+
+[data-task-state="started"] {
+  box-shadow: 0 0 40px 0 #1555;
+}
+
+[data-task-state="finished"] {
+  border-color: #a773;
+  opacity: 0.8;
+}
+
+[data-task-state="failed"] {
+  border-color: red;
+  opacity: 0.8;
+}
+
+task > main:empty {
+  display: none;
+}
+
+task > main {
+  display: flex;
+  flex-direction: column;
+}
+
+task > header {
+  font-size: 75%;
+  color: #aff7;
 }
