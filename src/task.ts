@@ -99,8 +99,21 @@ export function* task<T>(
       yield* syslog("failed at", new Date(), err)
       node.setAttribute("data-task-state", "failed")
       throw err
-    } finally {
-      yield* syslog("exited at", new Date())
     }
   })
+}
+
+export function* conf(name: string): Operation<string> {
+  const value = localStorage.getItem(name)
+  if (value) {
+    return value
+  } else {
+    const input = yield* quiz(name)
+    if (input) {
+      localStorage.setItem(name, input)
+      return input
+    } else {
+      throw new Error(`Configuration value ${name} not found`)
+    }
+  }
 }

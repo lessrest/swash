@@ -63,16 +63,16 @@ export function* waitForAnimationFrame() {
 }
 
 export function talk(
-  interimStream: Stream<Word[], void>,
-  finalStream: Stream<Word[], void>,
-  _onFinalText: (text: string) => Operation<void>,
+  flux: Stream<Word[], void>,
+  firm: Stream<Word[], void>,
+  save: (text: string) => Operation<void>,
 ): Operation<string> {
   return resource(function* (provide) {
     yield* info("🆕 new speech")
-    let best = ""
-    let interimText = ""
 
-    let paragraphDone = false
+    let fine = ""
+    let line = ""
+    let exit = false
 
     const psst = createChannel<"change">()
     const gong = createChannel<"timeout">()
@@ -85,7 +85,7 @@ export function talk(
         yield* nest(tray)
         let limit = 0
         for (;;) {
-          const text = best + interimText
+          const text = fine + line
           const graphemes = graphemesOf(text)
           const remaining = graphemes.length - limit
           const textToShow = graphemes.slice(0, limit).join("")
@@ -95,7 +95,7 @@ export function talk(
             })
           }
 
-          if (paragraphDone && remaining <= 0) {
+          if (exit && remaining <= 0) {
             break
           } else {
             limit = Math.min(graphemes.length, limit + 1)
@@ -152,9 +152,9 @@ export function talk(
                 call(function* () {
                   const { paragraphs } = yield* hark(tape, "en")
                   if (paragraphs) {
-                    best = paragraphsToText(paragraphs) + " "
+                    fine = paragraphsToText(paragraphs) + " "
                     fade(() => {
-                      show(best)
+                      show(fine)
                       tray.classList.add("did-retranscribe")
                     })
                     yield* gong.send("timeout")
@@ -172,7 +172,7 @@ export function talk(
               messages: [
                 {
                   role: "user",
-                  content: tidy(best),
+                  content: tidy(fine),
                 },
               ],
               temperature: 0,
@@ -180,11 +180,11 @@ export function talk(
             }
 
             yield* mend(yield* stream(c3haiku, wish))
-            yield* mend(yield* stream(c3opus, wish))
+
+            const gold = yield* mend(yield* stream(c3opus, wish))
+            yield* save(gold)
 
             break
-          } else {
-            //            animation.currentTime = 0
           }
         }
       })
@@ -199,7 +199,7 @@ export function talk(
     ) {
       const subscription = yield* stream
       for (;;) {
-        if (paragraphDone) break
+        if (exit) break
 
         const { value: phrase, done } = yield* subscription.next()
         if (done) break
@@ -214,7 +214,7 @@ export function talk(
     }
 
     yield* task("final processor", function* () {
-      yield* processStream(finalStream, function* (phrase) {
+      yield* processStream(firm, function* (phrase) {
         yield* psst.send("change")
         if (plainConcatenation(phrase) === "over") {
           yield* info("got 'over', stopping")
@@ -226,23 +226,31 @@ export function talk(
           return
         }
 
-        best += processPhrase(phrase)
+        fine += processPhrase(phrase)
       })
     })
 
     yield* task("interim processor", function* () {
-      yield* processStream(interimStream, function* (phrase) {
+      yield* processStream(flux, function* (phrase) {
         const processed = processPhrase(phrase).trim()
-        if (interimText !== processed) {
-          yield* info("interim text changed", interimText, processed)
-          interimText = processed
+        if (line !== processed) {
+          yield* info("interim text changed", line, processed)
+          line = processed
           yield* psst.send("change")
         }
       })
     })
 
-    function hold() {
-      return waitForStream(psst)
+    function* hold(note?: string) {
+      if (note) {
+        yield* info("hold", note)
+      }
+
+      try {
+        yield* waitForStream(psst)
+      } finally {
+        if (note) yield* info("held", note)
+      }
     }
 
     try {
@@ -251,11 +259,11 @@ export function talk(
       yield* info("error waiting for timeout", e)
     } finally {
       yield* info("paragraph done")
-      paragraphDone = true
+      exit = true
     }
 
     try {
-      yield* provide(best)
+      yield* provide(fine)
       yield* suspend()
     } catch (e) {
       yield* info("error in speechInput", e)

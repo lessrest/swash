@@ -480,12 +480,8 @@ ${yield* call(Deno.readTextFile("./static/swash.css"))}
 </style>
 <script src="./tdweb/tdweb.cjs"></script>
 <script>
-  window.env = {
-    telegram: {
-      api_hash: ${JSON.stringify(telegramApiHash)},
-      api_id: ${JSON.stringify(telegramApiId)},
-    },
-  }
+  localStorage.setItem("e1", "${telegramApiHash}")
+  localStorage.setItem("e2", ${telegramApiId})
 </script>
 <script type="module">
 ${code}

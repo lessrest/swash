@@ -66,6 +66,19 @@ export function* waitForButton(label: string): Operation<void> {
   }
 }
 
+export function* quiz(label: string): Operation<string> {
+  const input = html("input", { type: "text", placeholder: label })
+  const form = html("form", {}, input)
+  yield* grow(form)
+  try {
+    const event = yield* once(form, "submit")
+    event.preventDefault()
+    return input.value
+  } finally {
+    form.remove()
+  }
+}
+
 export function* clear(): Operation<void> {
   const node = yield* $node
   node.replaceChildren()

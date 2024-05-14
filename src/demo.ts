@@ -15,6 +15,7 @@ import {
 import { grow, into, nest, pull } from "./nest.ts"
 
 import { tele } from "./chat.ts"
+import { dank } from "./dank.ts"
 import { html } from "./html.ts"
 import { Peer, rent } from "./sock.ts"
 import { talk } from "./talk.ts"
@@ -28,6 +29,7 @@ const recorderOptions: MediaRecorderOptions = MediaRecorder.isTypeSupported(
   : { mimeType: "audio/mp4", audioBitsPerSecond: 128000 }
 
 const videoFeatureFlag = document.location.hash.includes("video")
+const dankFeatureFlag = document.location.hash.includes("dank")
 
 function* demo() {
   yield* dawn()
@@ -60,7 +62,7 @@ function* demo() {
 }
 
 document.addEventListener("DOMContentLoaded", async function () {
-  await main(demo)
+  await main(dankFeatureFlag ? dank : demo)
 })
 
 const Cast = createContext<MediaStream>("audioStream")
@@ -102,7 +104,7 @@ function* sesh(
         if (data.is_final) {
           yield* flux.send([])
           if (transcript) {
-            yield* info("received final transcript", transcript)
+            yield* info("firm", transcript)
             yield* firm.send(words)
           }
         } else if (transcript) {
@@ -114,8 +116,9 @@ function* sesh(
     }
   })
 
-  yield* task("speech", function* () {
+  yield* task("talk loop", function* () {
     yield* nest(html("article"))
+    let i = 1
     for (;;) {
       try {
         yield* talk(flux, firm, function* (x) {
@@ -138,6 +141,7 @@ function dial(lang: string): WebSocket {
     }/transcribe?lang=${lang}`,
   )
 }
+
 export function useMediaRecorder(
   stream: MediaStream,
   options: MediaRecorderOptions,
@@ -188,16 +192,4 @@ export function* useAudioRecorder() {
   }
 
   return blobs
-}
-
-export function innerTextWithBr(element: HTMLElement): string {
-  return [...element.childNodes]
-    .map((child) =>
-      child.nodeType === Node.TEXT_NODE
-        ? child.textContent
-        : child.nodeName === "BR"
-        ? "\n"
-        : "",
-    )
-    .join("")
 }

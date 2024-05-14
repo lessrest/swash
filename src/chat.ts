@@ -7,14 +7,30 @@ import {
   createSignal,
   resource,
 } from "effection"
-import { html } from "./html.ts"
-import { nest, pull, seem } from "./nest.ts"
-import { info, task } from "./task.ts"
 
-const $api = createContext<{ api_id: string; api_hash: string }>("api")
+import { html } from "./html.ts"
+import { nest, pull, quiz, seem } from "./nest.ts"
+import { conf, info, task } from "./task.ts"
 
 export function* tele(saveChannel: Stream<string, void>) {
   return yield* task("telegram client", function* () {
+    const news = createSignal<AnyUpdate, void>()
+    const feed = yield* news
+
+    const wire = new window.tdweb.default({
+      onUpdate: (x) => news.send(x),
+      instanceName: "charliebot",
+      jsLogVerbosityLevel: "warning",
+      useDatabase: true,
+    })
+
+    yield* $wire.set(wire)
+
+    const handle = {
+      next: feed.next,
+      [Symbol.iterator]: news[Symbol.iterator],
+    }
+
     yield* nest(
       html("telegram-client", {
         style: {
@@ -30,8 +46,6 @@ export function* tele(saveChannel: Stream<string, void>) {
       }),
     )
 
-    const handle = yield* useTelegramClient()
-
     const self: string = yield* resource<string>(function* (provide) {
       yield* pull(handle, function* (update) {
         if (update["@type"] === "updateAuthorizationState") {
@@ -41,12 +55,11 @@ export function* tele(saveChannel: Stream<string, void>) {
           switch (authorization_state["@type"]) {
             case "authorizationStateWaitTdlibParameters": {
               yield* info("waiting for tdlib parameters")
-              const { api_id, api_hash } = yield* $api
               yield* send("setTdlibParameters", {
                 parameters: {
                   use_test_dc: false,
-                  api_id,
-                  api_hash,
+                  api_id: parseInt(conf("Telegram API ID"), 10),
+                  api_hash: conf("Telegram API Hash"),
                   system_language_code: "en",
                   device_model: "Desktop",
                   system_version: "",
@@ -73,7 +86,7 @@ export function* tele(saveChannel: Stream<string, void>) {
             case "authorizationStateWaitPhoneNumber": {
               yield* info("waiting for phone number")
               yield* send("setAuthenticationPhoneNumber", {
-                phone_number: prompt("Telegram phone number"),
+                phone_number: yield* quiz("Telegram phone number"),
               })
               break
             }
@@ -81,7 +94,7 @@ export function* tele(saveChannel: Stream<string, void>) {
             case "authorizationStateWaitCode": {
               yield* info("waiting for code")
               yield* send("checkAuthenticationCode", {
-                code: prompt("Telegram code"),
+                code: yield* quiz("Telegram authentication code"),
               })
               break
             }
@@ -105,7 +118,6 @@ export function* tele(saveChannel: Stream<string, void>) {
 
     yield* task("saver", function* () {
       yield* pull(saveChannel, function* (text) {
-        yield* info("TODO saving", text)
         yield* send("sendMessage", {
           chat_id: self,
           input_message_content: {
@@ -150,7 +162,9 @@ const $wire = createContext<Wire>("wire")
 
 function* send<O, I>(verb: string, body: I): Operation<O> {
   const client = yield* $wire
-  return yield* call(client.send<O, I>({ "@type": verb, ...body }))
+  const x = { "@type": verb, ...body }
+  yield* info("send", x)
+  return yield* call(client.send<O, I>(x))
 }
 
 export const setTdlibParameters = (parameters: TdlibParameters) =>
@@ -159,26 +173,3 @@ export const setTdlibParameters = (parameters: TdlibParameters) =>
 export interface News
   extends Subscription<AnyUpdate, void>,
     Stream<AnyUpdate, void> {}
-
-export function useTelegramClient(): Operation<News> {
-  return resource(function* (provide) {
-    const news = createSignal<AnyUpdate, void>()
-    const feed = yield* news
-
-    const wire = new window.tdweb.default({
-      onUpdate: (x) => news.send(x),
-      instanceName: "charliebot",
-      jsLogVerbosityLevel: "warning",
-      useDatabase: true,
-    })
-
-    try {
-      yield* provide({
-        next: feed.next,
-        [Symbol.iterator]: news[Symbol.iterator],
-      })
-    } finally {
-      yield* call(wire.send({ "@type": "close" }))
-    }
-  })
-}

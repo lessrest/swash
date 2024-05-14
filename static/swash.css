@@ -85,6 +85,10 @@ ruby rt {
   font-size: 70%;
 }
 
+[data-task-name="drip"][data-task-state="finished"] {
+  opacity: 0.8;
+}
+
 p {
   margin-bottom: 0.25em;
   /* padding: 0.5em; */
