@@ -1,6 +1,6 @@
 import { Operation, Task, createContext, spawn } from "effection"
-import { append, appendNewTarget } from "./kernel.ts"
-import { tag } from "./tag.ts"
+import { html } from "./html.ts"
+import { grow, nest } from "./nest.ts"
 
 export const Breadcrumb = createContext<string[]>("Breadcrumb", [])
 
@@ -45,13 +45,17 @@ export function* syslog<T extends unknown[]>(...args: T) {
   Console.syslog(...(yield* formatArgs(args)))
 }
 
-export const Epoch = createContext<Date>("Epoch")
+export const Dawn = createContext<Date>("Epoch")
+
+export function* dawn() {
+  yield* Dawn.set(new Date())
+}
 
 function* formatArgs(args: unknown[]): Operation<unknown[]> {
   const formattedArgs = []
   for (const arg of args) {
     if (arg instanceof Date) {
-      const epoch = yield* Epoch.get()
+      const epoch = yield* Dawn.get()
       if (epoch && arg.getTime() !== epoch.getTime()) {
         const relativeTime = (
           (arg.getTime() - epoch.getTime()) /
@@ -79,11 +83,11 @@ export function* task<T>(
   fn: () => Operation<T>,
 ): Operation<Task<T>> {
   return yield* spawn(function* () {
-    const node = yield* appendNewTarget(
-      tag("task", { "data-task-name": name, "data-task-state": "started" }),
+    const node = yield* nest(
+      html("task", { "data-task-name": name, "data-task-state": "started" }),
     )
-    yield* append(tag("header", {}, name))
-    yield* appendNewTarget(tag("main"))
+    yield* grow(html("header", {}, name))
+    yield* nest(html("main"))
     yield* pushTaskName(name)
     try {
       yield* syslog("started at", new Date())

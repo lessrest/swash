@@ -12,14 +12,14 @@ import {
   suspend,
 } from "effection"
 
-import { append, appendNewTarget, foreach, message } from "./kernel.ts"
+import { grow, into, nest, pull } from "./nest.ts"
 
-import { speechInput } from "./speech.ts"
-import { tag } from "./tag.ts"
-import { Epoch, info, task } from "./task.ts"
-import { telegramClient } from "./telegramClient.ts"
-import { SpokenWord } from "./transcription.ts"
-import { WebSocketHandle, useWebSocket } from "./websocket.ts"
+import { tele } from "./chat.ts"
+import { html } from "./html.ts"
+import { Peer, rent } from "./sock.ts"
+import { talk } from "./talk.ts"
+import { dawn, info, task } from "./task.ts"
+import { Word } from "./text.ts"
 
 const recorderOptions: MediaRecorderOptions = MediaRecorder.isTypeSupported(
   "audio/webm;codecs=opus",
@@ -29,7 +29,9 @@ const recorderOptions: MediaRecorderOptions = MediaRecorder.isTypeSupported(
 
 const videoFeatureFlag = document.location.hash.includes("video")
 
-function* app() {
+function* demo() {
+  yield* dawn()
+  yield* into(document.body)
   yield* task("swa.sh", function* () {
     const stream = yield* useMediaStream({
       audio: true,
@@ -38,69 +40,59 @@ function* app() {
     const saveChannel: Channel<string, void> = createChannel<string>()
 
     if (location.hash.includes("telegram")) {
-      yield* telegramClient(saveChannel)
+      yield* tele(saveChannel)
     }
 
     if (videoFeatureFlag) {
-      const videoElement = tag<HTMLVideoElement>("video")
+      const videoElement = html<HTMLVideoElement>("video")
       videoElement.srcObject = yield* useMediaStream({
         audio: false,
         video: true,
       })
-      yield* append(videoElement)
+      yield* grow(videoElement)
       videoElement.play()
     }
 
-    yield* recordingSession(stream, saveChannel)
+    yield* sesh(stream, saveChannel)
   })
 
   yield* suspend()
 }
 
 document.addEventListener("DOMContentLoaded", async function () {
-  await main(app)
+  await main(demo)
 })
 
-const ctxAudioStream = createContext<MediaStream>("audioStream")
+const Cast = createContext<MediaStream>("audioStream")
+const lang = "en"
 
-function* recordingSession(
-  stream: MediaStream,
+function* sesh(
+  src: MediaStream,
   saveChannel: Channel<string, void>,
 ): Operation<void> {
-  const audioStream = new MediaStream(stream.getAudioTracks())
-  yield* ctxAudioStream.set(audioStream)
+  yield* dawn()
 
-  const language = "en"
+  const cast = yield* Cast.set(new MediaStream(src.getAudioTracks()))
+  const saas: Peer = yield* rent(dial(lang))
 
-  const interimChannel = createChannel<SpokenWord[]>()
-  const finalChannel = createChannel<SpokenWord[]>()
+  const flux = createChannel<Word[]>()
+  const firm = createChannel<Word[]>()
 
-  yield* Epoch.set(new Date())
-
-  const socket: WebSocketHandle = yield* useWebSocket(
-    new WebSocket(`${getWebSocketUrl()}/transcribe?language=${language}`),
-  )
-
-  const recorder = yield* useMediaRecorder(audioStream, recorderOptions)
+  const tape = yield* useMediaRecorder(cast, recorderOptions)
 
   yield* task("audio transmitter", function* () {
-    yield* foreach(on(recorder, "dataavailable"), function* ({ data }) {
-      try {
-        yield* socket.send(data)
-      } catch (error) {
-        yield* info("error sending data", error)
-        throw error
-      }
+    yield* pull(on(tape, "dataavailable"), function* ({ data }) {
+      yield* saas.send(data)
     })
   })
 
-  recorder.start(100)
+  tape.start(100)
 
-  yield* info("specifies language with code", language)
+  yield* info("specifies language with code", lang)
   yield* info("has audio format", recorderOptions.mimeType)
 
   yield* task("transcript receiver", function* () {
-    for (const event of yield* each(socket)) {
+    for (const event of yield* each(saas)) {
       const data = JSON.parse(event.data)
 
       if (data.type === "Results" && data.channel) {
@@ -108,13 +100,13 @@ function* recordingSession(
           alternatives: [{ transcript, words }],
         } = data.channel
         if (data.is_final) {
-          yield* interimChannel.send([])
+          yield* flux.send([])
           if (transcript) {
             yield* info("received final transcript", transcript)
-            yield* finalChannel.send(words)
+            yield* firm.send(words)
           }
         } else if (transcript) {
-          yield* interimChannel.send(words)
+          yield* flux.send(words)
         }
       }
 
@@ -123,10 +115,10 @@ function* recordingSession(
   })
 
   yield* task("speech", function* () {
-    yield* appendNewTarget(tag("article"))
+    yield* nest(html("article"))
     for (;;) {
       try {
-        yield* speechInput(interimChannel, finalChannel, function* (x) {
+        yield* talk(flux, firm, function* (x) {
           yield* saveChannel.send(x)
         })
       } catch (error) {
@@ -139,12 +131,13 @@ function* recordingSession(
   yield* suspend()
 }
 
-function getWebSocketUrl(): string {
-  return `${document.location.protocol === "https:" ? "wss:" : "ws:"}//${
-    document.location.host
-  }`
+function dial(lang: string): WebSocket {
+  return new WebSocket(
+    `${document.location.protocol === "https:" ? "wss:" : "ws:"}//${
+      document.location.host
+    }/transcribe?lang=${lang}`,
+  )
 }
-
 export function useMediaRecorder(
   stream: MediaStream,
   options: MediaRecorderOptions,
@@ -172,7 +165,6 @@ export function useMediaStream(
       yield* provide(stream)
     } finally {
       for (const track of stream.getTracks()) {
-        yield* message(`stopping ${track.kind}`)
         track.stop()
       }
     }
@@ -182,7 +174,7 @@ export function useMediaStream(
 export const nbsp = String.fromCharCode(160)
 
 export function* useAudioRecorder() {
-  const audioStream = yield* ctxAudioStream.get()
+  const audioStream = yield* Cast.get()
   if (!audioStream) {
     throw new Error("No audio stream")
   }

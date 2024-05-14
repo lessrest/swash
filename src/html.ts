@@ -1,4 +1,4 @@
-export function tag<T extends HTMLElement>(
+export function html<T extends HTMLElement>(
   tagName: string,
   // deno-lint-ignore no-explicit-any
   attributes: Record<string, any> = {},

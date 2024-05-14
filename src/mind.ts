@@ -38,9 +38,21 @@ export const modelList: Model[] = [
   },
 ]
 
-export const Claude_III_Opus: Model = {
+export const c3opus: Model = {
   name: "Claude III Opus",
   model: "claude-3-opus-20240229",
+  provider: "anthropic",
+}
+
+export const c3haiku: Model = {
+  name: "Claude III Haiku",
+  model: "claude-3-haiku-20240307",
+  provider: "anthropic",
+}
+
+export const Claude_III_Sonnet: Model = {
+  name: "Claude III Sonnet",
+  model: "claude-3-sonnet-20240229",
   provider: "anthropic",
 }
 

@@ -23,11 +23,7 @@ Yeah... I have a lot of anxiety and sadness and stress. And somehow all I want i
   },
 ]
 
-export const cleanupPrompt = (
-  input: string,
-) => `The input is automatically transcribed from live speech audio. Your task is to clean up the transcription, using inline hints from the user and your best judgment.
-
-${cleanupExamples
+export const tidy = (input: string) => `${cleanupExamples
   .map(
     (example) => `<example>
 <input>${example.a}</input>
@@ -41,7 +37,20 @@ ${cleanupExamples
 ${input}
 </input>
 
+The input is automatically transcribed from live speech audio. Your task is to clean up the transcription, using inline hints from the user and your best judgment.
+
 Note: do not include any commentary, just the cleaned up transcription.
+`
+
+export const simplifyPrompt = (input: string) => `
+<input>
+${input}
+</input>
+<task>
+Edit the input to add Ruby HTML markup to show Latvian translation.
+
+Note: do not include any commentary, just the markup output.
+</task>
 `
 
 export const mdma1 = `

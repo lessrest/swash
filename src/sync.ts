@@ -10,48 +10,50 @@ interface Task<T> {
   proc: Generator<Sync<T>>
 }
 
-class Multimap<K, V> extends Map<K, Set<V>> {
-  add(key: K, value: V) {
-    this.get(key).add(value)
-  }
-
-  get(key: K): Set<V> {
-    this.set(key, super.get(key) ?? new Set())
-    return super.get(key)!
-  }
+function both<V>(x: Set<V> | undefined, y: Set<V> | undefined): Set<V> {
+  return (x ?? new Set()).union(y ?? new Set())
 }
 
-export function* work<Item>(
-  team: Set<Task<Item>>,
-): Generator<Set<Task<Item>>, Set<Task<Item>>> {
-  for (;;) {
-    const have = new Multimap<Item, Task<Item>>()
-    const want = new Multimap<Item, Task<Item>>()
-    const deny = new Multimap<Item, Task<Item>>()
+function also<K, V>(v: V, map: Map<K, Set<V>>, iter?: Iterable<K>) {
+  for (const k of iter ?? []) {
+    const set = map.get(k) ?? new Set()
+    set.add(v)
+    map.set(k, set)
+  }
+  return map
+}
 
-    for (const task of team) {
-      for (const x of task.sync.have ?? []) have.add(x, task)
-      for (const x of task.sync.want ?? []) want.add(x, task)
-      for (const x of task.sync.deny ?? []) deny.add(x, task)
+export function* work<Sign>(
+  jobs: Set<Task<Sign>>,
+): Generator<Set<Task<Sign>>, Set<Task<Sign>>> {
+  for (;;) {
+    const have = new Map<Sign, Set<Task<Sign>>>()
+    const want = new Map<Sign, Set<Task<Sign>>>()
+    const deny = new Map<Sign, Set<Task<Sign>>>()
+
+    for (const task of jobs) {
+      also(task, have, task.sync.have)
+      also(task, want, task.sync.want)
+      also(task, deny, task.sync.deny)
     }
 
-    const item = [...have.keys()].find((x) => !deny.has(x))
+    const sign = [...have.keys()].find((x) => !deny.has(x))
 
-    if (!item) {
-      return team
+    if (!sign) {
+      return jobs
     } else {
-      console.log("✱", item)
+      console.log("✱", sign)
 
-      for (const task of have.get(item).union(want.get(item))) {
+      for (const task of both(have.get(sign), want.get(sign))) {
         const { done, value } = task.proc.next()
         if (done) {
-          team.delete(task)
+          jobs.delete(task)
         } else {
           task.sync = value
         }
       }
 
-      yield team
+      yield jobs
     }
   }
 }

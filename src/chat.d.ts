@@ -114,12 +114,70 @@ interface Chat {
   "client_data": string
 }
 
+interface ChatNotificationSettings {
+  "@type": "chatNotificationSettings"
+  "use_default_mute_for": boolean
+  "mute_for": number
+  "use_default_sound": boolean
+  "sound": string
+  "use_default_show_preview": boolean
+  "show_preview": boolean
+  "use_default_disable_pinned_message_notifications": boolean
+  "disable_pinned_message_notifications": boolean
+  "use_default_disable_mention_notifications": boolean
+  "disable_mention_notifications": boolean
+}
+
+interface DraftMessage {
+  "@type": "draftMessage"
+  "reply_to_message_id": number
+  "date": number
+  "input_message_text": InputMessageText | null
+}
+
+interface InputMessageText {
+  "@type": "inputMessageText"
+  "text": FormattedText
+  "disable_web_page_preview": boolean
+  "clear_draft": boolean
+}
+
+type ChatType =
+  | { "@type": "chatTypePrivate"; "user_id": number }
+  | { "@type": "chatTypeBasicGroup"; "basic_group_id": number }
+  | {
+      "@type": "chatTypeSupergroup"
+      "supergroup_id": number
+      "is_channel": boolean
+    }
+  | { "@type": "chatTypeSecret"; "secret_chat_id": number; "user_id": number }
+
+interface ChatPhotoInfo {
+  "@type": "chatPhotoInfo"
+  "small": TelegramFile
+  "big": TelegramFile
+  "minithumbnail": Minithumbnail | null
+  "has_animation": boolean
+}
+
+interface Minithumbnail {
+  "@type": "minithumbnail"
+  "width": number
+  "height": number
+  "data": string
+}
+
 interface ChatPosition {
   "@type": "chatPosition"
   "list": ChatList
   "order": bigint
   "is_pinned": boolean
 }
+
+type ChatList =
+  | { "@type": "chatListMain" }
+  | { "@type": "chatListArchive" }
+  | { "@type": "chatListFilter"; "chat_filter_id": number }
 
 interface ChatPermissions {
   "@type": "chatPermissions"
@@ -145,7 +203,10 @@ interface MessageSenderChat {
 
 type MessageSender = MessageSenderUser | MessageSenderChat
 
-interface MessageSendingState {}
+type MessageSendingState =
+  | { "@type": "messageSendingStatePending" }
+  | { "@type": "messageSendingStateFailed" }
+  | { "@type": "messageSendingStateSucceeded" }
 
 type MessageSchedulingState =
   | MessageSchedulingStateSendAtDate
@@ -310,6 +371,22 @@ interface MessageContentPhoto {
   "photo": Photo
   "caption": FormattedText
   "is_secret": boolean
+}
+
+interface Photo {
+  "@type": "photo"
+  "id": string
+  "has_stickers": boolean
+  "minithumbnail": Minithumbnail | null
+  "sizes": PhotoSize[]
+}
+
+interface PhotoSize {
+  "@type": "photoSize"
+  "type": string
+  "photo": TelegramFile
+  "width": number
+  "height": number
 }
 
 interface MessageContentPinMessage {
@@ -534,6 +611,24 @@ interface ReplyMarkupInlineKeyboard {
   "rows": InlineKeyboardButton[][]
 }
 
+interface ReplyMarkupRemoveKeyboard {
+  "@type": "replyMarkupRemoveKeyboard"
+  "is_personal": boolean
+}
+
+interface ReplyMarkupForceReply {
+  "@type": "replyMarkupForceReply"
+  "is_personal": boolean
+}
+
+interface ReplyMarkupShowKeyboard {
+  "@type": "replyMarkupShowKeyboard"
+  "rows": KeyboardButton[][]
+  "resize_keyboard": boolean
+  "one_time": boolean
+  "is_personal": boolean
+}
+
 interface InlineKeyboardButton {
   "@type": "inlineKeyboardButton"
   "text": string
@@ -563,6 +658,22 @@ type InlineKeyboardButtonType =
   | { "@type": "inlineKeyboardButtonTypeUrl"; "url": string }
   | { "@type": "inlineKeyboardButtonTypeUser"; "user_id": number }
   | { "@type": "inlineKeyboardButtonTypeBuy" }
+
+interface KeyboardButton {
+  "@type": "keyboardButton"
+  "text": string
+  "type": KeyboardButtonType
+}
+
+type KeyboardButtonType =
+  | { "@type": "keyboardButtonTypeText" }
+  | { "@type": "keyboardButtonTypeRequestPhoneNumber" }
+  | { "@type": "keyboardButtonTypeRequestLocation" }
+  | {
+      "@type": "keyboardButtonTypeRequestPoll"
+      "force_regular": boolean
+      "force_quiz": boolean
+    }
 
 interface Message {
   id: number
@@ -601,56 +712,24 @@ interface Message {
   reply_markup: ReplyMarkup | null
 }
 
-// for now we define only the most important functions for implementing
-// a basic client that can load chats, send messages, download files, etc.
-type AnyFunction =
-  | GetChat
-  | GetChats
-  | GetMessage
-  | GetMessages
-  | SendMessage
-  | SendChatAction
-
-interface TelegramFunction<ResultType> {
-  "@type": string
+interface TdlibParameters {
+  use_test_dc: boolean
+  api_id: number
+  api_hash: string
+  system_language_code: string
+  device_model: string
+  system_version: string
+  application_version: string
+  enable_storage_optimizer: boolean
+  use_pfs: boolean
+  database_directory: string
+  use_file_database: boolean
+  use_chat_info_database: boolean
+  use_message_database: boolean
 }
 
-interface GetChat extends TelegramFunction<Chat> {
-  "@type": "getChat"
-  "chat_id": number
-}
-
-interface GetChats extends TelegramFunction<Chats> {
-  "@type": "getChats"
-  "chat_list": ChatList | null
-  "limit": number
-}
-
-interface Chats {
-  "@type": "chats"
-  "chat_ids": number[]
-  "total_count": number
-}
-
-interface GetMessage extends TelegramFunction<Message> {
-  "@type": "getMessage"
-  "chat_id": number
-  "message_id": number
-}
-
-interface GetMessages extends TelegramFunction<Message[]> {
-  "@type": "getMessages"
-  "chat_id": number
-  "message_ids": number[]
-}
-
-interface SendMessage extends TelegramFunction<Message> {
-  "@type": "sendMessage"
-  "chat_id": number
-  "reply_to_message_id": number
-  "options": SendMessageOptions | null
-  "reply_markup": ReplyMarkup | null
-  "input_message_content": InputMessageContent
+interface Ok {
+  "@type": "ok"
 }
 
 type InputMessageContent =
@@ -677,6 +756,13 @@ interface InputMessageAnimation {
   "thumbnail": InputThumbnail | null
   "caption": FormattedText | null
   "duration": number
+  "width": number
+  "height": number
+}
+
+interface InputThumbnail {
+  "@type": "inputThumbnail"
+  "thumbnail": InputFile
   "width": number
   "height": number
 }
@@ -778,13 +864,6 @@ interface SendMessageOptions {
   "disable_notification": boolean
   "from_background": boolean
   "scheduling_state": MessageSchedulingState | null
-}
-
-interface SendChatAction extends TelegramFunction<Ok> {
-  "@type": "sendChatAction"
-  "chat_id": number
-  "message_thread_id": number
-  "action": ChatAction | null
 }
 
 type ChatAction =

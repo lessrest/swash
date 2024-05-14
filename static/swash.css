@@ -35,54 +35,30 @@ button:focus {
 }
 
 :root {
-  font-family: "DM Sans", sans-serif;
+  font-family: "DM Sans", "berkeley mono", "DM Sans", sans-serif;
   font-optical-sizing: auto;
 }
 
-@property --gradient-color-1 {
-  syntax: "<color>";
-  inherits: false;
-  initial-value: black;
-}
-
-@property --gradient-color-2 {
-  syntax: "<color>";
-  inherits: false;
-  initial-value: #2c1038;
-}
-
-@property --gradient-angle {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 242deg;
-}
-
 body {
-  background-image: linear-gradient(
-    var(--gradient-angle),
-    var(--gradient-color-1),
-    var(--gradient-color-2)
-  );
+  background-color: black;
   color: #ffc;
-  transition: --gradient-angle 1s ease-in, --gradient-color-1 0.5s ease-in,
-    --gradient-color-2 0.5s ease-in, color 0.5s ease-in;
+  transition: background-color 0.5s ease-in, color 0.5s ease-in;
 }
 
 /* light mode */
-@media (prefers-color-scheme: light) {
+/* @media (prefers-color-scheme: light) {
   body {
+    background-color: white;
     color: #224764;
-    --gradient-angle: 111deg;
-    --gradient-color-1: white;
-    --gradient-color-2: #83cde6;
   }
-}
+} */
 
 body {
   min-height: 100vh;
   margin: 0;
   font-size: 20px;
-  line-height: 1.5;
+  line-height: 1.6;
+  padding-top: 1em;
 }
 
 video {
@@ -101,19 +77,21 @@ video {
 
 article {
   font-weight: 500;
+  width: 50ch;
+  margin: 0 auto;
+}
+
+ruby rt {
+  font-size: 70%;
 }
 
 p {
-  margin: 0;
+  margin-bottom: 0.25em;
   /* padding: 0.5em; */
   min-width: 1em;
   min-height: 1.5em;
   gap: 0.5em;
   white-space: pre-wrap;
-}
-
-section:not(:last-of-type) {
-  margin-bottom: 1em;
 }
 
 telegram-client {
@@ -158,7 +136,7 @@ button {
 }
 
 section {
-  padding-left: 1em;
+  /* padding-left: 1em; */
   border-left: 8px solid transparent;
   transition: border-left 0.25s ease-in-out;
 }
@@ -177,7 +155,7 @@ p.response {
   margin-top: 1em;
 }
 
-task {
+:root.show-tasks task {
   border: 1px solid #aff3;
   border-radius: 4px;
   padding: 0 0.5em;
@@ -188,16 +166,16 @@ task {
   margin: 0.25em 0.5em;
 }
 
-[data-task-state="started"] {
+:root.show-tasks [data-task-state="started"] {
   box-shadow: 0 0 40px 0 #1555;
 }
 
-[data-task-state="finished"] {
+:root.show-tasks [data-task-state="finished"] {
   border-color: #a773;
   opacity: 0.8;
 }
 
-[data-task-state="failed"] {
+:root.show-tasks [data-task-state="failed"] {
   border-color: red;
   opacity: 0.8;
 }
@@ -214,4 +192,34 @@ task > main {
 task > header {
   font-size: 75%;
   color: #aff7;
+  display: none;
+}
+
+:root.show-tasks task > header {
+  display: block;
+}
+
+.text {
+  border: 0px solid transparent;
+  /* padding-left: 1rem; */
+  border-left-color: #e6f0ff;
+  transition: all 0.25s ease-in;
+  min-height: 2.3rem;
+  /* text-transform: lowercase; */
+}
+
+.text.retranscribing {
+  border-left-color: #99c2ff;
+}
+
+.text.did-retranscribe {
+  border-left-color: #4d94ff;
+}
+
+.text.enhancing {
+  border-left-color: #0066ff;
+}
+
+.text.did-enhance {
+  border-left-color: #003d99;
 }

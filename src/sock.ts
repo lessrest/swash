@@ -11,13 +11,13 @@ import {
   type Stream,
 } from "effection"
 
-export interface WebSocketHandle extends Stream<MessageEvent, CloseEvent> {
+export interface Peer extends Stream<MessageEvent, CloseEvent> {
   send(value: string | ArrayBuffer | Blob | ArrayBufferView): Operation<void>
   close(code?: number, reason?: string): Operation<void>
 }
 
-export function useWebSocket(socket: WebSocket): Operation<WebSocketHandle> {
-  return resource<WebSocketHandle>(function* (provide) {
+export function rent(socket: WebSocket): Operation<Peer> {
+  return resource<Peer>(function* (provide) {
     let input = createChannel<string, { code?: number; reason?: string }>()
     let output = createSignal<MessageEvent, CloseEvent>()
 
@@ -46,7 +46,7 @@ export function useWebSocket(socket: WebSocket): Operation<WebSocketHandle> {
       yield* once(socket, "open")
     }
 
-    let handle: WebSocketHandle = {
+    let handle: Peer = {
       send: input.send,
       close: (code, reason) => input.close({ code, reason }),
       [Symbol.iterator]: output[Symbol.iterator],

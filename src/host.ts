@@ -16,10 +16,11 @@ import {
   useScope,
 } from "npm:effection@3.0.3"
 
-import { Epoch, info, pushTaskName, task } from "./task.ts"
-import { WebSocketHandle, useWebSocket } from "./websocket.ts"
+import { Peer, rent } from "./sock.ts"
+import { Dawn, info, pushTaskName, task } from "./task.ts"
 
 import { DOMParser } from "https://deno.land/x/deno_dom@v0.1.45/deno-dom-wasm.ts"
+import { $node } from "./nest.ts"
 
 globalThis.document = new DOMParser().parseFromString(
   ``,
@@ -64,7 +65,7 @@ function* handleTranscribe(
   const { response, socket: browserSocket } = Deno.upgradeWebSocket(req)
   yield* info("became a web socket at", new Date())
 
-  const browserHandle = yield* useWebSocket(browserSocket)
+  const browserHandle = yield* rent(browserSocket)
 
   const proxyProcessTask = yield* task(
     "a duplex proxy process",
@@ -87,7 +88,7 @@ function* handleTranscribe(
 }
 
 function* forwardMessages1(
-  from: WebSocketHandle,
+  from: Peer,
   to: WebSocketStreamHandle,
 ): Operation<void> {
   let subscription = yield* from
@@ -137,7 +138,7 @@ function* forwardMessages1(
 
 function* forwardMessages2(
   from: WebSocketStreamHandle,
-  to: WebSocketHandle,
+  to: Peer,
 ): Operation<void> {
   let subscription = yield* from
   let next = yield* subscription.next()
@@ -394,7 +395,7 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
     yield* info("is an", "HTTP request handling process")
     const date = new Date()
     yield* info("began on", date)
-    yield* Epoch.set(date)
+    yield* Dawn.set(date)
     yield* info("has method", req.method)
     yield* info("has pathname", url.pathname)
     yield* info("has origin", "[redacted]")
@@ -447,9 +448,9 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
     }
 
     if (url.pathname === "/") {
-      yield* info("bundling swash.ts at", new Date())
+      yield* info("bundling demo.ts at", new Date())
       const { code } = yield* call(
-        bundle("./src/swash.ts", {
+        bundle("./src/demo.ts", {
           importMap: {
             imports: {
               "effection": "https://esm.sh/effection@3.0.3?target=esnext",
@@ -534,5 +535,11 @@ function* serve() {
 }
 
 await main(function* () {
-  yield* yield* task("swa.sh server", serve)
+  yield* Dawn.set(new Date())
+  yield* $node.set(document.body)
+  yield* call(
+    yield* task("swa.sh server", function* () {
+      yield* serve()
+    }),
+  )
 })

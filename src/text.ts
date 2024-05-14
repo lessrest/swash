@@ -1,6 +1,7 @@
 import { Operation, call, useAbortSignal } from "effection"
+import GraphemeSplitter from "grapheme-splitter"
 
-export interface SpokenWord {
+export interface Word {
   word: string
   punctuated_word: string
   confidence: number
@@ -9,7 +10,7 @@ export interface SpokenWord {
 }
 
 export interface TranscriptionResult {
-  words: SpokenWord[]
+  words: Word[]
   paragraphs: {
     paragraphs: {
       sentences: {
@@ -21,7 +22,7 @@ export interface TranscriptionResult {
   }
 }
 
-export function punctuatedConcatenation(speech: SpokenWord[]) {
+export function punctuatedConcatenation(speech: Word[]) {
   return speech.map(({ punctuated_word }) => punctuated_word).join(" ")
 }
 
@@ -37,11 +38,11 @@ export function paragraphsToText(x: {
     .join("\n")
 }
 
-export function plainConcatenation(speech: SpokenWord[]) {
+export function plainConcatenation(speech: Word[]) {
   return speech.map(({ word }) => word).join(" ")
 }
 
-export function* transcribe(
+export function* hark(
   blobs: Blob[],
   language: string = "en",
 ): Operation<TranscriptionResult> {
@@ -63,4 +64,10 @@ export function* transcribe(
   const result = yield* call(response.json())
   console.log(result)
   return result.results.channels[0].alternatives[0]
+}
+
+const splitter = new GraphemeSplitter()
+
+export function graphemesOf(text: string): string[] {
+  return splitter.splitGraphemes(text)
 }
