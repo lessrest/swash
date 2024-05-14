@@ -5,60 +5,16 @@
   margin: 0;
 }
 
-button {
-  background-color: #3e2556;
-  border: none;
-  color: white;
-  padding: 0.5em 1em;
-  text-align: center;
-  text-decoration: none;
-  display: inline-block;
-  font-size: 16px;
-  margin: 4px 2px;
-  cursor: pointer;
-  border-radius: 8px;
-  transition-duration: 0.4s;
-}
-
-button:hover {
-  background-color: #502367;
-}
-
-button:active {
-  background-color: #502367;
-  transform: translateY(2px);
-}
-
-button:focus {
-  outline: none;
-  box-shadow: 0 0 0 4px #2c1038;
-}
-
 :root {
-  font-family: "DM Sans", "berkeley mono", "DM Sans", sans-serif;
+  font-family: "DM Sans", sans-serif;
   font-optical-sizing: auto;
-}
-
-body {
   background-color: black;
   color: #ffc;
   transition: background-color 0.5s ease-in, color 0.5s ease-in;
-}
-
-/* light mode */
-/* @media (prefers-color-scheme: light) {
-  body {
-    background-color: white;
-    color: #224764;
-  }
-} */
-
-body {
   min-height: 100vh;
-  margin: 0;
+  padding: 0.75rem;
   font-size: 20px;
-  line-height: 1.6;
-  padding-top: 1em;
+  line-height: 1.5;
 }
 
 video {
@@ -77,8 +33,6 @@ video {
 
 article {
   font-weight: 500;
-  width: 50ch;
-  margin: 0 auto;
 }
 
 ruby rt {
@@ -91,56 +45,13 @@ ruby rt {
 
 p {
   margin-bottom: 0.25em;
-  /* padding: 0.5em; */
   min-width: 1em;
   min-height: 1.5em;
   gap: 0.5em;
   white-space: pre-wrap;
 }
 
-telegram-client {
-  filter: grayscale(1);
-  transition: filter 0.5s ease-in;
-  animation: connecting 0.4s ease infinite;
-  justify-self: end;
-  margin: 1rem 2rem;
-  position: fixed;
-}
-
-@keyframes connecting {
-  0% {
-    transform: rotate3d(0, 0, 1, 0deg);
-  }
-  25% {
-    transform: rotate3d(0, 0, 1, 5deg);
-  }
-  50% {
-    transform: rotate3d(0, 0, 1, 0deg);
-  }
-  75% {
-    transform: rotate3d(0, 0, 1, -5deg);
-  }
-  100% {
-    transform: rotate3d(0, 0, 1, 0deg);
-  }
-}
-
-telegram-client.connected {
-  filter: grayscale(0);
-  animation: none;
-}
-
-.countdown {
-  color: #777;
-  border-radius: 0px;
-}
-
-button {
-  display: none;
-}
-
 section {
-  /* padding-left: 1em; */
   border-left: 8px solid transparent;
   transition: border-left 0.25s ease-in-out;
 }
@@ -151,12 +62,6 @@ section.working-1 {
 
 section.working-2 {
   border-left: 8px solid #aff8;
-}
-
-p.response {
-  font-style: italic;
-  margin-left: 1em;
-  margin-top: 1em;
 }
 
 :root.show-tasks task {
@@ -204,26 +109,28 @@ task > header {
 }
 
 .text {
-  border: 0px solid transparent;
-  /* padding-left: 1rem; */
-  border-left-color: #e6f0ff;
   transition: all 0.25s ease-in;
-  min-height: 2.3rem;
-  /* text-transform: lowercase; */
 }
 
-.text.retranscribing {
-  border-left-color: #99c2ff;
+.text::before {
+  content: "❡";
+  float: left;
+  margin-right: 0.75rem;
+  color: #e6f0ff;
 }
 
-.text.did-retranscribe {
-  border-left-color: #4d94ff;
+.text.retranscribing::before {
+  color: #99c2ff;
 }
 
-.text.enhancing {
-  border-left-color: #0066ff;
+.text.did-retranscribe::before {
+  color: #4d94ff;
 }
 
-.text.did-enhance {
-  border-left-color: #003d99;
+.text.enhancing::before {
+  color: #0066ff;
+}
+
+.text.did-enhance::before {
+  color: #003d99;
 }

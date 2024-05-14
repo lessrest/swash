@@ -34,14 +34,14 @@ export function* tele(saveChannel: Stream<string, void>) {
     yield* nest(
       html("telegram-client", {
         style: {
-          backgroundImage:
-            "url(http" +
-            "s://upload.wikimedia.org/wikipedia/commons/8/82/Telegram_logo.svg)",
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          backgroundRepeat: "no-repeat",
-          width: "1.5em",
-          height: "1.5em",
+          // backgroundImage:
+          //   "url(http" +
+          //   "s://upload.wikimedia.org/wikipedia/commons/8/82/Telegram_logo.svg)",
+          // backgroundSize: "cover",
+          // backgroundPosition: "center",
+          // backgroundRepeat: "no-repeat",
+          // width: "1.5em",
+          // height: "1.5em",
         },
       }),
     )
@@ -58,8 +58,8 @@ export function* tele(saveChannel: Stream<string, void>) {
               yield* send("setTdlibParameters", {
                 parameters: {
                   use_test_dc: false,
-                  api_id: parseInt(conf("Telegram API ID"), 10),
-                  api_hash: conf("Telegram API Hash"),
+                  api_id: parseInt(yield* conf("Telegram API ID"), 10),
+                  api_hash: yield* conf("Telegram API Hash"),
                   system_language_code: "en",
                   device_model: "Desktop",
                   system_version: "",
@@ -104,6 +104,13 @@ export function* tele(saveChannel: Stream<string, void>) {
               const me = (yield* send("getMe", {})) as unknown as {
                 id: string
               }
+
+              // now we call getChats
+              const chats = yield* send("getChats", {
+                limit: 10,
+              })
+              yield* info("has chats", chats)
+
               yield* info("has me", me)
               yield* seem("connected")
               yield* provide(me.id as string)

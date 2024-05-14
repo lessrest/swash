@@ -99,7 +99,11 @@ export function talk(
             break
           } else {
             limit = Math.min(graphemes.length, limit + 1)
-            yield* sleep(45)
+            if (remaining <= 0) {
+              yield* hold()
+            } else {
+              yield* sleep(45)
+            }
           }
         }
       })
