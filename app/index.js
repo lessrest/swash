@@ -8,7 +8,7 @@ function createWindow() {
     height: 600,
     titleBarStyle: "hidden",
   })
-  win.loadURL("https://swa.sh/#video")
+  win.loadURL("https://swa.sh/#telegram")
 }
 
 app.on("ready", createWindow)
