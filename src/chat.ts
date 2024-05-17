@@ -126,12 +126,14 @@ export function* tele(saveChannel: Stream<string, void>) {
     yield* task("saver", function* () {
       yield* pull(saveChannel, function* (text) {
         yield* send("sendMessage", {
+          //            chat_id: 1635262887,
           chat_id: self,
           input_message_content: {
             "@type": "inputMessageText",
             "text": { "@type": "formattedText", "text": text },
           },
         })
+        yield* info("sent message", text)
       })
     })
 

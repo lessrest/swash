@@ -1,4 +1,4 @@
-import { Operation, Task, createContext, spawn } from "effection"
+import { Operation, Task, call, createContext, spawn } from "effection"
 import { html } from "./html.ts"
 import { grow, nest, quiz } from "./nest.ts"
 
@@ -116,4 +116,44 @@ export function* conf(name: string): Operation<string> {
       throw new Error(`Configuration value ${name} not found`)
     }
   }
+}
+
+export function* redo<T>(
+  fn: () => Operation<T>,
+  options: {
+    many?: number
+    wait?: number
+    peak?: number
+    frob?: boolean
+  } = {},
+): Operation<T> {
+  const { many = 5, wait = 100, peak = 5000, frob = true } = options
+
+  let n = 0
+  let t = wait
+
+  return yield* call(function* () {
+    const node = yield* nest(html("retry", {}, `${n}/${many}`))
+    try {
+      while (true) {
+        try {
+          n++
+          return yield* fn()
+        } catch (err) {
+          if (n >= many) {
+            throw err
+          }
+
+          yield* wait(t)
+
+          t = Math.min(t * 2, peak)
+          if (frob) {
+            t = t * (0.75 + Math.random() * 0.5)
+          }
+        }
+      }
+    } finally {
+      node.remove()
+    }
+  })
 }

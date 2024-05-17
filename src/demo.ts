@@ -28,7 +28,7 @@ const recorderOptions: MediaRecorderOptions = MediaRecorder.isTypeSupported(
   ? { mimeType: "audio/webm;codecs=opus", audioBitsPerSecond: 128000 }
   : { mimeType: "audio/mp4", audioBitsPerSecond: 128000 }
 
-const videoFeatureFlag = document.location.hash.includes("video")
+const videoFeatureFlag = false // document.location.hash.includes("video")
 const dankFeatureFlag = document.location.hash.includes("dank")
 
 function* demo() {

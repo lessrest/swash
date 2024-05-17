@@ -14,25 +14,12 @@ import {
 import { nest } from "./nest.ts"
 import { graphemesOf } from "./text.ts"
 
-import {
-  Word,
-  hark,
-  paragraphsToText,
-  plainConcatenation,
-  punctuatedConcatenation,
-} from "./text.ts"
+import { Word, plainConcatenation, punctuatedConcatenation } from "./text.ts"
 
 import { useAudioRecorder } from "./demo.ts"
 import { html } from "./html.ts"
-import {
-  ChatCompletionRequest,
-  ChatMessage,
-  c3haiku,
-  c3opus,
-  stream,
-} from "./mind.ts"
+import { ChatCompletionRequest, ChatMessage, gpt4o, stream } from "./mind.ts"
 import { info, task } from "./task.ts"
-import { tidy } from "./wish.ts"
 
 const timedOut: unique symbol = Symbol("timedOut")
 
@@ -89,6 +76,7 @@ export function talk(
           const graphemes = graphemesOf(text)
           const remaining = graphemes.length - limit
           const textToShow = graphemes.slice(0, limit).join("")
+          //yield* info("text", `"${fine}" + "${line}"`)
           if (!(textToShow.trim() === pane.innerText.trim())) {
             fade(() => {
               show(textToShow)
@@ -100,15 +88,22 @@ export function talk(
           } else {
             limit = Math.min(graphemes.length, limit + 1)
             if (remaining <= 0) {
-              yield* hold()
+              yield* hold("want more text")
             } else {
-              yield* sleep(45)
+              // Examples of the formula Math.max(50 - (remaining * 5), 10):
+              // If remaining is 0, the result is Math.max(50 - (0 * 5), 10) = Math.max(50, 10) = 50
+              // If remaining is 5, the result is Math.max(50 - (5 * 5), 10) = Math.max(25, 10) = 25
+              // If remaining is 10, the result is Math.max(50 - (10 * 5), 10) = Math.max(0, 10) = 10
+              // If remaining is 15, the result is Math.max(50 - (15 * 5), 10) = Math.max(-25, 10) = 10
+              const sleepDuration = Math.max(50 - remaining * 5, 20)
+              yield* sleep(sleepDuration)
             }
           }
         }
       })
 
       function show(text: string) {
+        console.info("TEXT", JSON.stringify(text))
         tray.replaceChildren(
           ...text
             .trim()
@@ -147,46 +142,63 @@ export function talk(
       const tape: Blob[] = yield* useAudioRecorder()
 
       const wand = yield* task("wand", function* () {
-        yield* hold()
+        yield* hold("waiting to start")
         for (;;) {
-          if ((yield* withTimeout(hold(), 2500)) === timedOut) {
+          if ((yield* withTimeout(hold(), 1500)) === timedOut) {
             yield* info("tentative timeout")
             if (
               !(yield* race([
                 call(function* () {
-                  const { paragraphs } = yield* hark(tape, "en")
-                  if (paragraphs) {
-                    fine = paragraphsToText(paragraphs) + " "
-                    fade(() => {
-                      show(fine)
-                      tray.classList.add("did-retranscribe")
-                    })
-                    yield* gong.send("timeout")
-                    return true
-                  }
+                  // const { paragraphs } = yield* redo(() => hark(tape, "en"))
+                  // if (paragraphs) {
+                  //   fine = paragraphsToText(paragraphs) + " "
+                  //   tray.classList.add("did-retranscribe")
+                  //   yield* gong.send("timeout")
+                  //   return true
+                  // }
+                  yield* gong.send("timeout")
+                  return true
                 }),
-                hold(),
+                hold("waiting to be interrupted"),
               ]))
             ) {
               yield* info("speech while retranscribing; restarting countdown")
               continue
             }
 
-            const wish: ChatCompletionRequest = {
+            yield* psst.send("change")
+
+            const past = document.body.innerText
+
+            const editRequest: ChatCompletionRequest = {
+              systemMessage:
+                "Return the user input edited to be clear and concise—but also be more sardonic, deadpan funny, and understatedly witty. Fix likely transcription errors. Split run-on sentences. Use CAPS EMPHASIS—only for IMPORTANT NOUN PHRASES and salient ACTION VERBS. Prefix each sentence with an appropriate emoji icon.",
               messages: [
                 {
                   role: "user",
-                  content: tidy(fine),
+                  content: `<context>${past}</context><input>${fine}</input><format>Output only the edited input; the context is already displayed.</format>`,
                 },
               ],
-              temperature: 0,
+              temperature: 1.0,
               maxTokens: 1000,
             }
 
-            yield* mend(yield* stream(c3haiku, wish))
+            fine = yield* mend(yield* stream(gpt4o, editRequest))
 
-            const gold = yield* mend(yield* stream(c3opus, wish))
-            yield* save(gold)
+            // const wish: ChatCompletionRequest = {
+            //   messages: [
+            //     {
+            //       role: "user",
+            //       content: tidy(fine),
+            //     },
+            //   ],
+            //   temperature: 0,
+            //   maxTokens: 1000,
+            // }
+
+            // fine = yield* mend(yield* stream(gpt4o, wish))
+
+            yield* save(fine)
 
             break
           }
@@ -219,7 +231,6 @@ export function talk(
 
     yield* task("final processor", function* () {
       yield* processStream(firm, function* (phrase) {
-        yield* psst.send("change")
         if (plainConcatenation(phrase) === "over") {
           yield* info("got 'over', stopping")
           return
@@ -230,16 +241,19 @@ export function talk(
           return
         }
 
+        yield* info("FIRM", JSON.stringify(phrase))
         fine += processPhrase(phrase)
+        line = ""
+        yield* psst.send("change")
       })
     })
 
     yield* task("interim processor", function* () {
       yield* processStream(flux, function* (phrase) {
         const processed = processPhrase(phrase).trim()
-        if (line !== processed) {
-          yield* info("interim text changed", line, processed)
+        if (processed !== "" && line !== processed) {
           line = processed
+          yield* info("flux", line, "==>", processed)
           yield* psst.send("change")
         }
       })

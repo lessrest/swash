@@ -22,6 +22,11 @@ export const modelList: Model[] = [
     provider: "openai",
   },
   {
+    name: "GPT4o",
+    model: "gpt-4o",
+    provider: "openai",
+  },
+  {
     name: "Claude III Opus",
     model: "claude-3-opus-20240229",
     provider: "anthropic",
@@ -54,6 +59,12 @@ export const Claude_III_Sonnet: Model = {
   name: "Claude III Sonnet",
   model: "claude-3-sonnet-20240229",
   provider: "anthropic",
+}
+
+export const gpt4o: Model = {
+  name: "GPT4o",
+  model: "gpt-4o",
+  provider: "openai",
 }
 
 export const modelsByName = modelList.reduce((acc, model) => {
@@ -184,16 +195,26 @@ function* streamOpenAI(
   requestBody: ChatCompletionRequest,
 ): Operation<Subscription<ChatMessage, void>> {
   return yield* resource(function* (provide) {
+    const messages = requestBody.systemMessage
+      ? [
+          { role: "system", content: requestBody.systemMessage },
+          ...requestBody.messages.map(({ role, content }) => ({
+            role,
+            content,
+          })),
+        ]
+      : requestBody.messages.map(({ role, content }) => ({
+          role,
+          content,
+        }))
+
     const messageSubscription = yield* streamingRequest(
       "/openai/v1/chat/completions",
       {
         model,
         temperature: requestBody.temperature,
         max_tokens: requestBody.maxTokens,
-        messages: requestBody.messages.map(({ role, content }) => ({
-          role,
-          content,
-        })),
+        messages,
         stream: true,
       },
     )
@@ -218,8 +239,10 @@ function* streamOpenAI(
           throw new Error(`Invalid content: ${content}`)
         }
 
-        buffer += content
-        yield* stateChannel.send({ role: "assistant", content: buffer })
+        if (content) {
+          buffer += content
+          yield* stateChannel.send({ role: "assistant", content })
+        }
 
         if (finish_reason === "stop") {
           yield* stateChannel.close()
