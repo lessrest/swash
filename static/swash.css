@@ -5,7 +5,7 @@
   margin: 0;
 }
 
-:root {
+body {
   font-family: "DM Sans", sans-serif;
   font-optical-sizing: auto;
   background-color: black;
@@ -15,6 +15,10 @@
   padding: 0.75rem 0.75rem 0.75rem 0.75rem;
   font-size: 20px;
   line-height: 1.5;
+}
+
+body:not(.ok) {
+  background-color: #555;
 }
 
 video {
@@ -37,10 +41,35 @@ article {
 
 ruby rt {
   font-size: 70%;
+  padding: 0 0.25em;
+}
+
+:not(:hover) .hidden {
+  display: none;
 }
 
 [data-task-name="drip"][data-task-state="finished"] p {
   opacity: 1;
+}
+
+.sentence,
+.phrase {
+  font-weight: 300;
+  display: block;
+}
+
+.sentence.ai {
+  font-weight: 500;
+  opacity: 1;
+  margin-left: 1em;
+  margin-bottom: 0.25em;
+}
+
+.word.terminator::after {
+  /* make line break after this span */
+  content: "";
+  display: block;
+  width: 100%;
 }
 
 p {

@@ -84,7 +84,7 @@ export function* task<T>(
 ): Operation<Task<T>> {
   return yield* spawn(function* () {
     const node = yield* nest(
-      html("task", { "data-task-name": name, "data-task-state": "started" }),
+      html("task", { data: { name, state: "started" } }),
     )
     yield* grow(html("header", {}, name))
     yield* nest(html("main"))
@@ -92,12 +92,12 @@ export function* task<T>(
     try {
       yield* syslog("started at", new Date())
       const x = yield* fn()
-      node.setAttribute("data-task-state", "finished")
+      node.dataset.state = "finished"
       yield* syslog("finished at", new Date())
       return x
     } catch (err) {
       yield* syslog("failed at", new Date(), err)
-      node.setAttribute("data-task-state", "failed")
+      node.dataset.state = "failed"
       throw err
     }
   })
@@ -133,7 +133,7 @@ export function* redo<T>(
   let t = wait
 
   return yield* call(function* () {
-    const node = yield* nest(html("retry", {}, `${n}/${many}`))
+    //    const node = yield* nest(html("retry", {}, `${n}/${many}`))
     try {
       while (true) {
         try {
@@ -153,7 +153,7 @@ export function* redo<T>(
         }
       }
     } finally {
-      node.remove()
+      //      node.remove()
     }
   })
 }

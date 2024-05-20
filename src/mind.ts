@@ -177,7 +177,7 @@ export function* streamingRequest(
   })
 }
 
-export function* stream(
+export function* think(
   model: Model,
   requestBody: ChatCompletionRequest,
 ): Operation<Subscription<ChatMessage, void>> {

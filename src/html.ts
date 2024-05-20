@@ -23,6 +23,12 @@ export function html<T extends HTMLElement>(
       }
     } else if (key === "style" && typeof value === "object") {
       Object.assign(element.style, value)
+    } else if (key.startsWith("data-")) {
+      element.dataset[key.slice(5)] = value
+    } else if (key === "data") {
+      for (const [dataKey, dataValue] of Object.entries(value)) {
+        element.dataset[dataKey] = dataValue
+      }
     } else if (typeof value !== "string") {
       // deno-lint-ignore no-explicit-any
       const it = element as any

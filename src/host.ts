@@ -450,7 +450,7 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
     if (url.pathname === "/") {
       yield* info("bundling demo.ts at", new Date())
       const { code } = yield* call(
-        bundle("./src/demo.ts", {
+        bundle("./src/demo2.ts", {
           importMap: {
             imports: {
               "effection": "https://esm.sh/effection@3.0.3?target=esnext",

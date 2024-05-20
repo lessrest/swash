@@ -18,8 +18,8 @@ import { Word, plainConcatenation, punctuatedConcatenation } from "./text.ts"
 
 import { useAudioRecorder } from "./demo.ts"
 import { html } from "./html.ts"
-import { ChatCompletionRequest, ChatMessage, gpt4o, stream } from "./mind.ts"
-import { info, task } from "./task.ts"
+import { ChatCompletionRequest, ChatMessage, gpt4o, think } from "./mind.ts"
+import { info, redo, task } from "./task.ts"
 
 const timedOut: unique symbol = Symbol("timedOut")
 
@@ -117,15 +117,21 @@ export function talk(
       }
 
       function* mend(
-        recv: Subscription<ChatMessage, void>,
+        chat: () => Operation<Subscription<ChatMessage, void>>,
         html: boolean = false,
       ) {
-        let text = ""
-        for (;;) {
-          const { value, done } = yield* recv.next()
-          if (done) break
-          text += value.content
+        function* read() {
+          const chan = yield* chat()
+          let text = ""
+          for (;;) {
+            const { value, done } = yield* chan.next()
+            if (done) break
+            text += value.content
+          }
+          return text
         }
+
+        let text = yield* redo(read)
 
         text = text.replaceAll(/[.?!]\s/g, "$&\n")
         fade(() => {
@@ -176,14 +182,22 @@ export function talk(
               messages: [
                 {
                   role: "user",
-                  content: `<context>${past}</context><input>${fine}</input><format>Output only the edited input; the context is already displayed.</format>`,
+                  content: `<backlog>
+${past}
+${fine}
+</backlog>
+<input>
+${fine}
+</input>
+                  
+Omit backlog. Output only edited input.`,
                 },
               ],
-              temperature: 1.0,
+              temperature: 0.6,
               maxTokens: 1000,
             }
 
-            fine = yield* mend(yield* stream(gpt4o, editRequest))
+            fine = yield* mend(() => think(gpt4o, editRequest))
 
             // const wish: ChatCompletionRequest = {
             //   messages: [
