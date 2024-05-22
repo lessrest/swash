@@ -1,4 +1,4 @@
-import { Operation, Task, createChannel, main, sleep, spawn } from "effection"
+import { Operation, Task, createChannel, sleep, spawn } from "effection"
 
 interface Sync<Sign> {
   post: Sign[]
@@ -17,9 +17,7 @@ function both<V>(x: Set<V> | undefined, y: Set<V> | undefined): Set<V> {
   return (x ?? new Set()).union(y ?? new Set())
 }
 
-export function work<Sign>(
-  system: Set<Thread<Sign>>,
-): Set<Thread<Sign>> | null {
+export function work<Sign>(system: Set<Thread<Sign>>): boolean {
   const postedBy = new Map<Sign, Set<Thread<Sign>>>()
   for (const thread of system) {
     for (const postedSign of thread.sync.post) {
@@ -50,7 +48,7 @@ export function work<Sign>(
     .find((x) => ![...system.values()].some((y) => y.sync.deny(x)))
 
   if (!electedSign) {
-    return null
+    return false
   } else {
     console.group("pick", electedSign)
 
@@ -74,7 +72,7 @@ export function work<Sign>(
       console.groupEnd()
     }
 
-    return system
+    return true
   }
 }
 
@@ -112,50 +110,51 @@ export function makeThread<T>({ name, prio, init }: Behavior<T>): Thread<T> {
 }
 
 function* system<T, V = void>(
-  init: (
+  body: (
     thread: (spec: Behavior<T>) => Operation<void>,
   ) => Operation<Task<V>>,
 ): Operation<V> {
-  const ping = createChannel<void>()
-  const starting = new Set<Thread<T>>()
+  const newThreadChannel = createChannel<void>()
+  const newlyStartedThreads = new Set<Thread<T>>()
 
-  const task1 = yield* init(function* (spec) {
-    starting.add(makeThread(spec))
-    yield* ping.send()
+  const bodyTask = yield* body(function* (spec) {
+    newlyStartedThreads.add(makeThread(spec))
+
+    // These are ignored until the subscription starts.
+    yield* newThreadChannel.send()
   })
 
-  const pings = yield* ping
-  yield* ping.send()
+  const newThreadSubscription = yield* newThreadChannel
+
+  // Trigger the subscription once after initial setup.
+  yield* newThreadChannel.send()
 
   let threads = new Set<Thread<T>>()
 
-  const task2 = yield* spawn(function* () {
+  const systemTask = yield* spawn(function* () {
     for (;;) {
-      const { done } = yield* pings.next()
-      if (done) break
+      if ((yield* newThreadSubscription.next()).done) break
 
-      threads = threads.union(starting)
-      starting.clear()
+      threads = threads.union(newlyStartedThreads)
+      newlyStartedThreads.clear()
 
       for (;;) {
-        const outcome = work(threads)
-        if (outcome === null) {
+        if (work(threads) === false) {
           break
-        } else {
-          threads = outcome
         }
       }
     }
   })
 
-  const result = yield* task1
-  yield* ping.close()
-  yield* task2
-
-  return result
+  try {
+    return yield* bodyTask
+  } finally {
+    yield* newThreadChannel.close()
+    yield* systemTask
+  }
 }
 
-const syncdemo2 = system<string>(function* (thread) {
+export const syncdemo2 = system<string>(function* (thread) {
   yield* thread({
     name: "show",
     prio: 1,
@@ -222,4 +221,4 @@ const syncdemo2 = system<string>(function* (thread) {
   })
 })
 
-await main(() => syncdemo2)
+// await main(() => syncdemo2)
