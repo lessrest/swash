@@ -92,19 +92,6 @@ function* demo() {
     },
   )
 
-  yield* task("peek", function* () {
-    for (const transcriptionEvent of yield* each(transcriptionChannel)) {
-      if (transcriptionEvent === "finalize") {
-        console.log("finalize")
-      } else {
-        console.log(
-          transcriptionEvent.map((word) => word.punctuated_word).join(" "),
-        )
-      }
-      yield* each.next()
-    }
-  })
-
   const finalSentenceChannel = createChannel<HTMLSpanElement>()
 
   const typingTask = yield* task("type", function* () {
@@ -112,6 +99,7 @@ function* demo() {
     let phraseSpan = html("span.phrase")
     const finalSpan = html("span.final")
     const sentencesSpan = html("span.sentences")
+
     yield* nest(html("p", {}, sentencesSpan, finalSpan, phraseSpan))
 
     for (;;) {
@@ -187,12 +175,12 @@ function* demo() {
           const chat = () =>
             think(gpt4o, {
               systemMessage:
-                //  "Translate to idiomatic Swedish. Fix likely transcription errors. Split run-on sentences and improve punctuation. Prefix each sentence with a relevant emoji. Use CAPS for KEY NOUNS.",
-                "This is a rap. User throws a line, you hit back with a rhyme. Match the user's meter and length. Use CAPS only on key words for emphasis and flow. Prefix each line with a relevant EMOJI.",
+                "Fix likely transcription errors. Split run-on sentences and improve punctuation. Use CAPS only on key words for emphasis and flow. Prefix each line with a relevant EMOJI.",
+              // "This is a rap. User throws a line, you hit back with a rhyme. Match the user's meter and length. Use CAPS only on key words for emphasis and flow. Prefix each line with a relevant EMOJI.",
               //              "Rewrite the user input in the style of a terse & sardonic noir monologue.",
               //              "Respond with an appropriate emoji followed by a single word and a period.",
               messages,
-              temperature: 1.0,
+              temperature: 0.4,
               maxTokens: 50,
             })
 

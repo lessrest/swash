@@ -55,10 +55,11 @@ ruby rt {
 .sentence,
 .phrase {
   font-weight: 300;
-  display: block;
+  display: none;
 }
 
 .sentence.ai {
+  display: block;
   font-weight: 500;
   opacity: 1;
   margin-left: 1em;
