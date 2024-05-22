@@ -10,7 +10,7 @@ import {
   suspend,
 } from "effection"
 
-import { demo3 } from "./demo3.ts"
+import { swash3 } from "./demo3.ts"
 import { html } from "./html.ts"
 import { ChatMessage, gpt4o, think } from "./mind.ts"
 import { into, nest } from "./nest.ts"
@@ -251,7 +251,7 @@ function* demo() {
 
 document.addEventListener("DOMContentLoaded", async function () {
   if (document.location.hash === "#nt") {
-    await demo3()
+    await swash3()
   } else {
     await main(() => demo())
   }
