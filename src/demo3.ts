@@ -9,6 +9,7 @@ const iter = exec<string>((boot, wait) => {
     for (let i = 0; i < 5; i++) {
       await wait(sleep(1000).then(() => "second"))
     }
+    console.log("clock done")
   }
 
   clock()
