@@ -13,13 +13,11 @@ interface TranscriptionResultMessage {
 const SocketConnected = Symbol("SocketConnected")
 const DeepgramResult = Symbol("DeepgramResult")
 const Transcript = Symbol("Transcript")
-const AudioBlob = Symbol("AudioBlob")
 
 type Sign =
   | { tag: typeof SocketConnected }
   | { tag: typeof DeepgramResult; message: TranscriptionResultMessage }
   | { tag: typeof Transcript; transcript: string; final: boolean }
-  | { tag: typeof AudioBlob; blob: globalThis.Blob }
 
 function* waitFor<T extends Sign>(tag: T["tag"]) {
   return (yield sync<Sign>({ want: (t) => t.tag === tag })) as Extract<
@@ -43,7 +41,7 @@ const swash = system<Sign>(function* (thread) {
   yield* thread("logger", function* () {
     for (;;) {
       const sign = yield sync<Sign>({
-        want: (t) => t.tag !== AudioBlob && t.tag !== DeepgramResult,
+        want: (t) => t.tag !== DeepgramResult,
       })
       console.info(sign)
     }
@@ -116,15 +114,16 @@ const swash = system<Sign>(function* (thread) {
   yield* spawn(function* () {
     yield* emit({ tag: SocketConnected })
 
-    for (const msg of yield* each(conn)) {
-      if (typeof msg.data === "string") {
+    for (const { data } of yield* each(conn)) {
+      if (typeof data === "string") {
         yield* emit({
           tag: DeepgramResult,
-          message: JSON.parse(msg.data),
+          message: JSON.parse(data),
         })
       } else {
         throw new Error("unexpected message type")
       }
+
       yield* each.next()
     }
   })
@@ -134,7 +133,6 @@ const swash = system<Sign>(function* (thread) {
 
     for (const chunk of yield* each(on(recorder, "dataavailable"))) {
       yield* conn.send(chunk.data)
-      yield* emit({ tag: AudioBlob, blob: chunk.data })
       yield* each.next()
     }
   })
