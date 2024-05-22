@@ -119,7 +119,7 @@ function* system<T, V = void>(
   const ping = createChannel<void>()
   const starting = new Set<Thread<T>>()
 
-  const task = yield* init(function* (spec) {
+  const task1 = yield* init(function* (spec) {
     starting.add(makeThread(spec))
     yield* ping.send()
   })
@@ -148,7 +148,7 @@ function* system<T, V = void>(
     }
   })
 
-  const result = yield* task
+  const result = yield* task1
   yield* ping.close()
   yield* task2
 
@@ -156,21 +156,8 @@ function* system<T, V = void>(
 }
 
 const syncdemo2 = system<string>(function* (thread) {
-  const clock = yield* spawn(function* () {
-    for (let i = 0; i < 5; i++) {
-      yield* sleep(1000)
-      yield* thread({
-        name: `second-${i}`,
-        prio: 0,
-        init: function* () {
-          yield sync({ post: ["second"] })
-        },
-      })
-    }
-  })
-
   yield* thread({
-    name: "log",
+    name: "show",
     prio: 1,
     init: function* () {
       for (;;) {
@@ -180,7 +167,7 @@ const syncdemo2 = system<string>(function* (thread) {
   })
 
   yield* thread({
-    name: "tick tock",
+    name: "step",
     prio: 1,
     init: function* () {
       for (;;) {
@@ -191,7 +178,7 @@ const syncdemo2 = system<string>(function* (thread) {
   })
 
   yield* thread({
-    name: "interleave",
+    name: "flip",
     prio: 1,
     init: function* () {
       for (;;) {
@@ -208,7 +195,7 @@ const syncdemo2 = system<string>(function* (thread) {
   })
 
   yield* thread({
-    name: "delay",
+    name: "time",
     prio: 1,
     init: function* () {
       for (;;) {
@@ -221,7 +208,18 @@ const syncdemo2 = system<string>(function* (thread) {
     },
   })
 
-  return clock
+  return yield* spawn(function* () {
+    for (let i = 0; i < 5; i++) {
+      yield* sleep(1000)
+      yield* thread({
+        name: `t${i}`,
+        prio: 0,
+        init: function* () {
+          yield sync({ post: ["second"] })
+        },
+      })
+    }
+  })
 })
 
 await main(() => syncdemo2)
