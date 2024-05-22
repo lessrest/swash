@@ -14,7 +14,7 @@ import { demo3 } from "./demo3.ts"
 import { html } from "./html.ts"
 import { ChatMessage, gpt4o, think } from "./mind.ts"
 import { into, nest } from "./nest.ts"
-import { SocketConnection, rent } from "./sock.ts"
+import { SocketConnection, useWebSocket } from "./sock.ts"
 import { redo, task } from "./task.ts"
 import { Word } from "./text.ts"
 
@@ -50,7 +50,7 @@ function* demo() {
     video: false,
   })
 
-  const transcriptionPeer: SocketConnection = yield* rent(dial("sv"))
+  const transcriptionPeer: SocketConnection = yield* useWebSocket(dial("sv"))
 
   const mediaRecorder = yield* useMediaRecorder(audioStream, recorderOptions)
 

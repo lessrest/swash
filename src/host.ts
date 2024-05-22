@@ -16,7 +16,7 @@ import {
   useScope,
 } from "npm:effection@3.0.3"
 
-import { SocketConnection, rent } from "./sock.ts"
+import { SocketConnection, useWebSocket } from "./sock.ts"
 import { Dawn, info, pushTaskName, task } from "./task.ts"
 
 import { DOMParser } from "https://deno.land/x/deno_dom@v0.1.45/deno-dom-wasm.ts"
@@ -65,7 +65,7 @@ function* handleTranscribe(
   const { response, socket: browserSocket } = Deno.upgradeWebSocket(req)
   yield* info("became a web socket at", new Date())
 
-  const browserHandle = yield* rent(browserSocket)
+  const browserHandle = yield* useWebSocket(browserSocket)
 
   const proxyProcessTask = yield* task(
     "a duplex proxy process",

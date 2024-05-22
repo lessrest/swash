@@ -16,7 +16,7 @@ export interface SocketConnection extends Stream<MessageEvent, CloseEvent> {
   close(code?: number, reason?: string): Operation<void>
 }
 
-export function rent(socket: WebSocket): Operation<SocketConnection> {
+export function useWebSocket(socket: WebSocket): Operation<SocketConnection> {
   return resource<SocketConnection>(function* (provide) {
     let input = createChannel<string, { code?: number; reason?: string }>()
     let output = createSignal<MessageEvent, CloseEvent>()

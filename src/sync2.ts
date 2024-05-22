@@ -89,27 +89,39 @@ function noop<T>(name: string): Thread<T> {
   }
 }
 
-type Behavior<T> = {
+interface Behavior<T> {
   name: string
-  prio: number
+  prio?: number
   init: () => Generator<Sync<T>, void, T>
 }
 
-export function makeThread<T>({ name, prio, init }: Behavior<T>): Thread<T> {
+export function makeThread<T>({
+  name,
+  prio = 1,
+  init,
+}: Behavior<T>): Thread<T> {
   const proc = init()
   const { done, value: sync } = proc.next()
   return done ? noop(name) : { name, prio, proc, sync }
 }
 
 export function* system<T, V = void>(
-  body: (
-    thread: (spec: Behavior<T>) => Operation<void>,
-  ) => Operation<Task<V>>,
+  body: (thread: {
+    (name: string, init: () => Generator<Sync<T>, void, T>): Operation<void>
+    (spec: Behavior<T>): Operation<void>
+  }) => Operation<Task<V>>,
 ): Operation<V> {
   const newThreadChannel = createChannel<void>()
   const newlyStartedThreads = new Set<Thread<T>>()
 
-  const bodyTask = yield* body(function* (spec) {
+  const bodyTask = yield* body(function* (
+    nameOrSpec: string | Behavior<T>,
+    init?: () => Generator<Sync<T>, void, T>,
+  ) {
+    const spec: Behavior<T> =
+      typeof nameOrSpec === "string"
+        ? { name: nameOrSpec, init: init! }
+        : nameOrSpec
     newlyStartedThreads.add(makeThread(spec))
 
     // These are ignored until the subscription starts.
