@@ -92,7 +92,7 @@ export function* exec<T>(
       promise.then((sign) => {
         hope.delete(promise)
         jobs.add(
-          task("resolve", 0, function* () {
+          task<T>("resolve", 0, function* () {
             yield { have: [sign] }
           }),
         )
