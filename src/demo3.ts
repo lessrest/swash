@@ -4,15 +4,10 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-const iter = exec((boot, wait) => {
+const iter = exec<string>((boot, wait) => {
   async function clock() {
     for (;;) {
-      await wait(sleep(1000))
-      boot(
-        task("second", 0, function* () {
-          yield { have: ["second"] }
-        }),
-      )
+      await wait(sleep(1000).then(() => "second"))
     }
   }
 
@@ -30,8 +25,8 @@ const iter = exec((boot, wait) => {
   boot(
     task("interleave", 0, function* () {
       for (;;) {
-        yield { want: ["tick"], deny: ["tock"] }
-        yield { want: ["tock"], deny: ["tick"] }
+        yield { want: (t) => t === "tick", deny: (t) => t === "tock" }
+        yield { want: (t) => t === "tock", deny: (t) => t === "tick" }
       }
     }),
   )
@@ -39,8 +34,11 @@ const iter = exec((boot, wait) => {
   boot(
     task("delay", 0, function* () {
       for (;;) {
-        yield { want: ["second"], deny: ["tick", "tock"] }
-        yield { want: ["tick", "tock"] }
+        yield {
+          want: (t) => t === "second",
+          deny: (t) => t === "tick" || t === "tock",
+        }
+        yield { want: (t) => t === "tick" || t === "tock" }
       }
     }),
   )

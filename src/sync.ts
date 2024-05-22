@@ -1,7 +1,7 @@
 interface Sync<T> {
   have?: T[]
-  want?: T[]
-  deny?: T[]
+  want?: (t: T) => boolean
+  deny?: (t: T) => boolean
 }
 
 interface Task<T> {
@@ -30,18 +30,27 @@ export function* work<Sign>(
   for (;;) {
     const have = new Map<Sign, Set<Task<Sign>>>()
     const want = new Map<Sign, Set<Task<Sign>>>()
-    const deny = new Map<Sign, Set<Task<Sign>>>()
 
     for (const task of jobs) {
       also(task, have, task.sync.have)
-      also(task, want, task.sync.want)
-      also(task, deny, task.sync.deny)
+    }
+
+    for (const sign of have.keys()) {
+      const tasks = new Set<Task<Sign>>()
+      for (const task of jobs) {
+        if (task.sync.want?.(sign)) {
+          tasks.add(task)
+        }
+      }
+      if (tasks.size > 0) {
+        want.set(sign, tasks)
+      }
     }
 
     const sign = [...jobs.values()]
       .sort((a, b) => b.prio - a.prio)
       .flatMap((x) => x.sync.have ?? [])
-      .find((x) => !deny.has(x))
+      .find((x) => ![...jobs.values()].some((y) => y.sync.deny?.(x)))
 
     if (!sign) {
       return jobs
@@ -80,7 +89,14 @@ export function* exec<T>(
     (task) => jobs.add(task),
     (promise) => {
       hope.add(promise)
-      promise.then(() => hope.delete(promise))
+      promise.then((sign) => {
+        hope.delete(promise)
+        jobs.add(
+          task("resolve", 0, function* () {
+            yield { have: [sign] }
+          }),
+        )
+      })
       return promise
     },
   )
@@ -121,11 +137,11 @@ export function task<T>(
 }
 
 export function syncdemo1() {
-  exec((boot, _wait) => {
+  exec<string>((boot, _wait) => {
     boot(
       task("fill hot", 1, function* () {
         for (;;) {
-          yield { want: ["water-low"] }
+          yield { want: (t) => t === "water-low" }
           yield { have: ["add-hot"] }
           yield { have: ["add-hot"] }
           yield { have: ["add-hot"] }
@@ -140,7 +156,7 @@ export function syncdemo1() {
     boot(
       task("fill cold", 1, function* () {
         for (;;) {
-          yield { want: ["water-low"] }
+          yield { want: (t) => t === "water-low" }
           yield { have: ["add-cold"] }
           yield { have: ["add-cold"] }
           yield { have: ["add-cold"] }
@@ -150,12 +166,18 @@ export function syncdemo1() {
     boot(
       task("balance hot/cold", 1, function* () {
         for (;;) {
-          yield { want: ["add-hot"], deny: ["add-cold"] }
-          yield { want: ["add-cold"], deny: ["add-hot"] }
+          yield {
+            want: (t) => t === "add-hot",
+            deny: (t) => t === "add-cold",
+          }
+          yield {
+            want: (t) => t === "add-cold",
+            deny: (t) => t === "add-hot",
+          }
         }
       }),
     )
-  })
+  }).next()
 }
 
-// demo()
+// syncdemo1()
