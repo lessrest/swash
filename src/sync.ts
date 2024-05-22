@@ -46,16 +46,20 @@ export function* work<Sign>(
     if (!sign) {
       return jobs
     } else {
-      console.log("✱", sign)
+      console.group("✱", sign)
 
-      for (const task of both(have.get(sign), want.get(sign))) {
-        console.log("🔥", task.name)
-        const { done, value } = task.proc.next()
-        if (done) {
-          jobs.delete(task)
-        } else {
-          task.sync = value
+      try {
+        for (const task of both(have.get(sign), want.get(sign))) {
+          console.log("⦿", task.name)
+          const { done, value } = task.proc.next()
+          if (done) {
+            jobs.delete(task)
+          } else {
+            task.sync = value
+          }
         }
+      } finally {
+        console.groupEnd()
       }
 
       yield jobs
@@ -72,7 +76,6 @@ export function* exec<T>(
   let jobs = new Set<Task<T>>()
   const hope = new Set<Promise<T>>()
 
-  console.log("init")
   init(
     (task) => jobs.add(task),
     (promise) => {
@@ -81,13 +84,12 @@ export function* exec<T>(
       return promise
     },
   )
-  console.log("init done")
 
   for (;;) {
     const { done, value } = work(jobs).next()
     if (done) {
       if (hope.size > 0) {
-        console.log("💤", hope)
+        console.log("[waiting for", hope.size, "promises]")
         yield hope
       } else {
         console.log("nothing to wait for")

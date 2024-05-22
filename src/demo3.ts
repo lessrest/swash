@@ -19,19 +19,10 @@ const iter = exec((boot, wait) => {
   clock()
 
   boot(
-    task("tick", 0, function* () {
+    task("tick tock", 0, function* () {
       for (;;) {
         yield { have: ["tick"] }
-        console.log("tick")
-      }
-    }),
-  )
-
-  boot(
-    task("tock", 1, function* () {
-      for (;;) {
         yield { have: ["tock"] }
-        console.log("tock")
       }
     }),
   )
