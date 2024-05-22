@@ -1,12 +1,12 @@
 import { Operation, Task, createChannel, sleep, spawn } from "effection"
 
-interface Sync<Sign> {
+export interface Sync<Sign> {
   post: Sign[]
   want: (t: Sign) => boolean
   deny: (t: Sign) => boolean
 }
 
-interface Thread<Sign> {
+export interface Thread<Sign> {
   name: string
   sync: Sync<Sign>
   proc: Generator<Sync<Sign>, void, Sign>
@@ -50,26 +50,18 @@ export function work<Sign>(system: Set<Thread<Sign>>): boolean {
   if (!electedSign) {
     return false
   } else {
-    console.group("pick", electedSign)
+    const affectedThreads = both(
+      postedBy.get(electedSign),
+      wantedBy.get(electedSign),
+    )
 
-    try {
-      const affectedThreads = both(
-        postedBy.get(electedSign),
-        wantedBy.get(electedSign),
-      )
-
-      for (const thread of affectedThreads) {
-        console.log("next", thread.name)
-        const { done, value } = thread.proc.next(electedSign)
-        if (done) {
-          system.delete(thread)
-          console.log("exit", thread.name)
-        } else {
-          thread.sync = value
-        }
+    for (const thread of affectedThreads) {
+      const { done, value } = thread.proc.next(electedSign)
+      if (done) {
+        system.delete(thread)
+      } else {
+        thread.sync = value
       }
-    } finally {
-      console.groupEnd()
     }
 
     return true
@@ -109,7 +101,7 @@ export function makeThread<T>({ name, prio, init }: Behavior<T>): Thread<T> {
   return done ? noop(name) : { name, prio, proc, sync }
 }
 
-function* system<T, V = void>(
+export function* system<T, V = void>(
   body: (
     thread: (spec: Behavior<T>) => Operation<void>,
   ) => Operation<Task<V>>,

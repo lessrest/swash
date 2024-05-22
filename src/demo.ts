@@ -17,7 +17,7 @@ import { grow, into, nest, pull } from "./nest.ts"
 import { tele } from "./chat.ts"
 import { dank } from "./dank.ts"
 import { html } from "./html.ts"
-import { Peer, rent } from "./sock.ts"
+import { SocketConnection, rent } from "./sock.ts"
 import { talk } from "./talk.ts"
 import { dawn, info, task } from "./task.ts"
 import { Word } from "./text.ts"
@@ -75,7 +75,7 @@ function* sesh(
   yield* dawn()
 
   const cast = yield* Cast.set(new MediaStream(src.getAudioTracks()))
-  const saas: Peer = yield* rent(dial(lang))
+  const saas: SocketConnection = yield* rent(dial(lang))
 
   const flux = createChannel<Word[]>()
   const firm = createChannel<Word[]>()

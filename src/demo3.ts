@@ -1,64 +1,178 @@
-import { exec, task } from "./sync.ts"
+import { call, each, main, on, spawn } from "effection"
+import { rent } from "./sock.ts"
+import { sync, system } from "./sync2.ts"
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-const iter = exec<string>((boot, wait) => {
-  async function clock() {
-    for (let i = 0; i < 5; i++) {
-      await wait(sleep(1000).then(() => "second"))
-    }
-    console.log("clock done")
-  }
-
-  clock()
-
-  boot(
-    task<string>("log", 0, function* () {
-      for (;;) {
-        console.log(yield { want: () => true })
-      }
-    }),
-  )
-
-  boot(
-    task<string>("tick tock", 0, function* () {
-      for (;;) {
-        yield { have: ["tick"] }
-        yield { have: ["tock"] }
-      }
-    }),
-  )
-
-  boot(
-    task<string>("interleave", 0, function* () {
-      for (;;) {
-        yield { want: (t) => t === "tick", deny: (t) => t === "tock" }
-        yield { want: (t) => t === "tock", deny: (t) => t === "tick" }
-      }
-    }),
-  )
-
-  boot(
-    task<string>("delay", 0, function* () {
-      for (;;) {
-        yield {
-          want: (t) => t === "second",
-          deny: (t) => t === "tick" || t === "tock",
+type Sign =
+  | { tag: "socket connected" }
+  | {
+      tag: "transcription result"
+      message: {
+        type: string
+        channel: {
+          alternatives: { transcript: string; words: string }[]
         }
-        yield { want: (t) => t === "tick" || t === "tock" }
+        is_final: boolean
       }
-    }),
-  )
-})
+    }
+  | { tag: "transcript"; transcript: string; final: boolean }
+  | { tag: "blob"; blob: Blob }
 
-async function main() {
-  for (;;) {
-    const { value, done } = iter.next()
-    if (done) return
-    await Promise.race([...value])
-  }
+function* syncEvent<T extends Sign>(tag: T["tag"]) {
+  return (yield sync<Sign>({ want: (t) => t.tag === tag })) as Extract<
+    Sign,
+    { tag: T["tag"] }
+  >
 }
 
-main()
+export async function demo3() {
+  await main(() =>
+    system<Sign>(function* (thread) {
+      yield* thread({
+        name: "splash",
+        prio: 1,
+        init: function* () {
+          yield sync({ want: (t) => t.tag === "socket connected" })
+          document.body.classList.add("ok")
+        },
+      })
+
+      yield* thread({
+        name: "logger",
+        prio: 0,
+        init: function* () {
+          for (;;) {
+            const sign = yield sync<Sign>({
+              want: (t) =>
+                t.tag !== "blob" && t.tag !== "transcription result",
+            })
+            console.info(sign)
+          }
+        },
+      })
+
+      yield* thread({
+        name: "render",
+        prio: 0,
+        init: function* () {
+          let transcript = ""
+          for (;;) {
+            const { transcript: partialTranscript, final } =
+              yield* syncEvent<{
+                tag: "transcript"
+                transcript: string
+                final: boolean
+              }>("transcript")
+            document.body.textContent = transcript + partialTranscript + " "
+            if (final) {
+              transcript += partialTranscript + " "
+            }
+          }
+        },
+      })
+
+      yield* thread({
+        name: "parse transcript message",
+        prio: 0,
+        init: function* () {
+          for (;;) {
+            const { message: transcriptionData } = yield* syncEvent<{
+              tag: "transcription result"
+              message: {
+                type: string
+                channel: {
+                  alternatives: { transcript: string; words: string }[]
+                }
+                is_final: boolean
+              }
+            }>("transcription result")
+
+            if (
+              transcriptionData.type === "Results" &&
+              transcriptionData.channel
+            ) {
+              const {
+                alternatives: [{ transcript }],
+              } = transcriptionData.channel
+              if (transcript) {
+                yield sync<Sign>({
+                  post: [
+                    {
+                      tag: "transcript",
+                      transcript,
+                      final: transcriptionData.is_final,
+                    },
+                  ],
+                })
+              }
+            }
+          }
+        },
+      })
+
+      const conn = yield* rent(
+        new WebSocket(
+          `${document.location.protocol === "https:" ? "wss:" : "ws:"}//${
+            document.location.host
+          }/transcribe?lang=en`,
+        ),
+      )
+
+      yield* spawn(function* () {
+        const mediaStream = yield* call(
+          navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
+        )
+
+        const recorder = new MediaRecorder(mediaStream, {
+          mimeType: "audio/webm;codecs=opus",
+          audioBitsPerSecond: 64000,
+        })
+
+        recorder.start(500)
+
+        for (const chunk of yield* each(on(recorder, "dataavailable"))) {
+          yield* conn.send(chunk.data)
+          yield* thread({
+            name: "audio recv",
+            prio: 0,
+            init: function* () {
+              yield sync<Sign>({ post: [{ tag: "blob", blob: chunk.data }] })
+            },
+          })
+          yield* each.next()
+        }
+      })
+
+      return yield* spawn(function* () {
+        yield* thread({
+          name: "socket",
+          prio: 0,
+          init: function* () {
+            yield sync<Sign>({ post: [{ tag: "socket connected" }] })
+          },
+        })
+
+        for (const msg of yield* each(conn)) {
+          yield* thread({
+            name: "socket recv",
+            prio: 0,
+            init: function* () {
+              if (typeof msg.data === "string") {
+                yield sync<Sign>({
+                  post: [
+                    {
+                      tag: "transcription result",
+                      message: JSON.parse(msg.data),
+                    },
+                  ],
+                })
+              } else {
+                throw new Error("unexpected message type")
+              }
+            },
+          })
+          yield* each.next()
+        }
+      })
+    }),
+  )
+}

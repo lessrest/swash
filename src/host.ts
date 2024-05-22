@@ -16,7 +16,7 @@ import {
   useScope,
 } from "npm:effection@3.0.3"
 
-import { Peer, rent } from "./sock.ts"
+import { SocketConnection, rent } from "./sock.ts"
 import { Dawn, info, pushTaskName, task } from "./task.ts"
 
 import { DOMParser } from "https://deno.land/x/deno_dom@v0.1.45/deno-dom-wasm.ts"
@@ -88,7 +88,7 @@ function* handleTranscribe(
 }
 
 function* forwardMessages1(
-  from: Peer,
+  from: SocketConnection,
   to: WebSocketStreamHandle,
 ): Operation<void> {
   let subscription = yield* from
@@ -138,7 +138,7 @@ function* forwardMessages1(
 
 function* forwardMessages2(
   from: WebSocketStreamHandle,
-  to: Peer,
+  to: SocketConnection,
 ): Operation<void> {
   let subscription = yield* from
   let next = yield* subscription.next()

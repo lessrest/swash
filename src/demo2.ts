@@ -10,10 +10,11 @@ import {
   suspend,
 } from "effection"
 
+import { demo3 } from "./demo3.ts"
 import { html } from "./html.ts"
-import { gpt4o, think } from "./mind.ts"
+import { ChatMessage, gpt4o, think } from "./mind.ts"
 import { into, nest } from "./nest.ts"
-import { Peer, rent } from "./sock.ts"
+import { SocketConnection, rent } from "./sock.ts"
 import { redo, task } from "./task.ts"
 import { Word } from "./text.ts"
 
@@ -49,7 +50,7 @@ function* demo() {
     video: false,
   })
 
-  const transcriptionPeer: Peer = yield* rent(dial("sv"))
+  const transcriptionPeer: SocketConnection = yield* rent(dial("sv"))
 
   const mediaRecorder = yield* useMediaRecorder(audioStream, recorderOptions)
 
@@ -165,8 +166,10 @@ function* demo() {
       for (const phraseElement of yield* each(finalSentenceChannel)) {
         const phrase = phraseElement.innerText
         if (phrase) {
-          const messages = Array.from(
-            phraseElement.closest("p")?.querySelectorAll(".sentence") ?? [],
+          const messages: ChatMessage[] = Array.from(
+            phraseElement
+              .closest("p")
+              ?.querySelectorAll<HTMLSpanElement>(".sentence") ?? [],
           ).map((sentence) => ({
             role: sentence.classList.contains("ai") ? "assistant" : "user",
             content: sentence.innerText,
@@ -174,17 +177,23 @@ function* demo() {
 
           const chat = () =>
             think(gpt4o, {
-              systemMessage:
-                "Fix likely transcription errors. Split run-on sentences and improve punctuation. Use CAPS only on key words for emphasis and flow. Prefix each line with a relevant EMOJI.",
-              // "This is a rap. User throws a line, you hit back with a rhyme. Match the user's meter and length. Use CAPS only on key words for emphasis and flow. Prefix each line with a relevant EMOJI.",
-              //              "Rewrite the user input in the style of a terse & sardonic noir monologue.",
-              //              "Respond with an appropriate emoji followed by a single word and a period.",
+              systemMessage: [
+                "Fix likely transcription errors.",
+                "Split run-on sentences and improve punctuation.",
+                "Use CAPS only on key words for emphasis and flow.",
+                "Prefix each line with a relevant EMOJI.",
+              ].join(" "),
+
+              // "This is a rap. User throws a line, you hit back with a rhyme.
+              // Match the user's meter and length.
+              // Use CAPS only on key words for emphasis and flow.
+              // Prefix each line with a relevant EMOJI.",
+
               messages,
               temperature: 0.4,
               maxTokens: 50,
             })
-
-          function* read() {
+          yield* redo(function* read() {
             const editedSpan = html("span.sentence.ai", {
               data: {
                 t0: phraseElement.dataset.t0,
@@ -204,10 +213,9 @@ function* demo() {
               })
             }
             return responseText
-          }
-
-          let responseText = yield* redo(read)
+          })
         }
+
         yield* each.next()
       }
     },
@@ -242,7 +250,11 @@ function* demo() {
 }
 
 document.addEventListener("DOMContentLoaded", async function () {
-  await main(demo)
+  if (document.location.hash === "#nt") {
+    await demo3()
+  } else {
+    await main(() => demo())
+  }
 })
 
 function dial(lang: string): WebSocket {
