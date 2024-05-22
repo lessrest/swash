@@ -14,7 +14,16 @@ const iter = exec<string>((boot, wait) => {
   clock()
 
   boot(
-    task("tick tock", 0, function* () {
+    task<string>("log", 0, function* () {
+      for (;;) {
+        const sign = yield { want: () => true }
+        console.log(sign)
+      }
+    }),
+  )
+
+  boot(
+    task<string>("tick tock", 0, function* () {
       for (;;) {
         yield { have: ["tick"] }
         yield { have: ["tock"] }
@@ -23,7 +32,7 @@ const iter = exec<string>((boot, wait) => {
   )
 
   boot(
-    task("interleave", 0, function* () {
+    task<string>("interleave", 0, function* () {
       for (;;) {
         yield { want: (t) => t === "tick", deny: (t) => t === "tock" }
         yield { want: (t) => t === "tock", deny: (t) => t === "tick" }
@@ -32,7 +41,7 @@ const iter = exec<string>((boot, wait) => {
   )
 
   boot(
-    task("delay", 0, function* () {
+    task<string>("delay", 0, function* () {
       for (;;) {
         yield {
           want: (t) => t === "second",

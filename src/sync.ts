@@ -7,7 +7,7 @@ interface Sync<T> {
 interface Task<T> {
   name: string
   sync: Sync<T>
-  proc: Generator<Sync<T>>
+  proc: Generator<Sync<T>, void, T>
   prio: number
 }
 
@@ -60,7 +60,7 @@ export function* work<Sign>(
       try {
         for (const task of both(have.get(sign), want.get(sign))) {
           console.log("⦿", task.name)
-          const { done, value } = task.proc.next()
+          const { done, value } = task.proc.next(sign)
           if (done) {
             jobs.delete(task)
           } else {
@@ -129,7 +129,7 @@ function noop<T>(name: string): Task<T> {
 export function task<T>(
   name: string,
   prio: number,
-  init: () => Generator<Sync<T>>,
+  init: () => Generator<Sync<T>, void, T>,
 ): Task<T> {
   const proc = init()
   const { done, value: sync } = proc.next()
@@ -139,7 +139,7 @@ export function task<T>(
 export function syncdemo1() {
   exec<string>((boot, _wait) => {
     boot(
-      task("fill hot", 1, function* () {
+      task<string>("fill hot", 1, function* () {
         for (;;) {
           yield { want: (t) => t === "water-low" }
           yield { have: ["add-hot"] }
@@ -149,12 +149,12 @@ export function syncdemo1() {
       }),
     )
     boot(
-      task("initially low", 1, function* () {
+      task<string>("initially low", 1, function* () {
         yield { have: ["water-low"] }
       }),
     )
     boot(
-      task("fill cold", 1, function* () {
+      task<string>("fill cold", 1, function* () {
         for (;;) {
           yield { want: (t) => t === "water-low" }
           yield { have: ["add-cold"] }
@@ -164,7 +164,7 @@ export function syncdemo1() {
       }),
     )
     boot(
-      task("balance hot/cold", 1, function* () {
+      task<string>("balance hot/cold", 1, function* () {
         for (;;) {
           yield {
             want: (t) => t === "add-hot",
