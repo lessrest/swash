@@ -6,7 +6,7 @@ function sleep(ms: number) {
 
 const iter = exec<string>((boot, wait) => {
   async function clock() {
-    for (;;) {
+    for (let i = 0; i < 5; i++) {
       await wait(sleep(1000).then(() => "second"))
     }
   }
@@ -16,8 +16,7 @@ const iter = exec<string>((boot, wait) => {
   boot(
     task<string>("log", 0, function* () {
       for (;;) {
-        const sign = yield { want: () => true }
-        console.log(sign)
+        console.log(yield { want: () => true })
       }
     }),
   )
