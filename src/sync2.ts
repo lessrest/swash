@@ -2,8 +2,8 @@ import { Operation, Task, createChannel, sleep, spawn } from "effection"
 
 export interface Sync<Sign> {
   post: Sign[]
-  want: (t: Sign) => boolean
-  deny: (t: Sign) => boolean
+  wait: (t: Sign) => boolean
+  halt: (t: Sign) => boolean
 }
 
 export interface Thread<Sign> {
@@ -32,7 +32,7 @@ export function work<Sign>(system: Set<Thread<Sign>>): boolean {
     const havers = new Set<Thread<Sign>>()
 
     for (const task of system) {
-      if (task.sync.want(e)) {
+      if (task.sync.wait(e)) {
         havers.add(task)
       }
     }
@@ -45,7 +45,7 @@ export function work<Sign>(system: Set<Thread<Sign>>): boolean {
   const electedSign = [...system]
     .sort((a, b) => b.prio - a.prio)
     .flatMap((x) => x.sync.post)
-    .find((x) => ![...system.values()].some((y) => y.sync.deny(x)))
+    .find((x) => ![...system].some((y) => y.sync.halt(x)))
 
   if (!electedSign) {
     return false
@@ -70,13 +70,13 @@ export function work<Sign>(system: Set<Thread<Sign>>): boolean {
 
 export function sync<Sign>({
   post,
-  want,
-  deny,
+  wait,
+  halt,
 }: Partial<Sync<Sign>>): Sync<Sign> {
   return {
     post: post ?? [],
-    want: want ?? (() => false),
-    deny: deny ?? (() => false),
+    wait: wait ?? (() => false),
+    halt: halt ?? (() => false),
   }
 }
 
@@ -168,7 +168,7 @@ export const syncdemo2 = system<string>(function* (thread) {
     prio: 1,
     init: function* () {
       for (;;) {
-        console.log(yield sync({ want: () => true }))
+        console.log(yield sync({ wait: () => true }))
       }
     },
   })
@@ -190,12 +190,12 @@ export const syncdemo2 = system<string>(function* (thread) {
     init: function* () {
       for (;;) {
         yield sync({
-          want: (t) => t === "tick",
-          deny: (t) => t === "tock",
+          wait: (t) => t === "tick",
+          halt: (t) => t === "tock",
         })
         yield sync({
-          want: (t) => t === "tock",
-          deny: (t) => t === "tick",
+          wait: (t) => t === "tock",
+          halt: (t) => t === "tick",
         })
       }
     },
@@ -207,10 +207,10 @@ export const syncdemo2 = system<string>(function* (thread) {
     init: function* () {
       for (;;) {
         yield sync({
-          want: (t) => t === "second",
-          deny: (t) => t === "tick" || t === "tock",
+          wait: (t) => t === "second",
+          halt: (t) => t === "tick" || t === "tock",
         })
-        yield sync({ want: (t) => t === "tick" || t === "tock" })
+        yield sync({ wait: (t) => t === "tick" || t === "tock" })
       }
     },
   })
