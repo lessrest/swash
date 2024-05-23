@@ -44,11 +44,11 @@ const DeepgramResultSchema = z.object({
 })
 
 type Sign =
-  | ["the socket is connected"]
-  | ["some speech was heard", { text: string; isFinal: boolean }]
-  | ["document edit requested", (document: Document) => void]
-  | ["an animation frame began", number]
-  | ["applying a view transition"]
+  | ["animation frame", number]
+  | ["document mutation", (document: Document) => void]
+  | ["perform view transition", (document: Document) => void]
+  | ["transcription begins"]
+  | ["speech perception", { text: string; isFinal: boolean }]
 
 type TagName = Sign[0]
 
@@ -91,39 +91,47 @@ const swash = system<Sign>(function* (rule, sync) {
 
   yield* spawn(function* () {
     for (const timestamp of yield* each(useAnimationFrames)) {
-      yield* emit("an animation frame began", timestamp)
+      yield* emit("animation frame", timestamp)
       yield* each.next()
     }
   })
 
-  const transitions: ((document: Document) => void)[] = []
+  const mutationQueue: ((document: Document) => void)[] = []
 
   yield* rules({
-    *["Document edits are added to a queue."]() {
+    *["Document mutations are queued."]() {
       for (;;) {
-        transitions.push(yield* want("document edit requested"))
+        mutationQueue.push(yield* want("document mutation"))
       }
     },
 
-    *["The edit queue is applied as a view transition."]() {
+    *["The mutation queue is performed as a view transition."]() {
       for (;;) {
-        yield* want("document edit requested")
-        yield* post("applying a view transition")
-        document.startViewTransition(() => {
-          for (const thunk of transitions) {
+        yield* want("document mutation")
+        yield* post("perform view transition", (document) => {
+          for (const thunk of mutationQueue) {
             thunk(document)
           }
-          transitions.length = 0
+          mutationQueue.length = 0
         })
       }
     },
 
-    *["View transitions are only applied on animation frames."]() {
+    *["View transitions are applied to the DOM document."]() {
       for (;;) {
-        yield* want("document edit requested")
+        const thunk = yield* want("perform view transition")
+        document.startViewTransition(() => {
+          thunk(document)
+        })
+      }
+    },
+
+    *["View transitions are rate limited by animation frames."]() {
+      for (;;) {
+        yield* want("document mutation")
         yield sync({
-          want: byTag("an animation frame began"),
-          deny: byTag("applying a view transition"),
+          want: byTag("animation frame"),
+          deny: byTag("perform view transition"),
         })
       }
     },
@@ -137,9 +145,9 @@ const swash = system<Sign>(function* (rule, sync) {
       }
     },
 
-    *["Once the socket is connected, the transcription view is shown."]() {
-      yield* want("the socket is connected")
-      yield* post("document edit requested", ({ body }) => {
+    *["Once transcription begins, the transcription view is shown."]() {
+      yield* want("transcription begins")
+      yield* post("document mutation", ({ body }) => {
         body.classList.add("ok")
         body.innerHTML += "<span><kbd></kbd> <ins></ins></span>"
       })
@@ -147,11 +155,8 @@ const swash = system<Sign>(function* (rule, sync) {
 
     *["As interim transcripts arrive, they are shown."]() {
       for (;;) {
-        const { text } = yield* want(
-          "some speech was heard",
-          (x) => !x.isFinal,
-        )
-        yield* post("document edit requested", ({ body }) => {
+        const { text } = yield* want("speech perception", (x) => !x.isFinal)
+        yield* post("document mutation", ({ body }) => {
           body.querySelector("ins")!.textContent = text
         })
       }
@@ -159,11 +164,8 @@ const swash = system<Sign>(function* (rule, sync) {
 
     *["As final transcripts arrive, they are shown."]() {
       for (;;) {
-        const { text } = yield* want(
-          "some speech was heard",
-          (x) => x.isFinal,
-        )
-        yield* post("document edit requested", ({ body }) => {
+        const { text } = yield* want("speech perception", (x) => x.isFinal)
+        yield* post("document mutation", ({ body }) => {
           body.querySelector("kbd")!.append(html("span", {}, text), " ")
           body.querySelector("ins")!.textContent = ""
         })
@@ -189,7 +191,7 @@ const swash = system<Sign>(function* (rule, sync) {
   )
 
   yield* spawn(function* () {
-    yield* emit("the socket is connected")
+    yield* emit("transcription begins")
 
     for (const { data } of yield* each(socket)) {
       if (typeof data === "string") {
@@ -197,7 +199,7 @@ const swash = system<Sign>(function* (rule, sync) {
         console.info(json)
         const payload = DeepgramResultSchema.parse(json)
         if (payload.channel && payload.channel.alternatives[0].transcript) {
-          yield* emit("some speech was heard", {
+          yield* emit("speech perception", {
             text: payload.channel.alternatives[0].transcript,
             isFinal: payload.is_final,
           })

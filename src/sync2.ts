@@ -42,7 +42,7 @@ export function work<Sign>(system: Set<Thread<Sign>>): boolean {
     }
   }
 
-  const electedSign = [...system.values()]
+  const electedSign = [...system]
     .sort((a, b) => b.prio - a.prio)
     .flatMap((x) => x.sync.post)
     .find((x) => ![...system.values()].some((y) => y.sync.deny(x)))
