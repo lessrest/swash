@@ -1,6 +1,6 @@
 import { call, each, main, on, spawn } from "effection"
 import { useWebSocket } from "./sock.ts"
-import { sync, system } from "./sync2.ts"
+import { Sync, sync, system } from "./sync2.ts"
 
 interface TranscriptionResultMessage {
   type: string
@@ -10,20 +10,22 @@ interface TranscriptionResultMessage {
   is_final: boolean
 }
 
-const SocketConnected = Symbol("SocketConnected")
-const DeepgramResult = Symbol("DeepgramResult")
-const Transcript = Symbol("Transcript")
+enum Tag {
+  SocketConnected = "SocketConnected",
+  DeepgramResult = "DeepgramResult",
+  Transcript = "Transcript",
+}
 
 type Sign =
-  | { tag: typeof SocketConnected }
-  | { tag: typeof DeepgramResult; message: TranscriptionResultMessage }
-  | { tag: typeof Transcript; transcript: string; final: boolean }
+  | { tag: Tag.SocketConnected }
+  | { tag: Tag.DeepgramResult; message: TranscriptionResultMessage }
+  | { tag: Tag.Transcript; transcript: string; final: boolean }
 
-function* waitFor<T extends Sign>(tag: T["tag"]) {
-  return (yield sync<Sign>({ want: (t) => t.tag === tag })) as Extract<
-    Sign,
-    { tag: T["tag"] }
-  >
+function* waitFor<T extends Sign>(
+  tag: T["tag"],
+): Generator<Sync<Sign>, Extract<Sign, { tag: T["tag"] }>, Sign> {
+  const sign = yield sync<Sign>({ want: (t) => t.tag === tag })
+  return sign as Extract<Sign, { tag: T["tag"] }>
 }
 
 const swash = system<Sign>(function* (thread) {
@@ -34,14 +36,14 @@ const swash = system<Sign>(function* (thread) {
   }
 
   yield* thread("splash", function* () {
-    yield* waitFor(SocketConnected)
+    yield* waitFor(Tag.SocketConnected)
     document.body.classList.add("ok")
   })
 
   yield* thread("logger", function* () {
     for (;;) {
       const sign = yield sync<Sign>({
-        want: (t) => t.tag !== DeepgramResult,
+        want: (t) => t.tag !== Tag.DeepgramResult,
       })
       console.info(sign)
     }
@@ -51,10 +53,10 @@ const swash = system<Sign>(function* (thread) {
     let transcript = ""
     for (;;) {
       const { transcript: partialTranscript, final } = yield* waitFor<{
-        tag: typeof Transcript
+        tag: typeof Tag.Transcript
         transcript: string
         final: boolean
-      }>(Transcript)
+      }>(Tag.Transcript)
       document.body.textContent = transcript + partialTranscript + " "
       if (final) {
         transcript += partialTranscript + " "
@@ -65,7 +67,7 @@ const swash = system<Sign>(function* (thread) {
   yield* thread("parse transcript message", function* () {
     for (;;) {
       const { message } = yield* waitFor<{
-        tag: typeof DeepgramResult
+        tag: typeof Tag.DeepgramResult
         message: {
           type: string
           channel: {
@@ -73,7 +75,7 @@ const swash = system<Sign>(function* (thread) {
           }
           is_final: boolean
         }
-      }>(DeepgramResult)
+      }>(Tag.DeepgramResult)
 
       if (message.type === "Results" && message.channel) {
         const {
@@ -83,7 +85,7 @@ const swash = system<Sign>(function* (thread) {
           yield sync<Sign>({
             post: [
               {
-                tag: Transcript,
+                tag: Tag.Transcript,
                 transcript,
                 final: message.is_final,
               },
@@ -112,12 +114,12 @@ const swash = system<Sign>(function* (thread) {
   })
 
   yield* spawn(function* () {
-    yield* emit({ tag: SocketConnected })
+    yield* emit({ tag: Tag.SocketConnected })
 
     for (const { data } of yield* each(conn)) {
       if (typeof data === "string") {
         yield* emit({
-          tag: DeepgramResult,
+          tag: Tag.DeepgramResult,
           message: JSON.parse(data),
         })
       } else {
