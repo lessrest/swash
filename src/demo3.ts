@@ -44,11 +44,11 @@ const DeepgramResultSchema = z.object({
 })
 
 type Sign =
-  | ["animation frame", number]
-  | ["document mutation", (document: Document) => void]
-  | ["perform view transition", (document: Document) => void]
+  | ["animation frame begins", number]
+  | ["request document mutation", (document: Document) => void]
   | ["transcription begins"]
-  | ["speech perception", { text: string; isFinal: boolean }]
+  | ["conclusive phrase", { text: string }]
+  | ["tentative phrase", { text: string }]
 
 type TagName = Sign[0]
 
@@ -85,13 +85,13 @@ const swash = system<Sign>(function* (rule, sync) {
     }
   }
 
-  function byTag<T extends TagName>(tag: T) {
+  function _byTag<T extends TagName>(tag: T) {
     return (x: Sign) => x[0] === tag
   }
 
   yield* spawn(function* () {
     for (const timestamp of yield* each(useAnimationFrames)) {
-      yield* emit("animation frame", timestamp)
+      yield* emit("animation frame begins", timestamp)
       yield* each.next()
     }
   })
@@ -101,37 +101,19 @@ const swash = system<Sign>(function* (rule, sync) {
   yield* rules({
     *["Document mutations are queued."]() {
       for (;;) {
-        mutationQueue.push(yield* want("document mutation"))
-      }
-    },
-
-    *["The mutation queue is performed as a view transition."]() {
-      for (;;) {
-        yield* want("document mutation")
-        yield* post("perform view transition", (document) => {
-          for (const thunk of mutationQueue) {
-            thunk(document)
-          }
-          mutationQueue.length = 0
-        })
+        mutationQueue.push(yield* want("request document mutation"))
       }
     },
 
     *["View transitions are applied to the DOM document."]() {
       for (;;) {
-        const thunk = yield* want("perform view transition")
+        yield* want("request document mutation")
+        yield* want("animation frame begins")
         document.startViewTransition(() => {
-          thunk(document)
-        })
-      }
-    },
-
-    *["View transitions are rate limited by animation frames."]() {
-      for (;;) {
-        yield* want("document mutation")
-        yield sync({
-          want: byTag("animation frame"),
-          deny: byTag("perform view transition"),
+          for (const thunk of mutationQueue) {
+            thunk(document)
+          }
+          mutationQueue.length = 0
         })
       }
     },
@@ -147,26 +129,34 @@ const swash = system<Sign>(function* (rule, sync) {
 
     *["Once transcription begins, the transcription view is shown."]() {
       yield* want("transcription begins")
-      yield* post("document mutation", ({ body }) => {
+      yield* post("request document mutation", ({ body }) => {
         body.classList.add("ok")
         body.innerHTML += "<span><kbd></kbd> <ins></ins></span>"
       })
     },
 
-    *["As interim transcripts arrive, they are shown."]() {
+    *["The latest tentative phrase is shown in the insertion buffer."]() {
       for (;;) {
-        const { text } = yield* want("speech perception", (x) => !x.isFinal)
-        yield* post("document mutation", ({ body }) => {
+        const { text } = yield* want("tentative phrase")
+        yield* post("request document mutation", ({ body }) => {
           body.querySelector("ins")!.textContent = text
         })
       }
     },
 
-    *["As final transcripts arrive, they are shown."]() {
+    *["All conclusive phrases are shown in the transcript element."]() {
       for (;;) {
-        const { text } = yield* want("speech perception", (x) => x.isFinal)
-        yield* post("document mutation", ({ body }) => {
+        const { text } = yield* want("conclusive phrase")
+        yield* post("request document mutation", ({ body }) => {
           body.querySelector("kbd")!.append(html("span", {}, text), " ")
+        })
+      }
+    },
+
+    *["The insertion buffer is cleared when a conclusive phrase arrives."]() {
+      for (;;) {
+        yield* want("conclusive phrase")
+        yield* post("request document mutation", ({ body }) => {
           body.querySelector("ins")!.textContent = ""
         })
       }
@@ -199,10 +189,15 @@ const swash = system<Sign>(function* (rule, sync) {
         console.info(json)
         const payload = DeepgramResultSchema.parse(json)
         if (payload.channel && payload.channel.alternatives[0].transcript) {
-          yield* emit("speech perception", {
-            text: payload.channel.alternatives[0].transcript,
-            isFinal: payload.is_final,
-          })
+          if (payload.is_final) {
+            yield* emit("conclusive phrase", {
+              text: payload.channel.alternatives[0].transcript,
+            })
+          } else {
+            yield* emit("tentative phrase", {
+              text: payload.channel.alternatives[0].transcript,
+            })
+          }
         }
       } else {
         throw new Error("unexpected message type")
