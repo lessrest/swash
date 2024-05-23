@@ -456,6 +456,7 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
               "effection": "https://esm.sh/effection@3.0.3?target=esnext",
               "grapheme-splitter":
                 "https://esm.sh/grapheme-splitter@1.0.4?target=esnext",
+              "zod": "https://esm.sh/zod@3.20.1?target=esnext",
             },
           },
           allowRemote: true,

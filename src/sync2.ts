@@ -106,10 +106,13 @@ export function makeThread<T>({
 }
 
 export function* system<T, V = void>(
-  body: (thread: {
-    (name: string, init: () => Generator<Sync<T>, void, T>): Operation<void>
-    (spec: Behavior<T>): Operation<void>
-  }) => Operation<Task<V>>,
+  body: (
+    thread: {
+      (name: string, init: () => Generator<Sync<T>, void, T>): Operation<void>
+      (spec: Behavior<T>): Operation<void>
+    },
+    $: typeof sync<T>,
+  ) => Operation<Task<V>>,
 ): Operation<V> {
   const newThreadChannel = createChannel<void>()
   const newlyStartedThreads = new Set<Thread<T>>()
@@ -126,7 +129,8 @@ export function* system<T, V = void>(
 
     // These are ignored until the subscription starts.
     yield* newThreadChannel.send()
-  })
+  },
+  sync<T>)
 
   const newThreadSubscription = yield* newThreadChannel
 

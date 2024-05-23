@@ -1,95 +1,103 @@
 import { call, each, main, on, spawn } from "effection"
+import { z } from "zod"
 import { useWebSocket } from "./sock.ts"
 import { Sync, sync, system } from "./sync2.ts"
 
-interface TranscriptionResultMessage {
-  type: string
-  channel: {
-    alternatives: { transcript: string }[]
-  }
-  is_final: boolean
-}
+const DeepgramResultSchema = z.object({
+  metadata: z.object({
+    request_id: z.string(),
+  }),
+  type: z.literal("Results"),
+  channel_index: z.tuple([z.number(), z.number()]),
+  duration: z.number(),
+  start: z.number(),
+  is_final: z.boolean(),
+  speech_final: z.boolean().optional(),
+  channel: z.object({
+    alternatives: z.array(
+      z.object({
+        transcript: z.string(),
+        confidence: z.number(),
+        words: z.array(
+          z.object({
+            word: z.string(),
+            start: z.number(),
+            end: z.number(),
+            confidence: z.number(),
+          }),
+        ),
+      }),
+    ),
+  }),
+})
 
-enum Tag {
-  SocketConnected = "SocketConnected",
-  DeepgramResult = "DeepgramResult",
-  Transcript = "Transcript",
-}
+type DeepgramPayload = z.infer<typeof DeepgramResultSchema>
 
 type Sign =
-  | { tag: Tag.SocketConnected }
-  | { tag: Tag.DeepgramResult; message: TranscriptionResultMessage }
-  | { tag: Tag.Transcript; transcript: string; final: boolean }
+  | ["SocketConnected"]
+  | ["DeepgramMessage", DeepgramPayload]
+  | ["Transcript", { text: string; finality: boolean }]
 
-function* waitFor<T extends Tag>(
+type TagName = Sign[0]
+
+type Payload<T extends TagName> = Extract<Sign, [T, unknown]>[1]
+
+function* want<T extends TagName>(
   tag: T,
-): Generator<Sync<Sign>, Extract<Sign, { tag: T }>, Sign> {
-  const sign = yield sync<Sign>({ want: (t) => t.tag === tag })
-  return sign as Extract<Sign, { tag: T }>
+): Generator<Sync<Sign>, Payload<T>, Sign> {
+  return (
+    (yield sync<Sign>({ want: (t) => t[0] === tag })) as [T, Payload<T>]
+  )[1]
 }
 
-const swash = system<Sign>(function* (thread) {
-  function* emit<T extends Sign>(sign: T) {
-    yield* thread("emit", function* () {
-      yield sync<Sign>({ post: [sign] })
+const swash = system<Sign>(function* (rule, sync) {
+  function* emit<T extends TagName>(tag: T, payload?: Payload<T>) {
+    yield* rule(tag, function* () {
+      yield sync({ post: [[tag, payload] as Sign] })
     })
   }
 
-  yield* thread("splash", function* () {
-    yield* waitFor(Tag.SocketConnected)
+  yield* rule("splash", function* () {
+    yield* want("SocketConnected")
     document.body.classList.add("ok")
   })
 
-  yield* thread("logger", function* () {
+  yield* rule("logger", function* () {
     for (;;) {
-      const sign = yield sync<Sign>({
-        want: (t) => t.tag !== Tag.DeepgramResult,
+      const sign = yield sync({
+        want: ([tag, _]) => tag !== "DeepgramMessage",
       })
       console.info(sign)
     }
   })
 
-  yield* thread("render", function* () {
-    let text = ""
+  yield* rule("render", function* () {
+    let sum = ""
     for (;;) {
-      const { transcript, final } = yield* waitFor(Tag.Transcript)
-      document.body.textContent = text + transcript + " "
-      if (final) {
-        text += transcript + " "
+      const { text, finality } = yield* want("Transcript")
+      document.body.textContent = sum + text + " "
+      if (finality) {
+        sum += text + " "
       }
     }
   })
 
-  yield* thread("parse transcript message", function* () {
+  yield* rule("parse transcript message", function* () {
     for (;;) {
-      const { message } = yield* waitFor(Tag.DeepgramResult)
+      const { type, channel, is_final } = yield* want("DeepgramMessage")
 
-      if (message.type === "Results" && message.channel) {
+      if (type === "Results" && channel) {
         const {
           alternatives: [{ transcript }],
-        } = message.channel
+        } = channel
         if (transcript) {
-          yield sync<Sign>({
-            post: [
-              {
-                tag: Tag.Transcript,
-                transcript,
-                final: message.is_final,
-              },
-            ],
+          yield sync({
+            post: [["Transcript", { text: transcript, finality: is_final }]],
           })
         }
       }
     }
   })
-
-  const conn = yield* useWebSocket(
-    new WebSocket(
-      `${document.location.protocol === "https:" ? "wss:" : "ws:"}//${
-        document.location.host
-      }/transcribe?lang=en`,
-    ),
-  )
 
   const mediaStream = yield* call(
     navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
@@ -100,15 +108,23 @@ const swash = system<Sign>(function* (thread) {
     audioBitsPerSecond: 64000,
   })
 
-  yield* spawn(function* () {
-    yield* emit({ tag: Tag.SocketConnected })
+  const socket = yield* useWebSocket(
+    new WebSocket(
+      `${document.location.protocol === "https:" ? "wss:" : "ws:"}//${
+        document.location.host
+      }/transcribe?lang=en`,
+    ),
+  )
 
-    for (const { data } of yield* each(conn)) {
+  yield* spawn(function* () {
+    yield* emit("SocketConnected")
+
+    for (const { data } of yield* each(socket)) {
       if (typeof data === "string") {
-        yield* emit({
-          tag: Tag.DeepgramResult,
-          message: JSON.parse(data),
-        })
+        const json = JSON.parse(data)
+        console.info(json)
+        const payload = DeepgramResultSchema.parse(json)
+        yield* emit("DeepgramMessage", payload)
       } else {
         throw new Error("unexpected message type")
       }
@@ -121,7 +137,7 @@ const swash = system<Sign>(function* (thread) {
     recorder.start(500)
 
     for (const chunk of yield* each(on(recorder, "dataavailable"))) {
-      yield* conn.send(chunk.data)
+      yield* socket.send(chunk.data)
       yield* each.next()
     }
   })
@@ -129,4 +145,21 @@ const swash = system<Sign>(function* (thread) {
 
 export async function swash3() {
   await main(() => swash)
+
+  // document.body.append(
+  //   html(
+  //     "div",
+  //     {
+  //       style: {
+  //         display: "flex",
+  //         flexFlow: "column  wrap",
+  //         marginLeft: "4em",
+  //         fontFamily: "graphik",
+  //       },
+  //     },
+  //     ...words
+  //       .filter(({ kind }) => kind === "noun")
+  //       .map(({ word, text }) => html("span", {}, html("span", {}, word))),
+  //   ),
+  // )
 }
