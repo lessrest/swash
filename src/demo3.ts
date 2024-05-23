@@ -21,11 +21,11 @@ type Sign =
   | { tag: Tag.DeepgramResult; message: TranscriptionResultMessage }
   | { tag: Tag.Transcript; transcript: string; final: boolean }
 
-function* waitFor<T extends Sign>(
-  tag: T["tag"],
-): Generator<Sync<Sign>, Extract<Sign, { tag: T["tag"] }>, Sign> {
+function* waitFor<T extends Tag>(
+  tag: T,
+): Generator<Sync<Sign>, Extract<Sign, { tag: T }>, Sign> {
   const sign = yield sync<Sign>({ want: (t) => t.tag === tag })
-  return sign as Extract<Sign, { tag: T["tag"] }>
+  return sign as Extract<Sign, { tag: T }>
 }
 
 const swash = system<Sign>(function* (thread) {
@@ -50,32 +50,19 @@ const swash = system<Sign>(function* (thread) {
   })
 
   yield* thread("render", function* () {
-    let transcript = ""
+    let text = ""
     for (;;) {
-      const { transcript: partialTranscript, final } = yield* waitFor<{
-        tag: typeof Tag.Transcript
-        transcript: string
-        final: boolean
-      }>(Tag.Transcript)
-      document.body.textContent = transcript + partialTranscript + " "
+      const { transcript, final } = yield* waitFor(Tag.Transcript)
+      document.body.textContent = text + transcript + " "
       if (final) {
-        transcript += partialTranscript + " "
+        text += transcript + " "
       }
     }
   })
 
   yield* thread("parse transcript message", function* () {
     for (;;) {
-      const { message } = yield* waitFor<{
-        tag: typeof Tag.DeepgramResult
-        message: {
-          type: string
-          channel: {
-            alternatives: { transcript: string }[]
-          }
-          is_final: boolean
-        }
-      }>(Tag.DeepgramResult)
+      const { message } = yield* waitFor(Tag.DeepgramResult)
 
       if (message.type === "Results" && message.channel) {
         const {
