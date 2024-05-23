@@ -98,14 +98,15 @@ const swash = system<Sign>(function* (rule, sync) {
   const transitions: ((document: Document) => void)[] = []
 
   yield* rules({
-    *["Document edits are always added to a queue."]() {
+    *["Document edits are added to a queue."]() {
       for (;;) {
         transitions.push(yield* want("document edit requested"))
       }
     },
 
-    *["View transitions are always applied to the document."]() {
+    *["The edit queue is applied as a view transition."]() {
       for (;;) {
+        yield* want("document edit requested")
         yield* post("applying a view transition")
         document.startViewTransition(() => {
           for (const thunk of transitions) {
@@ -125,7 +126,9 @@ const swash = system<Sign>(function* (rule, sync) {
         yield* want("applying a view transition")
       }
     },
+  })
 
+  yield* rules({
     *["Events are logged."]() {
       for (;;) {
         const [tag, payload] = yield sync({ want: () => true })
