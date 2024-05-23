@@ -1,4 +1,13 @@
-import { call, each, main, on, spawn } from "effection"
+import {
+  Stream,
+  call,
+  createSignal,
+  each,
+  main,
+  on,
+  resource,
+  spawn,
+} from "effection"
 import { z } from "zod"
 import { useWebSocket } from "./sock.ts"
 import { Sync, sync, system } from "./sync2.ts"
@@ -37,12 +46,14 @@ type Sign =
   | ["the socket is connected"]
   | ["some speech was heard", { text: string; isFinal: boolean }]
   | ["document edit requested", (document: Document) => void]
+  | ["an animation frame began", number]
+  | ["applying a view transition"]
 
 type TagName = Sign[0]
 
 type Payload<T extends TagName> = Extract<Sign, [T, unknown]>[1]
 
-function* once<T extends TagName>(
+function* want<T extends TagName>(
   tag: T,
   predicate?: (payload: Payload<T>) => boolean,
 ): Generator<Sync<Sign>, Payload<T>, Sign> {
@@ -73,20 +84,57 @@ const swash = system<Sign>(function* (rule, sync) {
     }
   }
 
+  function byTag<T extends TagName>(tag: T) {
+    return (x: Sign) => x[0] === tag
+  }
+
+  yield* spawn(function* () {
+    for (const timestamp of yield* each(useAnimationFrames)) {
+      yield* emit("an animation frame began", timestamp)
+      yield* each.next()
+    }
+  })
+
+  const transitions: ((document: Document) => void)[] = []
+
   yield* rules({
-    *["Document edits are applied as view transitions."]() {
+    *["Document edits are always added to a queue."]() {
       for (;;) {
-        const thunk = yield* once("document edit requested")
-        if (document.startViewTransition) {
-          document.startViewTransition(() => thunk(document))
-        } else {
-          thunk(document)
-        }
+        transitions.push(yield* want("document edit requested"))
       }
     },
 
-    *["Once the socket is connected, it is indicated visually."]() {
-      yield* once("the socket is connected")
+    *["View transitions are always applied to the document."]() {
+      for (;;) {
+        yield* post("applying a view transition")
+        document.startViewTransition(() => {
+          for (const thunk of transitions) {
+            thunk(document)
+          }
+          transitions.length = 0
+        })
+      }
+    },
+
+    *["View transitions are only applied on animation frames."]() {
+      for (;;) {
+        yield sync({
+          want: byTag("an animation frame began"),
+          deny: byTag("applying a view transition"),
+        })
+        yield* want("applying a view transition")
+      }
+    },
+
+    *["Events are logged."]() {
+      for (;;) {
+        const [tag, payload] = yield sync({ want: () => true })
+        console.info(tag, payload)
+      }
+    },
+
+    *["Once the socket is connected, the transcription view is shown."]() {
+      yield* want("the socket is connected")
       yield* post("document edit requested", ({ body }) => {
         body.classList.add("ok")
         body.innerHTML += "<span><kbd></kbd><ins></ins></span>"
@@ -95,7 +143,7 @@ const swash = system<Sign>(function* (rule, sync) {
 
     *["As interim transcripts arrive, they are shown."]() {
       for (;;) {
-        const { text } = yield* once(
+        const { text } = yield* want(
           "some speech was heard",
           (x) => !x.isFinal,
         )
@@ -107,7 +155,7 @@ const swash = system<Sign>(function* (rule, sync) {
 
     *["As final transcripts arrive, they are shown."]() {
       for (;;) {
-        const { text } = yield* once(
+        const { text } = yield* want(
           "some speech was heard",
           (x) => x.isFinal,
         )
@@ -166,6 +214,23 @@ const swash = system<Sign>(function* (rule, sync) {
       yield* each.next()
     }
   })
+})
+
+export const useAnimationFrames: Stream<number, never> = resource(function* (
+  provide,
+) {
+  const signal = createSignal<number, never>()
+  let id = 0
+  const callback: FrameRequestCallback = (timestamp) => {
+    signal.send(timestamp)
+    id = requestAnimationFrame(callback)
+  }
+  id = requestAnimationFrame(callback)
+  try {
+    yield* provide(yield* signal)
+  } finally {
+    cancelAnimationFrame(id)
+  }
 })
 
 export async function swash3() {
