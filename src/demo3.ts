@@ -3,6 +3,8 @@ import { z } from "zod"
 import { useWebSocket } from "./sock.ts"
 import { Sync, sync, system } from "./sync2.ts"
 
+import "@types/dom-view-transitions"
+
 const DeepgramResultSchema = z.object({
   metadata: z.object({
     request_id: z.string(),
@@ -31,22 +33,24 @@ const DeepgramResultSchema = z.object({
   }),
 })
 
-type DeepgramPayload = z.infer<typeof DeepgramResultSchema>
-
 type Sign =
-  | ["SocketConnected"]
-  | ["DeepgramMessage", DeepgramPayload]
-  | ["Transcript", { text: string; finality: boolean }]
+  | ["the socket is connected"]
+  | ["some speech was heard", { text: string; isFinal: boolean }]
+  | ["document edit requested", (document: Document) => void]
 
 type TagName = Sign[0]
 
 type Payload<T extends TagName> = Extract<Sign, [T, unknown]>[1]
 
-function* want<T extends TagName>(
+function* once<T extends TagName>(
   tag: T,
+  predicate?: (payload: Payload<T>) => boolean,
 ): Generator<Sync<Sign>, Payload<T>, Sign> {
   return (
-    (yield sync<Sign>({ want: (t) => t[0] === tag })) as [T, Payload<T>]
+    (yield sync<Sign>({
+      want: (t) =>
+        t[0] === tag && (!predicate || predicate(t[1] as Payload<T>)),
+    })) as [T, Payload<T>]
   )[1]
 }
 
@@ -57,46 +61,62 @@ const swash = system<Sign>(function* (rule, sync) {
     })
   }
 
-  yield* rule("splash", function* () {
-    yield* want("SocketConnected")
-    document.body.classList.add("ok")
-  })
+  function* post<T extends TagName>(tag: T, payload?: Payload<T>) {
+    yield sync({ post: [[tag, payload] as Sign] })
+  }
 
-  yield* rule("logger", function* () {
-    for (;;) {
-      const sign = yield sync({
-        want: ([tag, _]) => tag !== "DeepgramMessage",
-      })
-      console.info(sign)
+  function* rules(
+    rules: Record<string, () => Generator<Sync<Sign>, void, Sign>>,
+  ) {
+    for (const [name, ruleBody] of Object.entries(rules)) {
+      yield* rule(name, ruleBody)
     }
-  })
+  }
 
-  yield* rule("render", function* () {
-    let sum = ""
-    for (;;) {
-      const { text, finality } = yield* want("Transcript")
-      document.body.textContent = sum + text + " "
-      if (finality) {
-        sum += text + " "
-      }
-    }
-  })
-
-  yield* rule("parse transcript message", function* () {
-    for (;;) {
-      const { type, channel, is_final } = yield* want("DeepgramMessage")
-
-      if (type === "Results" && channel) {
-        const {
-          alternatives: [{ transcript }],
-        } = channel
-        if (transcript) {
-          yield sync({
-            post: [["Transcript", { text: transcript, finality: is_final }]],
-          })
+  yield* rules({
+    *["Document edits are applied as view transitions."]() {
+      for (;;) {
+        const thunk = yield* once("document edit requested")
+        if (document.startViewTransition) {
+          document.startViewTransition(() => thunk(document))
+        } else {
+          thunk(document)
         }
       }
-    }
+    },
+
+    *["Once the socket is connected, it is indicated visually."]() {
+      yield* once("the socket is connected")
+      yield* post("document edit requested", ({ body }) => {
+        body.classList.add("ok")
+        body.innerHTML += "<span><kbd></kbd><ins></ins></span>"
+      })
+    },
+
+    *["As interim transcripts arrive, they are shown."]() {
+      for (;;) {
+        const { text } = yield* once(
+          "some speech was heard",
+          (x) => !x.isFinal,
+        )
+        yield* post("document edit requested", ({ body }) => {
+          body.querySelector("ins")!.textContent = text
+        })
+      }
+    },
+
+    *["As final transcripts arrive, they are shown."]() {
+      for (;;) {
+        const { text } = yield* once(
+          "some speech was heard",
+          (x) => x.isFinal,
+        )
+        yield* post("document edit requested", ({ body }) => {
+          body.querySelector("kbd")!.textContent += text
+          body.querySelector("ins")!.textContent = ""
+        })
+      }
+    },
   })
 
   const mediaStream = yield* call(
@@ -117,14 +137,19 @@ const swash = system<Sign>(function* (rule, sync) {
   )
 
   yield* spawn(function* () {
-    yield* emit("SocketConnected")
+    yield* emit("the socket is connected")
 
     for (const { data } of yield* each(socket)) {
       if (typeof data === "string") {
         const json = JSON.parse(data)
         console.info(json)
         const payload = DeepgramResultSchema.parse(json)
-        yield* emit("DeepgramMessage", payload)
+        if (payload.channel && payload.channel.alternatives[0].transcript) {
+          yield* emit("some speech was heard", {
+            text: payload.channel.alternatives[0].transcript,
+            isFinal: payload.is_final,
+          })
+        }
       } else {
         throw new Error("unexpected message type")
       }
@@ -134,7 +159,7 @@ const swash = system<Sign>(function* (rule, sync) {
   })
 
   return yield* spawn(function* () {
-    recorder.start(500)
+    recorder.start(100)
 
     for (const chunk of yield* each(on(recorder, "dataavailable"))) {
       yield* socket.send(chunk.data)

@@ -11,6 +11,7 @@
       "jsr:@std/io@^0.218.2": "jsr:@std/io@0.218.2",
       "jsr:@std/path@^0.218.2": "jsr:@std/path@0.218.2",
       "npm:@preact/signals@^1.2.3": "npm:@preact/signals@1.2.3_preact@10.20.2",
+      "npm:@types/dom-view-transitions@^1.0.4": "npm:@types/dom-view-transitions@1.0.4",
       "npm:@types/dom-webcodecs@^0.1.11": "npm:@types/dom-webcodecs@0.1.11",
       "npm:@types/node": "npm:@types/node@18.16.19",
       "npm:crunker@^2.4.0": "npm:crunker@2.4.0",
@@ -75,6 +76,10 @@
           "@preact/signals-core": "@preact/signals-core@1.6.0",
           "preact": "preact@10.20.2"
         }
+      },
+      "@types/dom-view-transitions@1.0.4": {
+        "integrity": "sha512-oDuagM6G+xPLrLU4KeCKlr1oalMF5mJqV5pDPMDVIEaa8AkUW00i6u+5P02XCjdEEUQJC9dpnxqSLsZeAciSLQ==",
+        "dependencies": {}
       },
       "@types/dom-webcodecs@0.1.11": {
         "integrity": "sha512-yPEZ3z7EohrmOxbk/QTAa0yonMFkNkjnVXqbGb7D4rMr+F1dGQ8ZUFxXkyLLJuiICPejZ0AZE9Rrk9wUCczx4A==",
@@ -406,6 +411,7 @@
     "packageJson": {
       "dependencies": [
         "npm:@preact/signals@^1.2.3",
+        "npm:@types/dom-view-transitions@^1.0.4",
         "npm:@types/dom-webcodecs@^0.1.11",
         "npm:crunker@^2.4.0",
         "npm:effection@^3.0.3",

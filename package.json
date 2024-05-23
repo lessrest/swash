@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "@preact/signals": "^1.2.3",
+    "@types/dom-view-transitions": "^1.0.4",
     "@types/dom-webcodecs": "^0.1.11",
     "crunker": "^2.4.0",
     "effection": "^3.0.3",
