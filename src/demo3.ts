@@ -13,6 +13,7 @@ import { useWebSocket } from "./sock.ts"
 import { Sync, sync, system } from "./sync2.ts"
 
 import "@types/dom-view-transitions"
+import { html } from "./html.ts"
 
 const DeepgramResultSchema = z.object({
   metadata: z.object({
@@ -119,11 +120,11 @@ const swash = system<Sign>(function* (rule, sync) {
 
     *["View transitions are only applied on animation frames."]() {
       for (;;) {
+        yield* want("document edit requested")
         yield sync({
           want: byTag("an animation frame began"),
           deny: byTag("applying a view transition"),
         })
-        yield* want("applying a view transition")
       }
     },
   })
@@ -140,7 +141,7 @@ const swash = system<Sign>(function* (rule, sync) {
       yield* want("the socket is connected")
       yield* post("document edit requested", ({ body }) => {
         body.classList.add("ok")
-        body.innerHTML += "<span><kbd></kbd><ins></ins></span>"
+        body.innerHTML += "<span><kbd></kbd> <ins></ins></span>"
       })
     },
 
@@ -163,7 +164,7 @@ const swash = system<Sign>(function* (rule, sync) {
           (x) => x.isFinal,
         )
         yield* post("document edit requested", ({ body }) => {
-          body.querySelector("kbd")!.textContent += text
+          body.querySelector("kbd")!.append(html("span", {}, text), " ")
           body.querySelector("ins")!.textContent = ""
         })
       }
