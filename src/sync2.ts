@@ -1,66 +1,36 @@
 import { Operation, Task, createChannel, sleep, spawn } from "effection"
 
-export interface Sync<Sign> {
-  post: Sign[]
-  wait: (t: Sign) => boolean
-  halt: (t: Sign) => boolean
+export interface Sync<Post> {
+  post: Post[]
+  wait: (t: Post) => boolean
+  halt: (t: Post) => boolean
+  exec: Operation<Post>[]
 }
 
-export interface Thread<Sign> {
+export interface Thread<Post> {
   name: string
-  sync: Sync<Sign>
-  proc: Generator<Sync<Sign>, void, Sign>
+  sync: Sync<Post>
+  proc: Generator<Sync<Post>, void, Post>
   prio: number
 }
 
-function both<V>(x: Set<V> | undefined, y: Set<V> | undefined): Set<V> {
-  return (x ?? new Set()).union(y ?? new Set())
-}
-
-export function work<Sign>(system: Set<Thread<Sign>>): boolean {
-  const postedBy = new Map<Sign, Set<Thread<Sign>>>()
-  for (const thread of system) {
-    for (const postedSign of thread.sync.post) {
-      const set = postedBy.get(postedSign) ?? new Set()
-      set.add(thread)
-      postedBy.set(postedSign, set)
-    }
-  }
-
-  const wantedBy = new Map<Sign, Set<Thread<Sign>>>()
-  for (const e of postedBy.keys()) {
-    const havers = new Set<Thread<Sign>>()
-
-    for (const task of system) {
-      if (task.sync.wait(e)) {
-        havers.add(task)
-      }
-    }
-
-    if (havers.size > 0) {
-      wantedBy.set(e, havers)
-    }
-  }
-
-  const electedSign = [...system]
+export function work<Post>(threads: Set<Thread<Post>>): boolean {
+  const post = [...threads]
     .sort((a, b) => b.prio - a.prio)
     .flatMap((x) => x.sync.post)
-    .find((x) => ![...system].some((y) => y.sync.halt(x)))
+    .find((x) => ![...threads].some((y) => y.sync.halt(x)))
 
-  if (!electedSign) {
+  if (!post) {
     return false
   } else {
-    const affectedThreads = both(
-      postedBy.get(electedSign),
-      wantedBy.get(electedSign),
-    )
-
-    for (const thread of affectedThreads) {
-      const { done, value } = thread.proc.next(electedSign)
-      if (done) {
-        system.delete(thread)
-      } else {
-        thread.sync = value
+    for (const thread of threads) {
+      if (thread.sync.post.includes(post) || thread.sync.wait(post)) {
+        const { done, value } = thread.proc.next(post)
+        if (done) {
+          threads.delete(thread)
+        } else {
+          thread.sync = value
+        }
       }
     }
 
@@ -68,15 +38,17 @@ export function work<Sign>(system: Set<Thread<Sign>>): boolean {
   }
 }
 
-export function sync<Sign>({
+export function sync<Post>({
   post,
   wait,
   halt,
-}: Partial<Sync<Sign>>): Sync<Sign> {
+  exec,
+}: Partial<Sync<Post>>): Sync<Post> {
   return {
     post: post ?? [],
     wait: wait ?? (() => false),
     halt: halt ?? (() => false),
+    exec: exec ?? [],
   }
 }
 
