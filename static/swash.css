@@ -55,7 +55,7 @@ ruby rt {
 .sentence,
 .phrase {
   font-weight: 300;
-  display: none;
+  /* display: none; */
 }
 
 .sentence.ai {

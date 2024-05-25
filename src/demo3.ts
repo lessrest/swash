@@ -16,29 +16,29 @@ import {
   spawn,
 } from "effection"
 
-type Sign =
+export type Step =
   | ["animation frame began", number]
   | ["document mutation requested", (document: Document) => void]
   | ["live transcription began"]
   | ["phrase heard conclusively", Word[]]
   | ["phrase heard tentatively", Word[]]
 
-type TagName = Sign[0]
-type Payload<T extends TagName> = Extract<Sign, [T, unknown]>[1]
+type TagName = Step[0]
+type Payload<T extends TagName> = Extract<Step, [T, unknown]>[1]
 
 function* wait<T extends TagName>(
   tag: T,
   predicate?: (payload: Payload<T>) => boolean,
-): Generator<Sync<Sign>, Payload<T>, Sign> {
+): Generator<Sync<Step>, Payload<T>, Step> {
   return (
-    (yield sync<Sign>({
+    (yield sync<Step>({
       wait: (t) =>
         t[0] === tag && (!predicate || predicate(t[1] as Payload<T>)),
     })) as [T, Payload<T>]
   )[1]
 }
 
-const swash = system<Sign>(function* (rule, sync) {
+const swash = system<Step>(function* (rule, sync) {
   yield* spawn(function* () {
     for (const timestamp of yield* each(useAnimationFrames)) {
       if (mutationQueue.length > 0) {
@@ -166,16 +166,16 @@ const swash = system<Sign>(function* (rule, sync) {
 
   function* emit<T extends TagName>(tag: T, payload?: Payload<T>) {
     yield* rule(tag, function* () {
-      yield sync({ post: [[tag, payload] as Sign] })
+      yield sync({ post: [[tag, payload] as Step] })
     })
   }
 
   function* post<T extends TagName>(tag: T, payload?: Payload<T>) {
-    yield sync({ post: [[tag, payload] as Sign] })
+    yield sync({ post: [[tag, payload] as Step] })
   }
 
   function* rules(
-    rules: Record<string, () => Generator<Sync<Sign>, void, Sign>>,
+    rules: Record<string, () => Generator<Sync<Step>, void, Step>>,
   ) {
     for (const [name, ruleBody] of Object.entries(rules)) {
       yield* rule(name, ruleBody)
@@ -183,7 +183,7 @@ const swash = system<Sign>(function* (rule, sync) {
   }
 
   function _byTag<T extends TagName>(tag: T) {
-    return (x: Sign) => x[0] === tag
+    return (x: Step) => x[0] === tag
   }
 })
 

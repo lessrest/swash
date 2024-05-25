@@ -182,6 +182,11 @@ function* demo() {
                 "Split run-on sentences and improve punctuation.",
                 "Use CAPS only on key words for emphasis and flow.",
                 "Prefix each line with a relevant EMOJI.",
+                "Översätt till svenska och skriv på thai inom parentes.",
+                //   `This is a rap. User throws a line, you hit back with a rhyme.
+                // Match the user's meter and length.
+                // Use CAPS only on key words for emphasis and flow.
+                // Prefix each line with a relevant EMOJI.`,
               ].join(" "),
 
               // "This is a rap. User throws a line, you hit back with a rhyme.
