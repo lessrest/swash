@@ -18,6 +18,7 @@ import {
   resource,
   sleep,
   spawn,
+  suspend,
   useScope,
 } from "effection"
 import { ChatMessage, gpt4o, think } from "./mind.ts"
@@ -97,14 +98,19 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
 
-    *["Animation frames."]() {
+    *["Animation frames are triggered on request."]() {
       for (;;) {
         yield* wait("request animation frame")
         yield* exec(() =>
           action(function* (resolve) {
-            requestAnimationFrame((x) => {
-              resolve(["animation frame began", x])
-            })
+            const id = requestAnimationFrame((x) =>
+              resolve(["animation frame began", x]),
+            )
+            try {
+              yield* suspend()
+            } finally {
+              cancelAnimationFrame(id)
+            }
           }),
         )
       }
@@ -115,12 +121,9 @@ const swash = system<Step>(function* (rule, sync) {
         yield* wait("document mutation requested")
         yield* post("request animation frame")
         yield* wait("animation frame began")
-
-        yield sync({
-          exec: function* () {
-            yield* call(applyMutationQueue(mutationQueue).updateCallbackDone)
-            return ["document mutation applied"]
-          },
+        yield* exec(function* () {
+          yield* call(applyMutationQueue(mutationQueue).updateCallbackDone)
+          return ["document mutation applied"]
         })
       }
     },
