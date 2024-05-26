@@ -14,14 +14,20 @@ import {
   on,
   resource,
   spawn,
+  useScope,
 } from "effection"
 
 export type Step =
   | ["animation frame began", number]
   | ["document mutation requested", (document: Document) => void]
+  | ["document mutation applied"]
   | ["live transcription began"]
   | ["phrase heard conclusively", Word[]]
   | ["phrase heard tentatively", Word[]]
+  | ["known text is now", string]
+  | ["shown text is now", string]
+  | ["typing speed is now", number]
+  | ["show one more letter"]
 
 type TagName = Step[0]
 type Payload<T extends TagName> = Extract<Step, [T, unknown]>[1]
@@ -48,6 +54,21 @@ const swash = system<Step>(function* (rule, sync) {
     }
   })
 
+  const scope = yield* useScope()
+
+  function start(
+    name: string,
+    body: () => Generator<Sync<Step>, void, Step>,
+  ) {
+    run(function* () {
+      yield* rule(name, body)
+    })
+  }
+
+  function run(body: () => Operation<void>) {
+    scope.run(body)
+  }
+
   const mutationQueue: ((document: Document) => void)[] = []
 
   yield* rules({
@@ -61,7 +82,12 @@ const swash = system<Step>(function* (rule, sync) {
       for (;;) {
         yield* wait("document mutation requested")
         yield* wait("animation frame began")
-        applyMutationQueue(mutationQueue)
+        const x = applyMutationQueue(mutationQueue)
+        x.updateCallbackDone.then(() => {
+          run(function* () {
+            yield* emit("document mutation applied")
+          })
+        })
       }
     },
 
@@ -76,31 +102,49 @@ const swash = system<Step>(function* (rule, sync) {
       yield* wait("live transcription began")
       yield* post("document mutation requested", ({ body }) => {
         body.classList.add("ok")
-        body.innerHTML +=
-          "<p><span class=transcript></span> <span class=insertion></span></p>"
+        body.append(
+          html(
+            "kbd",
+            {
+              style: {
+                opacity: 0.5,
+                fontSize: "60%",
+                lineHeight: "1.5",
+              },
+            },
+            "",
+          ),
+        )
       })
     },
 
-    *["The latest tentative phrase is shown in the insertion buffer."]() {
+    *["The latest tentative phrase is shown."]() {
       for (;;) {
         const words = yield* wait("phrase heard tentatively")
         yield* post("document mutation requested", ({ body }) => {
+          body.querySelectorAll(".tentative").forEach((x) => x.remove())
           body
-            .querySelector(".insertion")!
-            .replaceChildren(
-              ...words.map(({ word }) => html("span.word", {}, word)),
+            .querySelector("kbd")!
+            .append(
+              ...words.map(({ punctuated_word }) =>
+                html("span.word.tentative", {}, punctuated_word + " "),
+              ),
             )
         })
       }
     },
 
-    *["All conclusive phrases are shown in the transcript element."]() {
+    *["All conclusive phrases are shown."]() {
       for (;;) {
         const words = yield* wait("phrase heard conclusively")
         yield* post("document mutation requested", ({ body }) => {
           body
-            .querySelector(".transcript")!
-            .append(...words.map(({ word }) => html("span.word", {}, word)))
+            .querySelector("kbd")!
+            .append(
+              ...words.map(({ punctuated_word }) =>
+                html("span.word.conclusive", {}, punctuated_word + " "),
+              ),
+            )
         })
       }
     },
@@ -108,12 +152,79 @@ const swash = system<Step>(function* (rule, sync) {
     *["The insertion buffer is cleared when a conclusive phrase arrives."]() {
       for (;;) {
         yield* wait("phrase heard conclusively")
+        yield* post("phrase heard tentatively", [])
+      }
+    },
+
+    *["The known text is tracked."]() {
+      for (;;) {
+        yield* wait("document mutation applied")
+        const next = document.querySelector("kbd")?.textContent ?? ""
+        if (next !== knownText) {
+          yield* post("known text is now", next)
+          knownText = next
+        }
+      }
+    },
+
+    *["The shown text is updated."]() {
+      for (;;) {
+        yield* wait("show one more letter")
+        yield* post(
+          "shown text is now",
+          knownText.slice(0, shownText.length + 1),
+        )
+        shownText = knownText.slice(0, shownText.length + 1)
+      }
+    },
+
+    *["shown text is shown"]() {
+      const p = html("p")
+      document.body.append(p)
+      for (;;) {
+        const text = yield* wait("shown text is now")
         yield* post("document mutation requested", ({ body }) => {
-          body.querySelector(".insertion")!.replaceChildren()
+          console.info(text)
+          p.replaceChildren(html("span", {}, text))
         })
       }
     },
+
+    *["The typing speed is dynamically adjusted."]() {
+      for (;;) {
+        yield* wait("document mutation applied")
+        const lettersLeft = knownText.length - shownText.length
+        if (lettersLeft > 0) {
+          const lettersPerSecond = Math.min(lettersLeft, 5) * 10
+          yield* post("typing speed is now", lettersPerSecond)
+        } else {
+          yield* post("typing speed is now", 0)
+        }
+      }
+    },
+
+    *["The typing speed is used."]() {
+      let interval = null
+      let speed = 0
+      for (;;) {
+        const nextSpeed = yield* wait("typing speed is now")
+        if (nextSpeed !== speed) {
+          speed = nextSpeed
+          clearInterval(interval)
+          if (nextSpeed > 0) {
+            interval = setInterval(() => {
+              run(function* () {
+                yield* emit("show one more letter")
+              })
+            }, 1000 / speed)
+          }
+        }
+      }
+    },
   })
+
+  let knownText = ""
+  let shownText = ""
 
   const mediaStream = yield* call(
     navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
@@ -128,7 +239,7 @@ const swash = system<Step>(function* (rule, sync) {
     new WebSocket(
       `${document.location.protocol === "https:" ? "wss:" : "ws:"}//${
         document.location.host
-      }/transcribe?lang=en`,
+      }/transcribe?language=en-US`,
     ),
   )
 
@@ -205,6 +316,7 @@ const DeepgramResultSchema = z.object({
         words: z.array(
           z.object({
             word: z.string(),
+            punctuated_word: z.string(),
             start: z.number(),
             end: z.number(),
             confidence: z.number(),
@@ -236,7 +348,7 @@ export const useAnimationFrames: Stream<number, never> = resource(function* (
 })
 
 function applyMutationQueue(queue: ((document: Document) => void)[]) {
-  document.startViewTransition(() => {
+  return document.startViewTransition(() => {
     for (const thunk of queue) {
       thunk(document)
     }
