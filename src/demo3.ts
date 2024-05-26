@@ -6,20 +6,25 @@ import { Sync, sync, system } from "./sync2.ts"
 import "@types/dom-view-transitions"
 
 import {
+  Operation,
   Stream,
+  Subscription,
+  action,
   call,
   createSignal,
   each,
   main,
   on,
   resource,
+  sleep,
   spawn,
   useScope,
 } from "effection"
-import { gpt4o, think } from "./mind.ts"
+import { ChatMessage, gpt4o, think } from "./mind.ts"
 import { into } from "./nest.ts"
 
 export type Step =
+  | ["request animation frame"]
   | ["animation frame began", number]
   | ["document mutation requested", (document: Document) => void]
   | ["document mutation applied"]
@@ -32,7 +37,9 @@ export type Step =
   | ["show one more letter"]
   | ["LLM done"]
   | ["LLM starting for", string]
+  | ["LLM subscription", Subscription<ChatMessage, void>]
   | ["LLM text", string]
+  | ["test", number]
 
 type TagName = Step[0]
 type Payload<T extends TagName> = Extract<Step, [T, unknown]>[1]
@@ -52,25 +59,7 @@ function* wait<T extends TagName>(
 const swash = system<Step>(function* (rule, sync) {
   yield* into(document.body)
 
-  yield* spawn(function* () {
-    for (const timestamp of yield* each(useAnimationFrames)) {
-      if (mutationQueue.length > 0) {
-        yield* emit("animation frame began", timestamp)
-      }
-      yield* each.next()
-    }
-  })
-
   const scope = yield* useScope()
-
-  function start(
-    name: string,
-    body: () => Generator<Sync<Step>, void, Step>,
-  ) {
-    run(function* () {
-      yield* rule(name, body)
-    })
-  }
 
   function run(body: () => Operation<void>) {
     scope.run(body)
@@ -101,16 +90,34 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
 
+    *["Animation frames."]() {
+      for (;;) {
+        yield* wait("request animation frame")
+        const x = yield sync({
+          exec: () =>
+            action(function* (resolve) {
+              requestAnimationFrame((x) => {
+                resolve(["animation frame began", x])
+              })
+            }),
+        })
+        yield sync({ post: [x] })
+      }
+    },
+
     *["The mutation queue is applied in animation frames."]() {
       for (;;) {
         yield* wait("document mutation requested")
+        yield* post("request animation frame")
         yield* wait("animation frame began")
-        const x = applyMutationQueue(mutationQueue)
-        x.updateCallbackDone.then(() => {
-          run(function* () {
-            yield* emit("document mutation applied")
-          })
+
+        yield sync({
+          exec: function* () {
+            yield* call(applyMutationQueue(mutationQueue).updateCallbackDone)
+            return ["document mutation applied"]
+          },
         })
+        yield* post("document mutation applied")
       }
     },
 
@@ -174,7 +181,7 @@ const swash = system<Step>(function* (rule, sync) {
       document.body.append(p)
       for (;;) {
         const text = yield* wait("shown text is now")
-        yield* post("document mutation requested", ({ body }) => {
+        yield* post("document mutation requested", () => {
           console.info(text)
           p.replaceChildren(html("span", {}, text))
         })
@@ -198,7 +205,7 @@ const swash = system<Step>(function* (rule, sync) {
     },
 
     *["The typing speed is used."]() {
-      let interval = null
+      let interval: number | undefined = undefined
       let speed = 0
       for (;;) {
         const nextSpeed = yield* wait("typing speed is now")
@@ -227,57 +234,56 @@ const swash = system<Step>(function* (rule, sync) {
         }
 
         sentences = sentences + lines.slice(0, -1).join("\n")
-        conclusive = lines.pop()
+        conclusive = lines.pop() || ""
 
         console.log({ sentences, conclusive, lines })
 
         yield* post("LLM starting for", sentences)
-        run(function* () {
-          const response = yield* think(gpt4o, {
-            systemMessage: [
-              "Fix likely transcription errors.",
-              "Split run-on sentences and improve punctuation.",
-              //              "Translate to Swedish.",
-              "Use CAPS on key salient words for emphasis and flow.",
-              //              "Prefix each sentence with a relevant EMOJI.",
-            ].join(" "),
+        yield sync({
+          exec: function* () {
+            const response = yield* think(gpt4o, {
+              systemMessage: [
+                "Fix likely transcription errors.",
+                "Split run-on sentences and improve punctuation.",
+                "Use CAPS on key salient words for emphasis and flow.",
+                "Prefix each sentence with a relevant EMOJI.",
+              ].join(" "),
 
-            messages: [{ role: "user", content: sentences }],
-            temperature: 0.4,
-            maxTokens: 200,
-          })
+              messages: [{ role: "user", content: sentences }],
+              temperature: 0.4,
+              maxTokens: 200,
+            })
 
-          for (;;) {
-            const { value, done } = yield* response.next()
-            if (done) {
-              break
+            for (;;) {
+              const { value, done } = yield* response.next()
+              if (done) {
+                yield* emit("LLM done")
+                return ["LLM done"]
+              }
+              yield* emit("LLM text", value.content)
             }
-            console.info(value)
-            yield* emit("LLM text", value.content)
-          }
-
-          yield* emit("LLM done")
+          },
         })
-        yield* wait("LLM done")
       }
     },
 
     *["LLM text is used to update the known text."]() {
       for (;;) {
-        const n = yield* wait("LLM starting for")
-        let orig = sentences
+        yield* wait("LLM starting for")
+        const orig = sentences
         let llm = ""
         for (;;) {
-          const [tag, text] = yield sync({
+          const p = yield sync({
             wait: ([tag]) => tag === "LLM text" || tag === "LLM done",
           })
-          if (tag === "LLM done") {
+          if (p[0] === "LLM done") {
             break
-          }
-          llm += text.replaceAll(/([.!?])\s*/g, "$1\n")
-          sentences = (llm + orig.slice(llm.length)).trim()
+          } else if (p[0] === "LLM text") {
+            llm += p[1].replaceAll(/([.!?])\s*/g, "$1\n")
+            sentences = (llm + orig.slice(llm.length)).trim()
 
-          yield* post("known text changed")
+            yield* post("known text changed")
+          }
         }
 
         sentences = llm

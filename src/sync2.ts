@@ -1,10 +1,35 @@
-import { Operation, Task, createChannel, sleep, spawn } from "effection"
+import {
+  Channel,
+  Operation,
+  Result,
+  Task,
+  createChannel,
+  main,
+  sleep,
+  spawn,
+  suspend,
+} from "effection"
+
+type Exec<Post> =
+  | { state: "none" }
+  | {
+      state: "pending"
+      op: () => Operation<Post>
+    }
+  | {
+      state: "running"
+      task: Task<void>
+    }
+  | {
+      state: "done"
+      result: Result<Post>
+    }
 
 export interface Sync<Post> {
   post: Post[]
   wait: (t: Post) => boolean
   halt: (t: Post) => boolean
-  exec: Operation<Post>[]
+  exec: Exec<Post>
 }
 
 export interface Thread<Post> {
@@ -14,28 +39,103 @@ export interface Thread<Post> {
   prio: number
 }
 
-export function work<Post>(threads: Set<Thread<Post>>): boolean {
-  const post = [...threads]
+function* work<Post>(
+  threads: Set<Thread<Post>>,
+  gong: Channel<void, void>,
+): Operation<boolean> {
+  let didWork = false
+
+  for (const thread of threads) {
+    if (thread.sync.exec.state === "done") {
+      try {
+        const { result } = thread.sync.exec
+        console.log("exec done", thread.name, result)
+        const { done, value: sync } = result.ok
+          ? thread.proc.next(result.value)
+          : thread.proc.throw(result.error)
+        if (done) {
+          threads.delete(thread)
+        } else {
+          thread.sync = sync
+          yield* doexec<Post>(thread, gong)
+        }
+      } finally {
+        console.groupEnd()
+      }
+
+      didWork = true
+    }
+  }
+
+  const chosen = [...threads]
     .sort((a, b) => b.prio - a.prio)
     .flatMap((x) => x.sync.post)
     .find((x) => ![...threads].some((y) => y.sync.halt(x)))
 
-  if (!post) {
-    return false
-  } else {
+  if (chosen) {
+    console.log("Chosen", chosen)
     for (const thread of threads) {
-      if (thread.sync.post.includes(post) || thread.sync.wait(post)) {
-        const { done, value } = thread.proc.next(post)
-        if (done) {
-          threads.delete(thread)
-        } else {
-          thread.sync = value
+      const { post, wait, exec } = thread.sync
+      if (post.includes(chosen) || wait(chosen)) {
+        console.group("Thread", thread.name)
+        try {
+          if (exec.state === "running") {
+            console.log("Halting thread exec", thread.name)
+            yield* exec.task.halt() // hmm
+            thread.sync.exec = { state: "none" }
+          }
+
+          const { done, value } = thread.proc.next(chosen)
+          if (done) {
+            threads.delete(thread)
+          } else {
+            thread.sync = value
+            yield* doexec<Post>(thread, gong)
+          }
+        } finally {
+          console.groupEnd()
         }
       }
     }
 
-    return true
+    didWork = true
   }
+
+  return didWork
+}
+
+function* doexec<Post>(thread: Thread<Post>, gong: Channel<void, void>) {
+  if (thread.sync.exec.state === "pending") {
+    console.log("Spawning task for thread", thread.name)
+    const op = thread.sync.exec.op
+    const task = yield* spawn(function* () {
+      try {
+        const x = yield* op()
+        console.log("Thread exec done", thread.name, x)
+        thread.sync.exec = {
+          state: "done",
+          result: { ok: true, value: x },
+        }
+      } catch (e) {
+        console.error("Thread exec error", thread.name, e)
+        thread.sync.exec = {
+          state: "done",
+          result: { ok: false, error: e },
+        }
+      } finally {
+        yield* gong.send()
+      }
+    })
+
+    thread.sync.exec = { state: "running", task }
+  }
+}
+
+interface SyncSpec<Post> {
+  post?: Post[]
+  wait?: (t: Post) => boolean
+  halt?: (t: Post) => boolean
+  exec?: () => Operation<Post>
 }
 
 export function sync<Post>({
@@ -43,12 +143,12 @@ export function sync<Post>({
   wait,
   halt,
   exec,
-}: Partial<Sync<Post>>): Sync<Post> {
+}: Partial<SyncSpec<Post>>): Sync<Post> {
   return {
     post: post ?? [],
     wait: wait ?? (() => false),
     halt: halt ?? (() => false),
-    exec: exec ?? [],
+    exec: exec ? { state: "pending", op: exec } : { state: "none" },
   }
 }
 
@@ -81,47 +181,53 @@ export function* system<T, V = void>(
   body: (
     thread: {
       (name: string, init: () => Generator<Sync<T>, void, T>): Operation<void>
-      (spec: Behavior<T>): Operation<void>
     },
     $: typeof sync<T>,
   ) => Operation<Task<V>>,
 ): Operation<V> {
-  const newThreadChannel = createChannel<void>()
-  const newlyStartedThreads = new Set<Thread<T>>()
+  const gong = createChannel<void>()
+  const born = new Set<Thread<T>>()
 
   const bodyTask = yield* body(function* (
-    nameOrSpec: string | Behavior<T>,
-    init?: () => Generator<Sync<T>, void, T>,
+    name: string,
+    init: () => Generator<Sync<T>, void, T>,
   ) {
-    const spec: Behavior<T> =
-      typeof nameOrSpec === "string"
-        ? { name: nameOrSpec, init: init! }
-        : nameOrSpec
-    newlyStartedThreads.add(makeThread(spec))
-
-    // These are ignored until the subscription starts.
-    yield* newThreadChannel.send()
+    const thread = makeThread({ name, init })
+    yield* doexec(thread, gong)
+    born.add(thread)
+    yield* gong.send()
   },
   sync<T>)
-
-  const newThreadSubscription = yield* newThreadChannel
-
-  // Trigger the subscription once after initial setup.
-  yield* newThreadChannel.send()
 
   let threads = new Set<Thread<T>>()
 
   const systemTask = yield* spawn(function* () {
     for (;;) {
-      if ((yield* newThreadSubscription.next()).done) break
+      console.group("Superstep")
+      try {
+        if (born.size > 0) {
+          console.log("Born threads", born)
+          threads = threads.union(born)
+          born.clear()
+        }
 
-      threads = threads.union(newlyStartedThreads)
-      newlyStartedThreads.clear()
+        const gongs = yield* gong
 
-      for (;;) {
-        if (work(threads) === false) {
+        for (;;) {
+          if (false === (yield* work(threads, gong))) {
+            break
+          }
+        }
+
+        console.log("Waiting")
+        const gongsResult = yield* gongs.next()
+        console.log("Gongs result:", gongsResult)
+        if (gongsResult.done) {
+          console.log("Breaking outer loop")
           break
         }
+      } finally {
+        console.groupEnd()
       }
     }
   })
@@ -129,76 +235,48 @@ export function* system<T, V = void>(
   try {
     return yield* bodyTask
   } finally {
-    yield* newThreadChannel.close()
+    yield* gong.close()
     yield* systemTask
   }
 }
 
-export const syncdemo2 = system<string>(function* (thread) {
-  yield* thread({
-    name: "show",
-    prio: 1,
-    init: function* () {
-      for (;;) {
-        console.log(yield sync({ wait: () => true }))
-      }
-    },
-  })
+export async function foo() {
+  await main(() =>
+    system(function* (thread, sync) {
+      yield* thread("test", function* () {
+        for (;;) {
+          const x = yield sync({
+            wait: (x) => x === "test",
+            exec: function* () {
+              try {
+                yield* sleep(1000)
+                console.log("slept")
+              } finally {
+                console.log("sleep over")
+              }
+              return "second"
+            },
+          })
 
-  yield* thread({
-    name: "step",
-    prio: 1,
-    init: function* () {
-      for (;;) {
-        yield sync({ post: ["tick"] })
-        yield sync({ post: ["tock"] })
-      }
-    },
-  })
-
-  yield* thread({
-    name: "flip",
-    prio: 1,
-    init: function* () {
-      for (;;) {
-        yield sync({
-          wait: (t) => t === "tick",
-          halt: (t) => t === "tock",
-        })
-        yield sync({
-          wait: (t) => t === "tock",
-          halt: (t) => t === "tick",
-        })
-      }
-    },
-  })
-
-  yield* thread({
-    name: "time",
-    prio: 1,
-    init: function* () {
-      for (;;) {
-        yield sync({
-          wait: (t) => t === "second",
-          halt: (t) => t === "tick" || t === "tock",
-        })
-        yield sync({ wait: (t) => t === "tick" || t === "tock" })
-      }
-    },
-  })
-
-  return yield* spawn(function* () {
-    for (let i = 0; i < 5; i++) {
-      yield* sleep(1000)
-      yield* thread({
-        name: `t${i}`,
-        prio: 0,
-        init: function* () {
-          yield sync({ post: ["second"] })
-        },
+          yield sync({
+            post: [x],
+          })
+        }
       })
-    }
-  })
-})
 
-// await main(() => syncdemo2)
+      yield* thread("test2", function* () {
+        for (;;) {
+          yield sync({ wait: (x) => x === "second" })
+          yield sync({ wait: (x) => x === "second" })
+          yield sync({ wait: (x) => x === "second" })
+          yield sync({ post: ["test"] })
+        }
+      })
+
+      return yield* spawn(function* () {
+        yield* suspend()
+        console.log("done")
+      })
+    }),
+  )
+}
