@@ -67,6 +67,13 @@ const swash = system<Step>(function* (rule, sync) {
 
   const mutationQueue: ((document: Document) => void)[] = []
 
+  function* exec<
+    T extends Step,
+  >(body: () => Operation<T>): Generator<Sync<Step>, T, Step> {
+    const step = yield sync({ exec: body })
+    return step as T
+  }
+
   let sentences = ""
   let conclusive = ""
   let tentative = ""
@@ -93,15 +100,13 @@ const swash = system<Step>(function* (rule, sync) {
     *["Animation frames."]() {
       for (;;) {
         yield* wait("request animation frame")
-        const x = yield sync({
-          exec: () =>
-            action(function* (resolve) {
-              requestAnimationFrame((x) => {
-                resolve(["animation frame began", x])
-              })
-            }),
-        })
-        yield sync({ post: [x] })
+        yield* exec(() =>
+          action(function* (resolve) {
+            requestAnimationFrame((x) => {
+              resolve(["animation frame began", x])
+            })
+          }),
+        )
       }
     },
 
@@ -117,7 +122,6 @@ const swash = system<Step>(function* (rule, sync) {
             return ["document mutation applied"]
           },
         })
-        yield* post("document mutation applied")
       }
     },
 
@@ -257,7 +261,6 @@ const swash = system<Step>(function* (rule, sync) {
             for (;;) {
               const { value, done } = yield* response.next()
               if (done) {
-                yield* emit("LLM done")
                 return ["LLM done"]
               }
               yield* emit("LLM text", value.content)

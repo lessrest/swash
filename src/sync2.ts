@@ -50,14 +50,18 @@ function* work<Post>(
       try {
         const { result } = thread.sync.exec
         console.log("exec done", thread.name, result)
-        const { done, value: sync } = result.ok
-          ? thread.proc.next(result.value)
-          : thread.proc.throw(result.error)
-        if (done) {
-          threads.delete(thread)
+        if (result.ok) {
+          thread.sync.exec = { state: "none" }
+          thread.sync.post = [result.value]
         } else {
-          thread.sync = sync
-          yield* doexec<Post>(thread, gong)
+          // think about this...
+          const { done, value: sync } = thread.proc.throw(result.error)
+          if (done) {
+            threads.delete(thread)
+          } else {
+            thread.sync = sync
+            yield* doexec<Post>(thread, gong)
+          }
         }
       } finally {
         console.groupEnd()
