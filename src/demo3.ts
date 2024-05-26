@@ -16,6 +16,8 @@ import {
   spawn,
   useScope,
 } from "effection"
+import { gpt4o, think } from "./mind.ts"
+import { into } from "./nest.ts"
 
 export type Step =
   | ["animation frame began", number]
@@ -24,10 +26,13 @@ export type Step =
   | ["live transcription began"]
   | ["phrase heard conclusively", Word[]]
   | ["phrase heard tentatively", Word[]]
-  | ["known text is now", string]
+  | ["known text changed", string]
   | ["shown text is now", string]
   | ["typing speed is now", number]
   | ["show one more letter"]
+  | ["LLM done"]
+  | ["LLM starting for", string]
+  | ["LLM text", string]
 
 type TagName = Step[0]
 type Payload<T extends TagName> = Extract<Step, [T, unknown]>[1]
@@ -45,6 +50,8 @@ function* wait<T extends TagName>(
 }
 
 const swash = system<Step>(function* (rule, sync) {
+  yield* into(document.body)
+
   yield* spawn(function* () {
     for (const timestamp of yield* each(useAnimationFrames)) {
       if (mutationQueue.length > 0) {
@@ -71,8 +78,8 @@ const swash = system<Step>(function* (rule, sync) {
 
   const mutationQueue: ((document: Document) => void)[] = []
 
-  let conclusive: Word[] = []
-  let tentative: Word[] = []
+  let conclusive = ""
+  let tentative = ""
 
   const wordsToText = (words: Word[]) =>
     words
@@ -80,7 +87,7 @@ const swash = system<Step>(function* (rule, sync) {
       .join(" ")
       .replaceAll(/([.!?]) /g, "$1\n")
 
-  const knownText = () => wordsToText([...conclusive, ...tentative])
+  const knownText = () => conclusive + " " + tentative
   let shownText = ""
 
   yield* rules({
@@ -120,7 +127,7 @@ const swash = system<Step>(function* (rule, sync) {
     *["The latest tentative phrase is tracked."]() {
       for (;;) {
         const words = yield* wait("phrase heard tentatively")
-        tentative = words
+        tentative = wordsToText(words).trim()
         yield* post("known text changed")
       }
     },
@@ -128,7 +135,7 @@ const swash = system<Step>(function* (rule, sync) {
     *["The conclusive phrases are tracked."]() {
       for (;;) {
         const words = yield* wait("phrase heard conclusively")
-        conclusive.push(...words)
+        conclusive = (conclusive + " " + wordsToText(words)).trim()
         yield* post("known text changed")
       }
     },
@@ -204,6 +211,69 @@ const swash = system<Step>(function* (rule, sync) {
         }
       }
     },
+
+    *["The conclusive text is enhanced with GPT-4o."]() {
+      for (;;) {
+        yield* wait("phrase heard conclusively")
+        yield* wait("known text changed")
+        const text = conclusive
+        yield* post("LLM starting for", text)
+        run(function* () {
+          const response = yield* think(gpt4o, {
+            systemMessage: [
+              "Fix likely transcription errors.",
+              "Split run-on sentences and improve punctuation.",
+              "Translate to Swedish.",
+              // "Use CAPS only on key words for emphasis and flow.",
+              //"Prefix each line with a relevant EMOJI.",
+            ].join(" "),
+
+            messages: [{ role: "user", content: text }],
+            temperature: 0.4,
+            maxTokens: 200,
+          })
+
+          for (;;) {
+            const { value, done } = yield* response.next()
+            if (done) {
+              break
+            }
+            console.info(value)
+            yield* emit("LLM text", value.content)
+          }
+
+          yield* emit("LLM done")
+        })
+        yield* wait("LLM done")
+      }
+    },
+
+    *["LLM text is used to update the known text."]() {
+      for (;;) {
+        const originalPrefix = yield* wait("LLM starting for")
+        let llm = ""
+        let x = conclusive
+        let extra = ""
+        for (;;) {
+          const [tag, text] = yield sync({
+            wait: ([tag]) => tag === "LLM text" || tag === "LLM done",
+          })
+          if (tag === "LLM done") {
+            break
+          }
+          llm += text
+          if (x !== conclusive) {
+            extra += conclusive.slice(x.length)
+          }
+          conclusive = llm + conclusive.slice(llm.length)
+          x = conclusive
+
+          yield* post("known text changed")
+        }
+        conclusive = llm + extra
+        yield* post("known text changed")
+      }
+    },
   })
 
   const mediaStream = yield* call(
@@ -247,7 +317,7 @@ const swash = system<Step>(function* (rule, sync) {
   })
 
   return yield* spawn(function* () {
-    recorder.start(100)
+    recorder.start(60)
 
     for (const chunk of yield* each(on(recorder, "dataavailable"))) {
       yield* socket.send(chunk.data)
