@@ -137,7 +137,7 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
 
-    *["The shown text is updated."]() {
+    *["The shown text is updated a letter at a time."]() {
       for (;;) {
         yield* wait("show one more letter")
         shownText = knownText().slice(0, shownText.length + 1)
@@ -145,7 +145,7 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
 
-    *["shown text is shown"]() {
+    *["The shown text is shown in a paragraph."]() {
       const p = html("p")
       document.body.append(p)
       for (;;) {
