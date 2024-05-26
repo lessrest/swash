@@ -71,6 +71,15 @@ const swash = system<Step>(function* (rule, sync) {
 
   const mutationQueue: ((document: Document) => void)[] = []
 
+  let conclusive: Word[] = []
+  let tentative: Word[] = []
+
+  const wordsToText = (words: Word[]) =>
+    words.map((x) => x.punctuated_word).join(" ")
+
+  const knownText = () => wordsToText([...conclusive, ...tentative])
+  let shownText = ""
+
   yield* rules({
     *["Document mutations are queued."]() {
       for (;;) {
@@ -102,50 +111,22 @@ const swash = system<Step>(function* (rule, sync) {
       yield* wait("live transcription began")
       yield* post("document mutation requested", ({ body }) => {
         body.classList.add("ok")
-        body.append(
-          html(
-            "kbd",
-            {
-              style: {
-                opacity: 0.5,
-                fontSize: "60%",
-                lineHeight: "1.5",
-              },
-            },
-            "",
-          ),
-        )
       })
     },
 
-    *["The latest tentative phrase is shown."]() {
+    *["The latest tentative phrase is tracked."]() {
       for (;;) {
         const words = yield* wait("phrase heard tentatively")
-        yield* post("document mutation requested", ({ body }) => {
-          body.querySelectorAll(".tentative").forEach((x) => x.remove())
-          body
-            .querySelector("kbd")!
-            .append(
-              ...words.map(({ punctuated_word }) =>
-                html("span.word.tentative", {}, punctuated_word + " "),
-              ),
-            )
-        })
+        tentative = words
+        yield* post("known text changed")
       }
     },
 
-    *["All conclusive phrases are shown."]() {
+    *["The conclusive phrases are tracked."]() {
       for (;;) {
         const words = yield* wait("phrase heard conclusively")
-        yield* post("document mutation requested", ({ body }) => {
-          body
-            .querySelector("kbd")!
-            .append(
-              ...words.map(({ punctuated_word }) =>
-                html("span.word.conclusive", {}, punctuated_word + " "),
-              ),
-            )
-        })
+        conclusive.push(...words)
+        yield* post("known text changed")
       }
     },
 
@@ -156,25 +137,11 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
 
-    *["The known text is tracked."]() {
-      for (;;) {
-        yield* wait("document mutation applied")
-        const next = document.querySelector("kbd")?.textContent ?? ""
-        if (next !== knownText) {
-          yield* post("known text is now", next)
-          knownText = next
-        }
-      }
-    },
-
     *["The shown text is updated."]() {
       for (;;) {
         yield* wait("show one more letter")
-        yield* post(
-          "shown text is now",
-          knownText.slice(0, shownText.length + 1),
-        )
-        shownText = knownText.slice(0, shownText.length + 1)
+        shownText = knownText().slice(0, shownText.length + 1)
+        yield* post("shown text is now", shownText)
       }
     },
 
@@ -192,8 +159,11 @@ const swash = system<Step>(function* (rule, sync) {
 
     *["The typing speed is dynamically adjusted."]() {
       for (;;) {
-        yield* wait("document mutation applied")
-        const lettersLeft = knownText.length - shownText.length
+        yield sync({
+          wait: ([tag]) =>
+            tag === "known text changed" || tag === "shown text is now",
+        })
+        const lettersLeft = knownText().length - shownText.length
         if (lettersLeft > 0) {
           const lettersPerSecond = Math.min(lettersLeft, 5) * 10
           yield* post("typing speed is now", lettersPerSecond)
@@ -222,9 +192,6 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
   })
-
-  let knownText = ""
-  let shownText = ""
 
   const mediaStream = yield* call(
     navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
