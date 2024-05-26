@@ -75,7 +75,10 @@ const swash = system<Step>(function* (rule, sync) {
   let tentative: Word[] = []
 
   const wordsToText = (words: Word[]) =>
-    words.map((x) => x.punctuated_word).join(" ")
+    words
+      .map((x) => x.punctuated_word)
+      .join(" ")
+      .replaceAll(/([.!?]) /g, "$1\n")
 
   const knownText = () => wordsToText([...conclusive, ...tentative])
   let shownText = ""
@@ -142,6 +145,16 @@ const swash = system<Step>(function* (rule, sync) {
         yield* wait("show one more letter")
         shownText = knownText().slice(0, shownText.length + 1)
         yield* post("shown text is now", shownText)
+      }
+    },
+
+    *["The shown text is updated immediately in a certain case."]() {
+      for (;;) {
+        yield* wait("known text changed")
+        if (knownText().slice(0, shownText.length) !== shownText) {
+          shownText = knownText().slice(0, shownText.length)
+          yield* post("shown text is now", shownText)
+        }
       }
     },
 
