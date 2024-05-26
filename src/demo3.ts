@@ -78,6 +78,7 @@ const swash = system<Step>(function* (rule, sync) {
 
   const mutationQueue: ((document: Document) => void)[] = []
 
+  let sentences = ""
   let conclusive = ""
   let tentative = ""
 
@@ -85,9 +86,12 @@ const swash = system<Step>(function* (rule, sync) {
     words
       .map((x) => x.punctuated_word)
       .join(" ")
-      .replaceAll(/([.!?]) /g, "$1\n")
+      .trim()
+      .replaceAll(/([.!?])\s?/g, "$1\n")
 
-  const knownText = () => conclusive + " " + tentative
+  const knownText = () =>
+    (sentences + conclusive + tentative).replaceAll(/^\s+/g, "")
+
   let shownText = ""
 
   yield* rules({
@@ -135,7 +139,7 @@ const swash = system<Step>(function* (rule, sync) {
     *["The conclusive phrases are tracked."]() {
       for (;;) {
         const words = yield* wait("phrase heard conclusively")
-        conclusive = (conclusive + " " + wordsToText(words)).trim()
+        conclusive += wordsToText(words)
         yield* post("known text changed")
       }
     },
@@ -216,19 +220,29 @@ const swash = system<Step>(function* (rule, sync) {
       for (;;) {
         yield* wait("phrase heard conclusively")
         yield* wait("known text changed")
-        const text = conclusive
-        yield* post("LLM starting for", text)
+
+        const lines = conclusive.split("\n")
+        if (!lines.length) {
+          continue
+        }
+
+        sentences = sentences + lines.slice(0, -1).join("\n")
+        conclusive = lines.pop()
+
+        console.log({ sentences, conclusive, lines })
+
+        yield* post("LLM starting for", sentences)
         run(function* () {
           const response = yield* think(gpt4o, {
             systemMessage: [
               "Fix likely transcription errors.",
               "Split run-on sentences and improve punctuation.",
-              "Translate to Swedish.",
-              // "Use CAPS only on key words for emphasis and flow.",
-              //"Prefix each line with a relevant EMOJI.",
+              //              "Translate to Swedish.",
+              "Use CAPS on key salient words for emphasis and flow.",
+              //              "Prefix each sentence with a relevant EMOJI.",
             ].join(" "),
 
-            messages: [{ role: "user", content: text }],
+            messages: [{ role: "user", content: sentences }],
             temperature: 0.4,
             maxTokens: 200,
           })
@@ -250,10 +264,9 @@ const swash = system<Step>(function* (rule, sync) {
 
     *["LLM text is used to update the known text."]() {
       for (;;) {
-        const originalPrefix = yield* wait("LLM starting for")
+        const n = yield* wait("LLM starting for")
+        let orig = sentences
         let llm = ""
-        let x = conclusive
-        let extra = ""
         for (;;) {
           const [tag, text] = yield sync({
             wait: ([tag]) => tag === "LLM text" || tag === "LLM done",
@@ -261,16 +274,13 @@ const swash = system<Step>(function* (rule, sync) {
           if (tag === "LLM done") {
             break
           }
-          llm += text
-          if (x !== conclusive) {
-            extra += conclusive.slice(x.length)
-          }
-          conclusive = llm + conclusive.slice(llm.length)
-          x = conclusive
+          llm += text.replaceAll(/([.!?])\s*/g, "$1\n")
+          sentences = (llm + orig.slice(llm.length)).trim()
 
           yield* post("known text changed")
         }
-        conclusive = llm + extra
+
+        sentences = llm
         yield* post("known text changed")
       }
     },
