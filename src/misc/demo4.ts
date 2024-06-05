@@ -8,7 +8,7 @@ import {
   spawn,
 } from "effection"
 
-import { Sync, sync, system } from "./sync2.ts"
+import { Sync, SyncSpec, sync, system } from "./sync2.ts"
 
 type Rule<Sign, V = void> = Generator<Sync<Sign>, V, Sign>
 
@@ -19,7 +19,7 @@ export class BehavioralProgram<Sign> {
   Thread: Context<(name: string, body: () => Rule<Sign>) => Operation<void>> =
     createContext("thread");
 
-  *sync(spec: Partial<Sync<Sign>>): Rule<Sign, Sign> {
+  *sync(spec: Partial<SyncSpec<Sign>>): Rule<Sign, Sign> {
     return yield sync(spec)
   }
 

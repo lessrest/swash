@@ -6,7 +6,7 @@
 }
 
 body {
-  font-family: "Graphik", sans-serif;
+  font-family: "graphik", "big caslon", "berkeley mono", "Graphik", sans-serif;
   font-optical-sizing: auto;
   background-color: black;
   color: #ffc;
@@ -32,8 +32,8 @@ video {
   right: 0;
   bottom: 0;
   z-index: -1;
-  filter: blur(2px) sepia(0) hue-rotate(0deg) saturate(1) contrast(0.8)
-    brightness(0.5);
+  filter: blur(0px) sepia(100%) hue-rotate(0deg) saturate(1) contrast(0.8)
+    brightness(1);
 }
 
 article {
@@ -79,7 +79,7 @@ p {
   min-width: 1em;
   min-height: 1.5em;
   gap: 0.5em;
-  white-space: pre-wrap;
+  white-space: pre-line;
 }
 
 section {

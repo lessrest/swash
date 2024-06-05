@@ -1,183 +1,275 @@
-interface Sync<T> {
-  have?: T[]
-  want?: (t: T) => boolean
-  deny?: (t: T) => boolean
+import {
+  Channel,
+  Operation,
+  Result,
+  Task,
+  createChannel,
+  main,
+  sleep,
+  spawn,
+  suspend,
+} from "effection"
+
+type Exec<Post> =
+  | { state: "none" }
+  | {
+      state: "pending"
+      op: () => Operation<Post>
+    }
+  | {
+      state: "running"
+      task: Task<void>
+    }
+  | {
+      state: "done"
+      result: Result<Post>
+    }
+
+export interface Sync<Post> {
+  post: Post[]
+  wait: (t: Post) => boolean
+  halt: (t: Post) => boolean
+  exec: Exec<Post>
 }
 
-interface Task<T> {
+export interface Thread<Post> {
   name: string
-  sync: Sync<T>
-  proc: Generator<Sync<T>, void, T>
+  sync: Sync<Post>
+  proc: Generator<Sync<Post>, void, Post>
   prio: number
 }
 
-function both<V>(x: Set<V> | undefined, y: Set<V> | undefined): Set<V> {
-  return (x ?? new Set()).union(y ?? new Set())
-}
+function* work<Post>(
+  threads: Set<Thread<Post>>,
+  gong: Channel<void, void>,
+): Operation<boolean> {
+  let didWork = false
 
-function also<K, V>(v: V, map: Map<K, Set<V>>, iter?: Iterable<K>) {
-  for (const k of iter ?? []) {
-    const set = map.get(k) ?? new Set()
-    set.add(v)
-    map.set(k, set)
-  }
-  return map
-}
-
-export function* work<Sign>(
-  jobs: Set<Task<Sign>>,
-): Generator<Set<Task<Sign>>, Set<Task<Sign>>> {
-  for (;;) {
-    const have = new Map<Sign, Set<Task<Sign>>>()
-    const want = new Map<Sign, Set<Task<Sign>>>()
-
-    for (const task of jobs) {
-      also(task, have, task.sync.have)
-    }
-
-    for (const sign of have.keys()) {
-      const tasks = new Set<Task<Sign>>()
-      for (const task of jobs) {
-        if (task.sync.want?.(sign)) {
-          tasks.add(task)
-        }
-      }
-      if (tasks.size > 0) {
-        want.set(sign, tasks)
-      }
-    }
-
-    const sign = [...jobs.values()]
-      .sort((a, b) => b.prio - a.prio)
-      .flatMap((x) => x.sync.have ?? [])
-      .find((x) => ![...jobs.values()].some((y) => y.sync.deny?.(x)))
-
-    if (!sign) {
-      return jobs
-    } else {
-      console.group("✱", sign)
-
+  for (const thread of threads) {
+    if (thread.sync.exec.state === "done") {
       try {
-        for (const task of both(have.get(sign), want.get(sign))) {
-          console.log("⦿", task.name)
-          const { done, value } = task.proc.next(sign)
+        const { result } = thread.sync.exec
+        //        console.log("exec done", thread.name, result)
+        if (result.ok) {
+          thread.sync.exec = { state: "none" }
+          thread.sync.post = [result.value]
+        } else {
+          // think about this...
+          const { done, value: sync } = thread.proc.throw(result.error)
           if (done) {
-            jobs.delete(task)
+            threads.delete(thread)
           } else {
-            task.sync = value
+            thread.sync = sync
+            yield* doexec<Post>(thread, gong)
           }
         }
       } finally {
         console.groupEnd()
       }
 
-      yield jobs
+      didWork = true
     }
   }
-}
 
-export function* exec<T>(
-  init: (
-    boot: (task: Task<T>) => void,
-    wait: (hope: Promise<T>) => Promise<T>,
-  ) => void,
-) {
-  let jobs = new Set<Task<T>>()
-  const hope = new Set<Promise<T>>()
+  const chosen = [...threads]
+    .sort((a, b) => b.prio - a.prio)
+    .flatMap((x) => x.sync.post)
+    .find((x) => ![...threads].some((y) => y.sync.halt(x)))
 
-  init(
-    (task) => jobs.add(task),
-    (promise) => {
-      hope.add(promise)
-      promise.then((sign) => {
-        hope.delete(promise)
-        jobs.add(
-          task<T>("resolve", 0, function* () {
-            yield { have: [sign] }
-          }),
-        )
-      })
-      return promise
-    },
-  )
+  if (chosen) {
+    console.info("Chosen", chosen)
+    for (const thread of threads) {
+      const { post, wait, exec } = thread.sync
+      if (post.includes(chosen) || wait(chosen)) {
+        //        console.group("Thread", thread.name)
+        try {
+          if (exec.state === "running") {
+            //          console.log("Halting thread exec", thread.name)
+            yield* exec.task.halt() // hmm
+            thread.sync.exec = { state: "none" }
+          }
 
-  for (;;) {
-    const { done, value } = work(jobs).next()
-    if (done) {
-      if (hope.size > 0) {
-        console.log("[waiting for", hope.size, "promises]")
-        yield hope
-      } else {
-        console.log("nothing to wait for")
-        return
+          const { done, value } = thread.proc.next(chosen)
+          if (done) {
+            threads.delete(thread)
+          } else {
+            thread.sync = value
+            yield* doexec<Post>(thread, gong)
+          }
+        } finally {
+          console.groupEnd()
+        }
       }
-    } else {
-      jobs = value
     }
+
+    didWork = true
+  }
+
+  return didWork
+}
+
+function* doexec<Post>(thread: Thread<Post>, gong: Channel<void, void>) {
+  if (thread.sync.exec.state === "pending") {
+    const op = thread.sync.exec.op
+    const task = yield* spawn(function* () {
+      try {
+        const x = yield* op()
+        thread.sync.exec = {
+          state: "done",
+          result: { ok: true, value: x },
+        }
+      } catch (e) {
+        console.error("Thread exec error", thread.name, e)
+        thread.sync.exec = {
+          state: "done",
+          result: { ok: false, error: e },
+        }
+      } finally {
+        yield* gong.send()
+      }
+    })
+
+    thread.sync.exec = { state: "running", task }
   }
 }
 
-function noop<T>(name: string): Task<T> {
+export interface SyncSpec<Post> {
+  post?: Post[]
+  wait?: (t: Post) => boolean
+  halt?: (t: Post) => boolean
+  exec?: () => Operation<Post>
+}
+
+export function sync<Post>({
+  post,
+  wait,
+  halt,
+  exec,
+}: Partial<SyncSpec<Post>>): Sync<Post> {
+  return {
+    post: post ?? [],
+    wait: wait ?? (() => false),
+    halt: halt ?? (() => false),
+    exec: exec ? { state: "pending", op: exec } : { state: "none" },
+  }
+}
+
+function noop<T>(name: string): Thread<T> {
   return {
     name,
     proc: (function* () {})(),
-    sync: {},
+    sync: sync({}),
     prio: 0,
   }
 }
 
-export function task<T>(
-  name: string,
-  prio: number,
-  init: () => Generator<Sync<T>, void, T>,
-): Task<T> {
+interface Behavior<T> {
+  name: string
+  prio?: number
+  init: () => Generator<Sync<T>, void, T>
+}
+
+export function makeThread<T>({
+  name,
+  prio = 1,
+  init,
+}: Behavior<T>): Thread<T> {
   const proc = init()
   const { done, value: sync } = proc.next()
   return done ? noop(name) : { name, prio, proc, sync }
 }
 
-export function syncdemo1() {
-  exec<string>((boot, _wait) => {
-    boot(
-      task<string>("fill hot", 1, function* () {
-        for (;;) {
-          yield { want: (t) => t === "water-low" }
-          yield { have: ["add-hot"] }
-          yield { have: ["add-hot"] }
-          yield { have: ["add-hot"] }
+export function* system<T, V = void>(
+  body: (
+    thread: {
+      (name: string, init: () => Generator<Sync<T>, void, T>): Operation<void>
+    },
+    $: typeof sync<T>,
+  ) => Operation<Task<V>>,
+): Operation<V> {
+  const gong = createChannel<void>()
+  const born = new Set<Thread<T>>()
+
+  const bodyTask = yield* body(function* (
+    name: string,
+    init: () => Generator<Sync<T>, void, T>,
+  ) {
+    const thread = makeThread({ name, init })
+    yield* doexec(thread, gong)
+    born.add(thread)
+    yield* gong.send()
+  },
+  sync<T>)
+
+  let threads = new Set<Thread<T>>()
+
+  const systemTask = yield* spawn(function* () {
+    for (;;) {
+      if (born.size > 0) {
+        threads = threads.union(born)
+        born.clear()
+      }
+
+      const gongs = yield* gong
+
+      for (;;) {
+        if (false === (yield* work(threads, gong))) {
+          break
         }
-      }),
-    )
-    boot(
-      task<string>("initially low", 1, function* () {
-        yield { have: ["water-low"] }
-      }),
-    )
-    boot(
-      task<string>("fill cold", 1, function* () {
-        for (;;) {
-          yield { want: (t) => t === "water-low" }
-          yield { have: ["add-cold"] }
-          yield { have: ["add-cold"] }
-          yield { have: ["add-cold"] }
-        }
-      }),
-    )
-    boot(
-      task<string>("balance hot/cold", 1, function* () {
-        for (;;) {
-          yield {
-            want: (t) => t === "add-hot",
-            deny: (t) => t === "add-cold",
-          }
-          yield {
-            want: (t) => t === "add-cold",
-            deny: (t) => t === "add-hot",
-          }
-        }
-      }),
-    )
-  }).next()
+      }
+
+      const gongsResult = yield* gongs.next()
+      if (gongsResult.done) {
+        break
+      }
+    }
+  })
+
+  try {
+    return yield* bodyTask
+  } finally {
+    yield* gong.close()
+    yield* systemTask
+  }
 }
 
-// syncdemo1()
+export async function foo() {
+  await main(() =>
+    system(function* (thread, sync) {
+      yield* thread("test", function* () {
+        for (;;) {
+          const x = yield sync({
+            wait: (x) => x === "test",
+            exec: function* () {
+              try {
+                yield* sleep(1000)
+                console.log("slept")
+              } finally {
+                console.log("sleep over")
+              }
+              return "second"
+            },
+          })
+
+          yield sync({
+            post: [x],
+          })
+        }
+      })
+
+      yield* thread("test2", function* () {
+        for (;;) {
+          yield sync({ wait: (x) => x === "second" })
+          yield sync({ wait: (x) => x === "second" })
+          yield sync({ wait: (x) => x === "second" })
+          yield sync({ post: ["test"] })
+        }
+      })
+
+      return yield* spawn(function* () {
+        yield* suspend()
+        console.log("done")
+      })
+    }),
+  )
+}

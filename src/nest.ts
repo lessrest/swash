@@ -67,8 +67,11 @@ export function* waitForButton(label: string): Operation<void> {
 }
 
 export function* quiz(label: string): Operation<string> {
-  const input = html("input", { type: "text", placeholder: label })
-  const form = html("form", {}, input)
+  const input = html<HTMLInputElement>("input", {
+    type: "text",
+    placeholder: label,
+  })
+  const form = html<HTMLFormElement>("form", {}, input)
   yield* grow(form)
   try {
     const event = yield* once(form, "submit")

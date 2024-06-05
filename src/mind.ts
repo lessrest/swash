@@ -9,7 +9,7 @@ import {
 } from "effection"
 import { info, task } from "./task.ts"
 
-interface Model {
+export interface Model {
   name: string
   model: string
   provider: "openai" | "anthropic"
@@ -80,9 +80,13 @@ export interface ChatCompletionRequest {
   stopSequences?: string[]
 }
 
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } }
+
 export interface ChatMessage {
   role: "user" | "assistant"
-  content: string
+  content: string | ContentPart[]
 }
 
 interface OpenAIStreamingResponse {
