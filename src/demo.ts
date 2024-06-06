@@ -30,6 +30,8 @@ import {
 } from "./mind.ts"
 import { into } from "./nest.ts"
 
+import { pong } from "./pong.ts"
+
 type TagName = Step[0]
 type Payload<T extends TagName> = Extract<Step, [T, unknown]>[1]
 
@@ -68,7 +70,11 @@ type Step =
   | ["captured video image", string]
 
 document.addEventListener("DOMContentLoaded", async function () {
-  await main(() => swash)
+  if (document.location.hash.includes("pong")) {
+    await main(() => pong)
+  } else {
+    await main(() => swash)
+  }
 })
 
 const swash = system<Step>(function* (rule, sync) {
