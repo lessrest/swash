@@ -72,7 +72,7 @@ type Step =
   | ["shown text is now", string]
   | ["typing speed is now", number]
   | ["show one more letter"]
-  | ["LLM starting for", string]
+  | ["LLM starting for", Word[][]]
   | ["making LLM request", ChatCompletionRequest]
   | ["LLM subscription", Subscription<ChatMessage, void>]
   | ["LLM text", string]
@@ -108,9 +108,9 @@ const swash = system<Step>(function* (rule, sync) {
 
   const documentMutations: ((document: Document) => void)[] = []
 
-  let sentences = ""
-  let conclusive = ""
-  let tentative = ""
+  let sentences: Word[][] = []
+  let conclusive: Word[] = []
+  let tentative: Word[] = []
 
   const wordsToText = (words: Word[]) =>
     words
@@ -119,9 +119,12 @@ const swash = system<Step>(function* (rule, sync) {
       .replaceAll(/([.!?])\s?/g, "$1\n")
 
   const knownText = () =>
-    [sentences, conclusive, tentative]
+    [
+      ...sentences.map(wordsToText),
+      wordsToText(conclusive),
+      wordsToText(tentative),
+    ]
       .join(" ")
-      //      .replaceAll(/ +/g, " ")
       // remove consecutive newlines
       .replaceAll(/\n\s*/g, "\n")
 
@@ -131,7 +134,7 @@ const swash = system<Step>(function* (rule, sync) {
     *["The latest tentative phrase is tracked."]() {
       for (;;) {
         const words = yield* wait("new interim phrase")
-        tentative = wordsToText(words)
+        tentative = words
         yield* post("known text changed")
       }
     },
@@ -139,8 +142,8 @@ const swash = system<Step>(function* (rule, sync) {
     *["The conclusive phrases are tracked."]() {
       for (;;) {
         const words = yield* wait("add final phrase")
-        conclusive += wordsToText(words)
-        tentative = ""
+        conclusive.push(...words)
+        tentative = []
         yield* post("known text changed")
       }
     },
@@ -223,17 +226,19 @@ const swash = system<Step>(function* (rule, sync) {
         yield* wait("add final phrase")
         yield* wait("known text changed")
 
-        const lines = conclusive.split("\n")
+        if (conclusive.length > 0) {
+          sentences = [...sentences, conclusive]
+          conclusive = []
+        }
 
-        sentences = sentences + lines.slice(0, -1).join("\n")
-        conclusive = lines.pop() || ""
-
-        if (sentences.split("\n").length < 3) {
+        if (sentences.length < 3) {
           continue
         }
 
         const image = document.querySelector("img")
-        const content: ContentPart[] = [{ type: "text", text: sentences }]
+        const content: ContentPart[] = [
+          { type: "text", text: sentences.map(wordsToText).join("\n") },
+        ]
         if (image) {
           content.push({ type: "image_url", image_url: { url: image.src } })
         }
@@ -280,20 +285,34 @@ const swash = system<Step>(function* (rule, sync) {
         let llm = ""
 
         for (;;) {
-          const p = yield sync({
+          const [tag, payload] = yield sync({
             wait: ([tag]) => tag === "LLM text" || tag === "LLM done",
           })
-          if (p[0] === "LLM done") {
+          if (tag === "LLM done") {
             break
-          } else if (p[0] === "LLM text") {
-            llm += p[1].replaceAll(/([.!?])\s*/g, "$1\n")
-            sentences = (llm + orig.slice(llm.length)).trim()
-
-            yield* post("known text changed")
+          } else if (tag === "LLM text") {
+            llm += payload
+            // yield* post("known text changed")
           }
         }
 
-        sentences = llm
+        const llmSentences = llm
+          .replaceAll(/([.!?])\s*/g, "$1\n")
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .map((line) =>
+            line.split(/\s+/).map((word) => ({
+              word,
+              punctuated_word: word,
+              start: 0,
+              end: 0,
+              confidence: 0,
+            })),
+          )
+
+        sentences = [...llmSentences, ...sentences.slice(orig.length)]
+
         yield* post("known text changed")
       }
     },
