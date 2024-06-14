@@ -623,56 +623,24 @@ function applyMutationQueue(queue: ((document: Document) => void)[]) {
   }
 }
 
-function updateSuffixRange(range: Range, root: Node, limit: number) {
-  console.log(limit)
-  let node: Text | null = null
-
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
-  while (walker.nextNode()) {
-    node = walker.currentNode as Text
-
-    if (node instanceof Text) {
-      const graphemes = node.data.slice(0, limit)
-      limit = Math.max(0, limit - graphemes.length)
-      if (limit === 0) {
-        range.setStart(node, graphemes.length)
-        break
-      }
-    }
-  }
-
-  if (limit !== 0) range.setStart(root, 0)
-
-  range.setEndAfter(root)
-
-  return range
-}
-
-function textContents(node: Node): string {
-  const range = new Range()
-  range.setStart(node, 0)
-  range.setEndAfter(node)
-  return range.toString()
-}
-
 class TypeWriter extends HTMLElement {
+  limit = 0
   range = new Range()
-  observer = new MutationObserver(() => {
+  timer?: number
+  snitch = new MutationObserver(() => {
     this.update()
-    if (!this.timeout) this.proceed()
+    if (!this.timer) this.proceed()
   })
 
-  timeout: number | undefined
-  limit = 0
-
   connectedCallback() {
-    this.range.setStart(this, 0)
-    this.range.setEndAfter(this)
+    this.range.selectNodeContents(this)
 
-    const highlight = CSS.highlights.get("hidden") ?? new Highlight()
-    CSS.highlights.set("hidden", highlight)
-    highlight.add(this.range)
-    this.observer.observe(this, {
+    CSS.highlights.set(
+      "hidden",
+      (CSS.highlights.get("hidden") ?? new Highlight()).add(this.range),
+    )
+
+    this.snitch.observe(this, {
       childList: true,
       subtree: true,
       characterData: true,
@@ -682,54 +650,67 @@ class TypeWriter extends HTMLElement {
   }
 
   disconnectedCallback() {
-    this.observer.disconnect()
-    const highlight = CSS.highlights.get("hidden")
-    if (highlight) {
-      highlight.delete(this.range)
-    }
-    clearTimeout(this.timeout)
+    this.snitch.disconnect()
+    CSS.highlights.get("hidden")?.delete(this.range)
+    clearTimeout(this.timer)
   }
 
   update() {
-    updateSuffixRange(this.range, this, this.limit)
+    const walk = document.createTreeWalker(this, NodeFilter.SHOW_TEXT)
+    let node: Text | null = null
+
+    while (walk.nextNode()) {
+      node = walk.currentNode as Text
+      const { length } = node.data.slice(0, this.limit)
+      if ((this.limit -= length) <= 0) {
+        this.range.setStart(node, length)
+        break
+      }
+    }
+
+    if (this.limit > 0) this.range.setStart(this, 0)
+
+    this.range.setEndAfter(this)
   }
 
   proceed() {
-    const knownText = textContents(this)
-    const hiddenText = this.range.toString()
-    const lettersLeft = hiddenText.length
-
-    if (lettersLeft > 0) {
-      const { maxSpeed, minSpeed } = { maxSpeed: 80, minSpeed: 30 }
-      const speedRange = maxSpeed - minSpeed
-      const speedFactor = 1 - lettersLeft / knownText.length
-      const lettersPerSecond = Math.round(
-        minSpeed + speedRange * speedFactor ** 2,
-      )
-      this.limit = Math.min(this.limit + 1, knownText.length)
-      this.update()
-      const grapheme = hiddenText[0]
-      const delay = delayForGrapheme(grapheme, 1000 / lettersPerSecond)
-      this.timeout = setTimeout(() => this.proceed(), delay)
-    } else {
-      this.timeout = void 0
+    if (this.range.toString().trim() === "") {
+      this.timer = undefined
+      return
     }
 
-    function delayForGrapheme(grapheme: string, baseDelay: number) {
-      const factors: Record<string, number> = {
-        " ": 3,
-        "–": 7,
-        ",": 8,
-        ";": 8,
-        ":": 9,
-        ".": 10,
-        "—": 12,
-        "!": 15,
-        "?": 15,
-        "\n": 20,
-      }
-      return baseDelay * (factors[grapheme] ?? 1) * 0.8
+    this.limit = Math.min(this.limit + 1, this.innerText.length)
+    this.update()
+
+    const delay = adjustSpeed(this.innerText.length, this.range.toString())
+    this.timer = setTimeout(() => this.proceed(), delay)
+  }
+}
+
+function adjustSpeed(length: number, suffix: string) {
+  const maxSpeed = 80
+  const minSpeed = 30
+  const speedRange = maxSpeed - minSpeed
+  const speedFactor = 1 - suffix.length / length
+  const base = Math.round(minSpeed + speedRange * speedFactor ** 2)
+
+  return delayForGrapheme(suffix[0], base)
+
+  function delayForGrapheme(grapheme: string, baseDelay: number) {
+    const factors: Record<string, number> = {
+      // TODO: justify these arbitrary numbers with pseudoscience
+      " ": 3,
+      "–": 7,
+      ",": 8,
+      ";": 8,
+      ":": 9,
+      ".": 10,
+      "—": 12,
+      "!": 15,
+      "?": 15,
+      "\n": 20,
     }
+    return baseDelay * (factors[grapheme] ?? 1) * 0.8
   }
 }
 
