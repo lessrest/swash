@@ -3,3 +3,5 @@ node_modules
 server
 /static/nt
 credentials.json
+credentials*.json
+token.json
