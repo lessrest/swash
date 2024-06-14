@@ -99,14 +99,14 @@ const swash = system<Step>(function* (rule, sync) {
     scope.run(body)
   }
 
-  const mutationQueue: ((document: Document) => void)[] = []
-
   function* exec<
     T extends Step,
   >(body: () => Operation<T>, spec: Partial<SyncSpec<Step>> = {}): Generator<Sync<Step>, T, Step> {
     const step = yield sync({ ...spec, exec: body })
     return step as T
   }
+
+  const documentMutations: ((document: Document) => void)[] = []
 
   let sentences = ""
   let conclusive = ""
@@ -116,22 +116,21 @@ const swash = system<Step>(function* (rule, sync) {
     words
       .map((x) => x.punctuated_word)
       .join(" ")
-      .trim()
-  //      .replaceAll(/([.!?])\s?/g, "$1\n")
+      .replaceAll(/([.!?])\s?/g, "$1\n")
 
   const knownText = () =>
     [sentences, conclusive, tentative]
       .join(" ")
       //      .replaceAll(/ +/g, " ")
       // remove consecutive newlines
-      .replaceAll(/\n+/g, "\n")
+      .replaceAll(/\n\s*/g, "\n")
 
   let shownText = ""
 
   yield* rules({
     *["Document mutations are queued."]() {
       for (;;) {
-        mutationQueue.push(yield* wait("document mutation requested"))
+        documentMutations.push(yield* wait("document mutation requested"))
       }
     },
 
@@ -159,7 +158,7 @@ const swash = system<Step>(function* (rule, sync) {
         yield* post("request animation frame")
         yield* wait("animation frame began")
         yield* exec(function* () {
-          yield* call(applyMutationQueue(mutationQueue))
+          yield* call(applyMutationQueue(documentMutations))
           return ["document mutation applied"]
         })
       }
@@ -290,7 +289,7 @@ const swash = system<Step>(function* (rule, sync) {
     *["The latest tentative phrase is tracked."]() {
       for (;;) {
         const words = yield* wait("phrase heard tentatively")
-        tentative = wordsToText(words).trim()
+        tentative = wordsToText(words)
         yield* post("known text changed")
       }
     },
@@ -298,18 +297,11 @@ const swash = system<Step>(function* (rule, sync) {
     *["The conclusive phrases are tracked."]() {
       for (;;) {
         const words = yield* wait("phrase heard conclusively")
-        conclusive += wordsToText(words) + " "
+        conclusive += wordsToText(words)
         tentative = ""
         yield* post("known text changed")
       }
     },
-
-    // *["The tentative phrase is cleared when heard conclusively."]() {
-    //   for (;;) {
-    //     yield* wait("phrase heard conclusively")
-    //     yield* post("phrase heard tentatively", [])
-    //   }
-    // },
 
     *["The shown text is updated a letter at a time."]() {
       for (;;) {
@@ -318,17 +310,6 @@ const swash = system<Step>(function* (rule, sync) {
         yield* post("shown text is now", shownText)
       }
     },
-
-    // *["The shown text is updated immediately."]() {
-    //   for (;;) {
-    //     yield* wait("known text changed")
-    //     const nextKnownText = knownText()
-    //     if (nextKnownText !== shownText) {
-    //       shownText = nextKnownText
-    //       yield* post("shown text is now", shownText)
-    //     }
-    //   }
-    // },
 
     *["When the visible prefix of the known text changes, the shown text is updated."]() {
       for (;;) {
@@ -359,10 +340,10 @@ const swash = system<Step>(function* (rule, sync) {
         })
         const lettersLeft = knownText().length - shownText.length
         if (lettersLeft > 0) {
-          const maxSpeed = 60
+          const maxSpeed = 70
           const minSpeed = 20
           const speedRange = maxSpeed - minSpeed
-          const progressRatio = lettersLeft / knownText().length
+          const progressRatio = 1 - lettersLeft / knownText().length
           const speedFactor = progressRatio ** 2
           const lettersPerSecond = Math.round(
             minSpeed + speedRange * speedFactor,
@@ -374,7 +355,7 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
 
-    *["The typing speed is used."]() {
+    *["Letters are revealed according to the typing speed."]() {
       let interval: number | undefined = undefined
       let speed = 0
       for (;;) {
@@ -393,24 +374,19 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
 
-    *["LLM calls are blocked (for now)."]() {
-      for (;;) {
-        yield* halt("making LLM request")
-      }
-    },
-
     *["The conclusive text is enhanced with GPT-4o."]() {
       for (;;) {
         yield* wait("phrase heard conclusively")
         yield* wait("known text changed")
 
         const lines = conclusive.split("\n")
-        if (lines.length < 3) {
-          continue
-        }
 
         sentences = sentences + lines.slice(0, -1).join("\n")
         conclusive = lines.pop() || ""
+
+        if (sentences.split("\n").length < 3) {
+          continue
+        }
 
         const image = document.querySelector("img")
         const content: ContentPart[] = [{ type: "text", text: sentences }]
@@ -422,13 +398,14 @@ const swash = system<Step>(function* (rule, sync) {
           systemMessage: [
             "Fix likely transcription errors.",
             "Split run-on sentences and improve punctuation.",
-            //            "Use CAPS on key salient words for emphasis and flow.",
-            "Use varying PREFIX EMOJIS before each sentence for visual interest.",
+            "Use CAPS on key salient words for emphasis and flow.",
+            "Use varying EMOJIS before each sentence for visual interest.",
             "Respond ONLY with the edited transcript.",
+            "Use em dashes liberally, for a more interesting rhythm.",
           ].join(" "),
           messages: [{ role: "user", content }],
           temperature: 0.4,
-          maxTokens: 200,
+          maxTokens: 500,
         })
       }
     },
@@ -478,36 +455,9 @@ const swash = system<Step>(function* (rule, sync) {
     },
   })
 
-  let recorder: MediaRecorder | undefined
-
   const mediaStream = yield* call(
     navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
   )
-
-  try {
-    const options = [
-      { mimeType: "audio/webm;codecs=opus", audioBitsPerSecond: 64000 },
-      { mimeType: "audio/mp4", audioBitsPerSecond: 128000 },
-    ]
-
-    for (const option of options) {
-      if (MediaRecorder.isTypeSupported(option.mimeType)) {
-        recorder = new MediaRecorder(mediaStream, option)
-        console.log("recorder", recorder, option.mimeType)
-        break
-      }
-    }
-  } catch (e) {
-    console.error(e)
-    document.body.append(html("aside", {}, `Error: ${e}`))
-  }
-
-  if (!recorder) {
-    alert("Media codec trouble. Sorry.")
-    throw new Error(
-      "Unsupported mimeType: MediaRecorder cannot function with the available options.",
-    )
-  }
 
   const socket = yield* useWebSocket(
     new WebSocket(
@@ -543,27 +493,27 @@ const swash = system<Step>(function* (rule, sync) {
     }
   })
 
-  // Create an AudioContext
   const audioContext = new AudioContext()
-
-  // Create a MediaStreamAudioSourceNode from the MediaStream
   const sourceNode = audioContext.createMediaStreamSource(mediaStream)
-
-  // Get the number of channels in the MediaStream
   const numberOfChannels =
     mediaStream.getAudioTracks()[0].getSettings().channelCount || 1
-
-  // Create a ScriptProcessorNode to process the audio data
   const processorNode = audioContext.createScriptProcessor(
     16384,
     numberOfChannels,
     1,
   )
 
-  // Configure the AudioEncoder
+  const packets = createSignal<ArrayBuffer>()
+
   const audioEncoder = new AudioEncoder({
-    output: handleEncodedPacket,
-    error: handleEncoderError,
+    output: (encodedPacket: EncodedAudioChunk) => {
+      const arrayBuffer = new ArrayBuffer(encodedPacket.byteLength)
+      encodedPacket.copyTo(arrayBuffer)
+      packets.send(arrayBuffer)
+    },
+    error: (error: Error) => {
+      console.error("AudioEncoder error:", error)
+    },
   })
 
   audioEncoder.configure({
@@ -600,18 +550,6 @@ const swash = system<Step>(function* (rule, sync) {
         sampleRate: 48000,
       }),
     )
-  }
-
-  const packets = createSignal<ArrayBuffer>()
-
-  function handleEncodedPacket(encodedPacket: EncodedAudioChunk) {
-    const arrayBuffer = new ArrayBuffer(encodedPacket.byteLength)
-    encodedPacket.copyTo(arrayBuffer)
-    packets.send(arrayBuffer)
-  }
-
-  function handleEncoderError(error: Error) {
-    console.error("AudioEncoder error:", error)
   }
 
   return yield* spawn(function* () {
