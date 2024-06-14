@@ -249,11 +249,22 @@ const swash = system<Step>(function* (rule, sync) {
         yield* wait("known text changed")
 
         if (conclusive.length > 0) {
-          sentences = [...sentences, conclusive]
-          conclusive = []
+          const newSentences = []
+          let sentence = []
+          for (const word of conclusive) {
+            sentence.push(word)
+            if (/[.!?]$/.test(word.punctuated_word)) {
+              newSentences.push(sentence)
+              sentence = []
+            }
+          }
+
+          conclusive = sentence
+          sentences = [...sentences, ...newSentences]
         }
 
         if (sentences.length < 3) {
+          // prevent hallucination by waiting for more sentences
           continue
         }
 
@@ -278,6 +289,8 @@ const swash = system<Step>(function* (rule, sync) {
           temperature: 0.4,
           maxTokens: 500,
         })
+
+        yield* wait("LLM done")
       }
     },
 
@@ -384,15 +397,15 @@ const swash = system<Step>(function* (rule, sync) {
       })
     },
 
-    *["A video stream is acquired."]() {
-      yield* wait("live transcription began")
-      yield* exec(function* () {
-        const mediaStream = yield* call(
-          navigator.mediaDevices.getUserMedia({ audio: false, video: true }),
-        )
-        return ["acquired video stream", mediaStream]
-      })
-    },
+    // *["A video stream is acquired."]() {
+    //   yield* wait("live transcription began")
+    //   yield* exec(function* () {
+    //     const mediaStream = yield* call(
+    //       navigator.mediaDevices.getUserMedia({ audio: false, video: true }),
+    //     )
+    //     return ["acquired video stream", mediaStream]
+    //   })
+    // },
 
     *["The video stream is shown."]() {
       const video = html<HTMLVideoElement>("video", {
@@ -524,7 +537,9 @@ const swash = system<Step>(function* (rule, sync) {
     packets.send(packet)
   }
 
-  recordAudioPackets(mediaStream, onPacket)
+  yield* spawn(function* () {
+    yield* recordAudioPackets(mediaStream, onPacket)
+  })
 
   return yield* spawn(function* () {
     for (const packet of yield* each(packets)) {
@@ -590,11 +605,11 @@ function* recordAudioPackets(
 ) {
   const audioContext = new AudioContext()
   const sourceNode = audioContext.createMediaStreamSource(mediaStream)
-  const numberOfChannels =
-    mediaStream.getAudioTracks()[0].getSettings().channelCount || 1
-  const processorNode = audioContext.createScriptProcessor(
+  const streamChannels = mediaStream.getAudioTracks()[0].getSettings()
+    .channelCount!
+  const processor = audioContext.createScriptProcessor(
     16384,
-    numberOfChannels,
+    streamChannels,
     1,
   )
 
@@ -612,7 +627,7 @@ function* recordAudioPackets(
   audioEncoder.configure({
     codec: "opus",
     sampleRate: 48000,
-    numberOfChannels,
+    numberOfChannels: 1,
     bitrate: 16000,
     opus: {
       application: "lowdelay",
@@ -620,34 +635,36 @@ function* recordAudioPackets(
     },
   })
 
-  sourceNode.connect(processorNode)
-  processorNode.connect(audioContext.destination)
+  sourceNode.connect(processor)
+  processor.connect(audioContext.destination)
+
+  processor.addEventListener("audioprocess", (event) => {
+    const numberOfFrames = event.inputBuffer.length
+    const inputBuffer = new ArrayBuffer(numberOfFrames * 4 * 1)
+    const inputView = new DataView(inputBuffer)
+
+    const inputData = event.inputBuffer.getChannelData(0)
+    for (let i = 0; i < numberOfFrames; i++) {
+      inputView.setFloat32(i * 4, inputData[i], true)
+    }
+
+    audioEncoder.encode(
+      new AudioData({
+        data: inputBuffer,
+        timestamp: event.playbackTime * 1000000,
+        format: "f32",
+        numberOfChannels: 1,
+        numberOfFrames,
+        sampleRate: 48000,
+      }),
+    )
+  })
 
   try {
-    for (const event of yield* each(on(processorNode, "audioprocess"))) {
-      const numberOfFrames = event.inputBuffer.length
-      const inputBuffer = new ArrayBuffer(numberOfFrames * 4 * 1)
-      const inputView = new DataView(inputBuffer)
-
-      const inputData = event.inputBuffer.getChannelData(0)
-      for (let i = 0; i < numberOfFrames; i++) {
-        inputView.setFloat32(i * 4, inputData[i], true)
-      }
-
-      audioEncoder.encode(
-        new AudioData({
-          data: inputBuffer,
-          timestamp: event.playbackTime * 1000000,
-          format: "f32",
-          numberOfChannels: 1,
-          numberOfFrames,
-          sampleRate: 48000,
-        }),
-      )
-    }
+    yield* suspend()
   } finally {
     audioEncoder.close()
-    processorNode.disconnect()
+    processor.disconnect()
     sourceNode.disconnect()
   }
 }
