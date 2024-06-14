@@ -4,19 +4,15 @@ import "@types/dom-view-transitions"
 
 import {
   Operation,
-  Stream,
   Subscription,
   action,
   call,
   createSignal,
   each,
   main,
-  on,
-  resource,
   sleep,
   spawn,
   suspend,
-  useScope,
 } from "effection"
 
 import { html } from "./html.ts"
@@ -29,34 +25,48 @@ import {
   gpt4o,
   think,
 } from "./mind.ts"
+
 import { into } from "./nest.ts"
 
-import { pong } from "./pong.ts"
-import { graphemesOf } from "./text.ts"
+import "./TypeWriter.ts"
 
-declare global {
-  interface AudioEncoderConfig {
-    opus?: OpusEncoderConfig
-  }
+document.addEventListener("DOMContentLoaded", async function () {
+  await main(() => swash)
+})
 
-  interface OpusEncoderConfig {
-    format?: "opus" | "ogg"
-    signal?: "auto" | "music" | "voice"
-    application?: "voip" | "audio" | "lowdelay"
-    frameDuration?: number
-    /**
-     * Encoder complexity (0-10). 10 is highest.
-     * Default: 5 on mobile, 9 on other platforms.
-     */
-    complexity?: number
-    /** Configures the encoder's expected packet loss percentage (0 to 100). */
-    packetlossperc?: number
-    /** Enables Opus in-band Forward Error Correction (FEC) */
-    useinbandfec?: boolean
-    /** Enables Discontinuous Transmission (DTX) */
-    usedtx?: boolean
-  }
-}
+type AnimationStep =
+  | ["request animation frame"]
+  | ["animation frame began", number]
+
+type DocumentMutationStep =
+  | ["document mutation requested", (document: Document) => void]
+  | ["document mutation applied"]
+
+type TranscriptionStep =
+  | ["live transcription began"]
+  | ["add final phrase", Word[]]
+  | ["new interim phrase", Word[]]
+  | ["known text changed", string]
+
+type LLMStep =
+  | ["LLM starting for", Word[][]]
+  | ["LLM request", ChatCompletionRequest]
+  | ["LLM subscription", Subscription<ChatMessage, void>]
+  | ["LLM text", string]
+  | ["LLM done"]
+
+type VideoStep =
+  | ["acquired video stream", MediaStream]
+  | ["video started"]
+  | ["request video image"]
+  | ["captured video image", string]
+
+type Step =
+  | AnimationStep
+  | DocumentMutationStep
+  | TranscriptionStep
+  | LLMStep
+  | VideoStep
 
 type TagName = Step[0]
 type Payload<T extends TagName> = Extract<Step, [T, unknown]>[1]
@@ -73,54 +83,8 @@ function* wait<T extends TagName>(
   )[1]
 }
 
-function* halt<T extends TagName>(
-  tag: T,
-  predicate?: (payload: Payload<T>) => boolean,
-): Generator<Sync<Step>, void, Step> {
-  yield sync<Step>({
-    halt: (t) =>
-      t[0] === tag && (!predicate || predicate(t[1] as Payload<T>)),
-  })
-}
-
-type Step =
-  | ["live transcription began"]
-  | ["request animation frame"]
-  | ["animation frame began", number]
-  | ["document mutation requested", (document: Document) => void]
-  | ["document mutation applied"]
-  | ["add final phrase", Word[]]
-  | ["new interim phrase", Word[]]
-  | ["known text changed", string]
-  | ["shown text is now", string]
-  | ["typing speed is now", number]
-  | ["show one more letter"]
-  | ["LLM starting for", Word[][]]
-  | ["making LLM request", ChatCompletionRequest]
-  | ["LLM subscription", Subscription<ChatMessage, void>]
-  | ["LLM text", string]
-  | ["LLM done"]
-  | ["acquired video stream", MediaStream]
-  | ["video started"]
-  | ["request video image"]
-  | ["captured video image", string]
-
-document.addEventListener("DOMContentLoaded", async function () {
-  if (document.location.hash.includes("pong")) {
-    await main(() => pong)
-  } else {
-    await main(() => swash)
-  }
-})
-
 const swash = system<Step>(function* (rule, sync) {
   yield* into(document.body)
-
-  const scope = yield* useScope()
-
-  function run(body: () => Operation<void>) {
-    scope.run(body)
-  }
 
   function* exec<
     T extends Step,
@@ -135,20 +99,28 @@ const swash = system<Step>(function* (rule, sync) {
   let conclusive: Word[] = []
   let tentative: Word[] = []
 
-  const wordsToText = (words: Word[]) =>
-    words
-      .map((x) => x.punctuated_word)
-      .join(" ")
-      .replaceAll(/([.!?])\s?/g, "$1\n")
+  function wordsToText(words: Word[]) {
+    return words.map((word) => word.punctuated_word).join("")
+  }
 
-  const knownText = () =>
-    [
-      ...sentences.map(wordsToText),
-      wordsToText(conclusive),
-      wordsToText(tentative),
-    ]
-      .join(" ")
-      .replaceAll(/\n\s*/g, "\n")
+  function render() {
+    return [...sentences.flat(), ...conclusive, ...tentative].map((word) =>
+      html(
+        "span",
+        {
+          style: {
+            color: word.confidence > 0.85 ? "inherit" : "red",
+            fontWeight: word.punctuated_word.match(/[A-Z]{3}/)
+              ? "bold"
+              : "normal",
+            paddingRight: word.punctuated_word.match(/[.!?]$/) ? "1em" : "0",
+          },
+        },
+        word.punctuated_word,
+        " ",
+      ),
+    )
+  }
 
   yield* rules({
     *["The latest tentative phrase is tracked."]() {
@@ -174,7 +146,7 @@ const swash = system<Step>(function* (rule, sync) {
       for (;;) {
         yield* wait("known text changed")
         yield* post("document mutation requested", () => {
-          p.replaceChildren(html("span", {}, knownText()))
+          p.replaceChildren(...render())
         })
       }
     },
@@ -215,7 +187,7 @@ const swash = system<Step>(function* (rule, sync) {
           content.push({ type: "image_url", image_url: { url: image.src } })
         }
 
-        yield* post("making LLM request", {
+        yield* post("LLM request", {
           systemMessage: [
             "Fix likely transcription errors.",
             "Split run-on sentences and improve punctuation.",
@@ -235,7 +207,7 @@ const swash = system<Step>(function* (rule, sync) {
 
     *["LLM requests are made serially using GPT-4o."]() {
       for (;;) {
-        const request = yield* wait("making LLM request")
+        const request = yield* wait("LLM request")
         yield* exec(
           function* () {
             const response = yield* think(gpt4o, request)
@@ -248,7 +220,7 @@ const swash = system<Step>(function* (rule, sync) {
               yield* emit("LLM text", value.content as string)
             }
           },
-          { halt: ([tag]) => tag === "making LLM request" },
+          { halt: ([tag]) => tag === "LLM request" },
         )
       }
     },
@@ -280,7 +252,7 @@ const swash = system<Step>(function* (rule, sync) {
               punctuated_word: word,
               start: 0,
               end: 0,
-              confidence: 0,
+              confidence: 1,
             })),
           )
 
@@ -358,35 +330,10 @@ const swash = system<Step>(function* (rule, sync) {
     *["Capture video images on request."]() {
       for (;;) {
         yield* wait("request video image")
-        const canvas = document.createElement("canvas")
-        const context = canvas.getContext("2d")
-        const video = document.querySelector("video")
-        if (context && video) {
-          const maxDimension = 768
-          const aspectRatio = video.videoWidth / video.videoHeight
-
-          if (video.videoWidth > video.videoHeight) {
-            canvas.width = maxDimension
-            canvas.height = maxDimension / aspectRatio
-          } else {
-            canvas.height = maxDimension
-            canvas.width = maxDimension * aspectRatio
-          }
-
-          context.drawImage(
-            video,
-            0,
-            0,
-            video.videoWidth,
-            video.videoHeight,
-            0,
-            0,
-            canvas.width,
-            canvas.height,
-          )
-          const imageData = canvas.toDataURL("image/png")
-          yield* post("captured video image", imageData)
-        }
+        yield* post(
+          "captured video image",
+          captureVideoImage(document.querySelector("video")!),
+        )
       }
     },
 
@@ -623,115 +570,34 @@ function applyMutationQueue(queue: ((document: Document) => void)[]) {
   }
 }
 
-class TypeWriter extends HTMLElement {
-  limit = 0
-  range = new Range()
-  timer?: number
-  snitch = new MutationObserver(() => {
-    this.update()
-    if (!this.timer) this.proceed()
-  })
+function captureVideoImage(video: HTMLVideoElement) {
+  const canvas = document.createElement("canvas")
+  const context = canvas.getContext("2d")
+  if (!context) throw new Error("no canvas context")
 
-  connectedCallback() {
-    this.range.selectNodeContents(this)
+  const maxDimension = 768
+  const { videoWidth, videoHeight } = video
+  const aspectRatio = videoWidth / videoHeight
 
-    CSS.highlights.set(
-      "hidden",
-      (CSS.highlights.get("hidden") ?? new Highlight()).add(this.range),
-    )
-
-    this.snitch.observe(this, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    })
-
-    this.proceed()
+  if (videoWidth > videoHeight) {
+    canvas.width = maxDimension
+    canvas.height = maxDimension / aspectRatio
+  } else {
+    canvas.width = maxDimension * aspectRatio
+    canvas.height = maxDimension
   }
 
-  disconnectedCallback() {
-    this.snitch.disconnect()
-    CSS.highlights.get("hidden")?.delete(this.range)
-    clearTimeout(this.timer)
-  }
-
-  update() {
-    const walk = document.createTreeWalker(this, NodeFilter.SHOW_TEXT)
-    let node: Text | null = null
-
-    while (walk.nextNode()) {
-      node = walk.currentNode as Text
-      const { length } = node.data.slice(0, this.limit)
-      if ((this.limit -= length) <= 0) {
-        this.range.setStart(node, length)
-        break
-      }
-    }
-
-    if (this.limit > 0) this.range.setStart(this, 0)
-
-    this.range.setEndAfter(this)
-  }
-
-  proceed() {
-    if (this.range.toString().trim() === "") {
-      this.timer = undefined
-      return
-    }
-
-    this.limit = Math.min(this.limit + 1, this.innerText.length)
-    this.update()
-
-    const delay = adjustSpeed(this.innerText.length, this.range.toString())
-    this.timer = setTimeout(() => this.proceed(), delay)
-  }
-}
-
-function adjustSpeed(length: number, suffix: string) {
-  const maxSpeed = 80
-  const minSpeed = 30
-  const speedRange = maxSpeed - minSpeed
-  const speedFactor = 1 - suffix.length / length
-  const base = Math.round(minSpeed + speedRange * speedFactor ** 2)
-
-  return delayForGrapheme(suffix[0], base)
-
-  function delayForGrapheme(grapheme: string, baseDelay: number) {
-    const factors: Record<string, number> = {
-      // TODO: justify these arbitrary numbers with pseudoscience
-      " ": 3,
-      "–": 7,
-      ",": 8,
-      ";": 8,
-      ":": 9,
-      ".": 10,
-      "—": 12,
-      "!": 15,
-      "?": 15,
-      "\n": 20,
-    }
-    return baseDelay * (factors[grapheme] ?? 1) * 0.8
-  }
-}
-
-customElements.define("type-writer", TypeWriter)
-
-document.addEventListener("DOMContentLoaded", () => {
-  document.body.append(
-    html("style", {}, `::highlight(hidden) { color: transparent }`),
+  context.drawImage(
+    video,
+    0,
+    0,
+    videoWidth,
+    videoHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
   )
-  const poem = html(
-    "type-writer",
-    {},
-    html(
-      "p",
-      {},
-      `
-    Two roads diverged in a wood, and I—
-    I took the one less traveled by,
-    And that has made all the difference.
-  `,
-    ),
-  )
-  //  document.body.append(poem)
-})
+
+  return canvas.toDataURL("image/png")
+}
