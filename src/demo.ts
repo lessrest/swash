@@ -13,6 +13,7 @@ import {
   main,
   on,
   resource,
+  sleep,
   spawn,
   suspend,
   useScope,
@@ -32,6 +33,8 @@ import { into } from "./nest.ts"
 
 import { pong } from "./pong.ts"
 
+//import "@types/dom-webcodecs"
+
 type TagName = Step[0]
 type Payload<T extends TagName> = Extract<Step, [T, unknown]>[1]
 
@@ -45,6 +48,16 @@ function* wait<T extends TagName>(
         t[0] === tag && (!predicate || predicate(t[1] as Payload<T>)),
     })) as [T, Payload<T>]
   )[1]
+}
+
+function* halt<T extends TagName>(
+  tag: T,
+  predicate?: (payload: Payload<T>) => boolean,
+): Generator<Sync<Step>, void, Step> {
+  yield sync<Step>({
+    halt: (t) =>
+      t[0] === tag && (!predicate || predicate(t[1] as Payload<T>)),
+  })
 }
 
 type Step =
@@ -104,7 +117,7 @@ const swash = system<Step>(function* (rule, sync) {
       .map((x) => x.punctuated_word)
       .join(" ")
       .trim()
-      .replaceAll(/([.!?])\s?/g, "$1\n")
+  //      .replaceAll(/([.!?])\s?/g, "$1\n")
 
   const knownText = () =>
     [sentences, conclusive, tentative]
@@ -170,13 +183,15 @@ const swash = system<Step>(function* (rule, sync) {
     },
 
     *["The video stream is shown."]() {
-      const video = html<HTMLVideoElement>("video", {
-        srcObject: yield* wait("acquired video stream"),
-        controls: false,
-      })
-      document.body.append(video)
-      video.play()
-      yield* post("video started")
+      if (false) {
+        const video = html<HTMLVideoElement>("video", {
+          srcObject: yield* wait("acquired video stream"),
+          controls: false,
+        })
+        document.body.append(video)
+        video.play()
+        yield* post("video started")
+      }
     },
 
     *["Capture video images on request."]() {
@@ -284,16 +299,17 @@ const swash = system<Step>(function* (rule, sync) {
       for (;;) {
         const words = yield* wait("phrase heard conclusively")
         conclusive += wordsToText(words) + " "
+        tentative = ""
         yield* post("known text changed")
       }
     },
 
-    *["The tentative phrase is cleared when heard conclusively."]() {
-      for (;;) {
-        yield* wait("phrase heard conclusively")
-        yield* post("phrase heard tentatively", [])
-      }
-    },
+    // *["The tentative phrase is cleared when heard conclusively."]() {
+    //   for (;;) {
+    //     yield* wait("phrase heard conclusively")
+    //     yield* post("phrase heard tentatively", [])
+    //   }
+    // },
 
     *["The shown text is updated a letter at a time."]() {
       for (;;) {
@@ -302,6 +318,17 @@ const swash = system<Step>(function* (rule, sync) {
         yield* post("shown text is now", shownText)
       }
     },
+
+    // *["The shown text is updated immediately."]() {
+    //   for (;;) {
+    //     yield* wait("known text changed")
+    //     const nextKnownText = knownText()
+    //     if (nextKnownText !== shownText) {
+    //       shownText = nextKnownText
+    //       yield* post("shown text is now", shownText)
+    //     }
+    //   }
+    // },
 
     *["When the visible prefix of the known text changes, the shown text is updated."]() {
       for (;;) {
@@ -332,7 +359,14 @@ const swash = system<Step>(function* (rule, sync) {
         })
         const lettersLeft = knownText().length - shownText.length
         if (lettersLeft > 0) {
-          const lettersPerSecond = Math.min(lettersLeft, 5) * 10
+          const maxSpeed = 60
+          const minSpeed = 20
+          const speedRange = maxSpeed - minSpeed
+          const progressRatio = lettersLeft / knownText().length
+          const speedFactor = progressRatio ** 2
+          const lettersPerSecond = Math.round(
+            minSpeed + speedRange * speedFactor,
+          )
           yield* post("typing speed is now", lettersPerSecond)
         } else {
           yield* post("typing speed is now", 0)
@@ -359,13 +393,19 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
 
+    *["LLM calls are blocked (for now)."]() {
+      for (;;) {
+        yield* halt("making LLM request")
+      }
+    },
+
     *["The conclusive text is enhanced with GPT-4o."]() {
       for (;;) {
         yield* wait("phrase heard conclusively")
         yield* wait("known text changed")
 
         const lines = conclusive.split("\n")
-        if (!lines.length) {
+        if (lines.length < 3) {
           continue
         }
 
@@ -380,14 +420,11 @@ const swash = system<Step>(function* (rule, sync) {
 
         yield* post("making LLM request", {
           systemMessage: [
-            "This is a swa.sh live transcription session.",
             "Fix likely transcription errors.",
             "Split run-on sentences and improve punctuation.",
-            "Use CAPS on key salient words for emphasis and flow.",
+            //            "Use CAPS on key salient words for emphasis and flow.",
             "Use varying PREFIX EMOJIS before each sentence for visual interest.",
             "Respond ONLY with the edited transcript.",
-            "If the user seems to request some change, do perform that change.",
-            "When performing a change, omit the user request from the transcript.",
           ].join(" "),
           messages: [{ role: "user", content }],
           temperature: 0.4,
@@ -443,13 +480,13 @@ const swash = system<Step>(function* (rule, sync) {
 
   let recorder: MediaRecorder | undefined
 
-  try {
-    const mediaStream = yield* call(
-      navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
-    )
+  const mediaStream = yield* call(
+    navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
+  )
 
+  try {
     const options = [
-      { mimeType: "audio/webm;codecs=opus", audioBitsPerSecond: 128000 },
+      { mimeType: "audio/webm;codecs=opus", audioBitsPerSecond: 64000 },
       { mimeType: "audio/mp4", audioBitsPerSecond: 128000 },
     ]
 
@@ -506,13 +543,88 @@ const swash = system<Step>(function* (rule, sync) {
     }
   })
 
-  return yield* spawn(function* () {
-    recorder.start(100)
+  // Create an AudioContext
+  const audioContext = new AudioContext()
 
-    for (const chunk of yield* each(on(recorder, "dataavailable"))) {
-      yield* socket.send(chunk.data)
-      yield* each.next()
+  // Create a MediaStreamAudioSourceNode from the MediaStream
+  const sourceNode = audioContext.createMediaStreamSource(mediaStream)
+
+  // Get the number of channels in the MediaStream
+  const numberOfChannels =
+    mediaStream.getAudioTracks()[0].getSettings().channelCount || 1
+
+  // Create a ScriptProcessorNode to process the audio data
+  const processorNode = audioContext.createScriptProcessor(
+    16384,
+    numberOfChannels,
+    1,
+  )
+
+  // Configure the AudioEncoder
+  const audioEncoder = new AudioEncoder({
+    output: handleEncodedPacket,
+    error: handleEncoderError,
+  })
+
+  audioEncoder.configure({
+    codec: "opus",
+    sampleRate: 48000,
+    numberOfChannels,
+    bitrate: 16000,
+    opus: {
+      application: "lowdelay",
+      signal: "voice",
+    },
+  })
+
+  sourceNode.connect(processorNode)
+  processorNode.connect(audioContext.destination)
+
+  processorNode.onaudioprocess = (event) => {
+    const numberOfFrames = event.inputBuffer.length
+    const inputBuffer = new ArrayBuffer(numberOfFrames * 4 * 1)
+    const inputView = new DataView(inputBuffer)
+
+    const inputData = event.inputBuffer.getChannelData(0)
+    for (let i = 0; i < numberOfFrames; i++) {
+      inputView.setFloat32(i * 4, inputData[i], true)
     }
+
+    audioEncoder.encode(
+      new AudioData({
+        data: inputBuffer,
+        timestamp: event.playbackTime * 1000000,
+        format: "f32",
+        numberOfChannels: 1,
+        numberOfFrames,
+        sampleRate: 48000,
+      }),
+    )
+  }
+
+  const packets = createSignal<ArrayBuffer>()
+
+  function handleEncodedPacket(encodedPacket: EncodedAudioChunk) {
+    const arrayBuffer = new ArrayBuffer(encodedPacket.byteLength)
+    encodedPacket.copyTo(arrayBuffer)
+    packets.send(arrayBuffer)
+  }
+
+  function handleEncoderError(error: Error) {
+    console.error("AudioEncoder error:", error)
+  }
+
+  return yield* spawn(function* () {
+    const packetSubscription = yield* packets
+
+    do {
+      const { done, value } = yield* packetSubscription.next()
+      if (done) {
+        break
+      }
+
+      yield* socket.send(value)
+    } while (true)
   })
 
   function* emit<T extends TagName>(tag: T, payload?: Payload<T>) {
@@ -595,7 +707,7 @@ function applyMutationQueue(queue: ((document: Document) => void)[]) {
     queue.length = 0
   }
 
-  if (document.startViewTransition) {
+  if (false && document.startViewTransition) {
     return document.startViewTransition(f).updateCallbackDone
   } else {
     f()

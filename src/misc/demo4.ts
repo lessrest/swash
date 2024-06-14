@@ -8,7 +8,7 @@ import {
   spawn,
 } from "effection"
 
-import { Sync, SyncSpec, sync, system } from "./sync2.ts"
+import { Sync, SyncSpec, sync, system } from "../sync.ts"
 
 type Rule<Sign, V = void> = Generator<Sync<Sign>, V, Sign>
 

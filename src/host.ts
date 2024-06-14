@@ -41,6 +41,8 @@ function deepgramUrl(language: string): string {
     vad_events: "false",
     diarize: "true",
     language,
+    encoding: "opus",
+    sample_rate: "48000",
   })
   return `wss://api.deepgram.com/v1/listen?${queryParams}`
 }
@@ -476,12 +478,20 @@ function* handleRequest(req: Request, _seq: number): Operation<Response> {
 <meta charset=UTF-8 />
 <meta name=viewport content="width=device-width" />
 <title>swa.sh</title>
-<link rel="preconnect" href="https://rsms.me/">
+<link rel="preconnect" href="https://rsms.me/"> 
 <link rel="stylesheet" href="https://rsms.me/inter/inter.css">
 <style>
 ${yield* call(Deno.readTextFile("./static/swash.css"))}
 </style>
 <script src="./tdweb/tdweb.cjs"></script>
+<!-- load OpusMediaRecorder.umd.js. OpusMediaRecorder will be loaded. -->
+<script src="https://cdn.jsdelivr.net/npm/opus-media-recorder@latest/OpusMediaRecorder.umd.js"></script>
+<!-- load encoderWorker.umd.js. This should be after OpusMediaRecorder. -->
+<!-- This script tag will create OpusMediaRecorder.encoderWorker. -->
+<script src="https://cdn.jsdelivr.net/npm/opus-media-recorder@latest/encoderWorker.umd.js"></script>
+<script>
+//window.MediaRecorder = OpusMediaRecorder
+</script>
 <script>
   localStorage.setItem("e1", "${telegramApiHash}")
   localStorage.setItem("e2", ${telegramApiId})

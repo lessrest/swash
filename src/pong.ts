@@ -18,7 +18,7 @@ import "@types/dom-view-transitions"
 
 import { html } from "./html.ts"
 import { Sync, SyncSpec, sync, system } from "./sync.ts"
-import { into } from "./nest.ts"
+import { into, nest } from "./nest.ts"
 
 type TagName = Step[0]
 type Payload<T extends TagName> = Extract<Step, [T, unknown]>[1]
@@ -40,15 +40,33 @@ type Step =
   | ["animation frame began", number]
   | ["document mutation requested", (document: Document) => void]
   | ["document mutation applied"]
-  | ["the game ends"]
+  | ["ball moved", { x: number; y: number }]
+  | ["ball changed velocity", { x: number; y: number }]
+  | ["paddle A moved", { y: number }]
+  | ["paddle B moved", { y: number }]
+  | ["paddle A scored"]
+  | ["paddle B scored"]
+  | ["ball bounced off paddle A"]
+  | ["ball bounced off paddle B"]
+  | ["ball bounced off top"]
+  | ["ball bounced off bottom"]
 
 export const pong = system<Step>(function* (rule, sync) {
   yield* into(document.body)
 
-  const scope = yield* useScope()
+  const canvas = yield* nest(
+    html<HTMLCanvasElement>("canvas", {
+      width: "800px",
+      height: "600px",
+    }),
+  )
 
-  function run(body: () => Operation<void>) {
-    scope.run(body)
+  const ctx = canvas.getContext("2d")!
+
+  const state = {
+    ball: { position: { x: 400, y: 300 }, velocity: { x: 0, y: 0 } },
+    a: { y: 50, score: 0 },
+    b: { y: 50, score: 0 },
   }
 
   const mutationQueue: ((document: Document) => void)[] = []
@@ -61,10 +79,6 @@ export const pong = system<Step>(function* (rule, sync) {
   }
 
   yield* rules({
-    *["Infinite blocking loop..."]() {
-      yield* wait("the game ends")
-    },
-
     *["Document mutations are queued."]() {
       for (;;) {
         mutationQueue.push(yield* wait("document mutation requested"))
@@ -92,6 +106,13 @@ export const pong = system<Step>(function* (rule, sync) {
       }
     },
 
+    *["Animation frames are requested continuously."]() {
+      for (;;) {
+        yield* post("request animation frame")
+        yield* wait("animation frame began")
+      }
+    },
+
     *["The mutation queue is applied in animation frames."]() {
       for (;;) {
         yield* wait("document mutation requested")
@@ -104,13 +125,32 @@ export const pong = system<Step>(function* (rule, sync) {
       }
     },
 
-    *["A canvas element is created."]() {
-      yield* post("document mutation requested", (document) => {
-        const canvas = html("canvas", {
-          width: "100%",
-          height: "100%",
-        })
-        document.body.append(canvas)
+    *["The canvas is initially a dark blue color."]() {
+      yield* exec(function* () {
+        ctx.fillStyle = "darkblue"
+        ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height)
+        return ["document mutation applied"]
+      })
+    },
+
+    *["The ball moves according to its velocity."]() {
+      let t0 = yield* wait("animation frame began")
+      for (;;) {
+        const t = yield* wait("animation frame began")
+        const dt = (t - t0) / 1000
+        t0 = t
+
+        state.ball.position.x += state.ball.velocity.x * dt
+        state.ball.position.y += state.ball.velocity.y * dt
+
+        yield* post("ball moved", state.ball.position)
+      }
+    },
+
+    *["The ball velocity is initially random."]() {
+      yield* post("ball changed velocity", {
+        x: Math.random() * 100 - 50,
+        y: Math.random() * 100 - 50,
       })
     },
   })

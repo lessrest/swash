@@ -24,7 +24,7 @@ export function* into(element: HTMLElement): Operation<HTMLElement> {
   return element
 }
 
-export function* nest(node: HTMLElement) {
+export function* nest<T extends HTMLElement>(node: T): Operation<T> {
   yield* grow(node)
   yield* into(node)
 
