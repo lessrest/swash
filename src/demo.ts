@@ -66,8 +66,8 @@ type Step =
   | ["animation frame began", number]
   | ["document mutation requested", (document: Document) => void]
   | ["document mutation applied"]
-  | ["phrase heard conclusively", Word[]]
-  | ["phrase heard tentatively", Word[]]
+  | ["add final phrase", Word[]]
+  | ["new interim phrase", Word[]]
   | ["known text changed", string]
   | ["shown text is now", string]
   | ["typing speed is now", number]
@@ -126,6 +126,178 @@ const swash = system<Step>(function* (rule, sync) {
       .replaceAll(/\n\s*/g, "\n")
 
   let shownText = ""
+
+  yield* rules({
+    *["The latest tentative phrase is tracked."]() {
+      for (;;) {
+        const words = yield* wait("new interim phrase")
+        tentative = wordsToText(words)
+        yield* post("known text changed")
+      }
+    },
+
+    *["The conclusive phrases are tracked."]() {
+      for (;;) {
+        const words = yield* wait("add final phrase")
+        conclusive += wordsToText(words)
+        tentative = ""
+        yield* post("known text changed")
+      }
+    },
+
+    *["The shown text is updated a letter at a time."]() {
+      for (;;) {
+        yield* wait("show one more letter")
+        shownText = knownText().slice(0, shownText.length + 1)
+        yield* post("shown text is now", shownText)
+      }
+    },
+
+    *["When the visible prefix of the known text changes, the shown text is updated."]() {
+      for (;;) {
+        yield* wait("known text changed")
+        if (knownText().slice(0, shownText.length) !== shownText) {
+          shownText = knownText().slice(0, shownText.length)
+          yield* post("shown text is now", shownText)
+        }
+      }
+    },
+
+    *["The shown text is shown in a paragraph."]() {
+      const p = html("p")
+      document.body.append(p)
+      for (;;) {
+        const text = yield* wait("shown text is now")
+        yield* post("document mutation requested", () => {
+          p.replaceChildren(html("span", {}, text))
+        })
+      }
+    },
+
+    *["The typing speed is dynamically adjusted."]() {
+      for (;;) {
+        yield sync({
+          wait: ([tag]) =>
+            tag === "known text changed" || tag === "shown text is now",
+        })
+        const lettersLeft = knownText().length - shownText.length
+        if (lettersLeft > 0) {
+          const maxSpeed = 70
+          const minSpeed = 20
+          const speedRange = maxSpeed - minSpeed
+          const progressRatio = 1 - lettersLeft / knownText().length
+          const speedFactor = progressRatio ** 2
+          const lettersPerSecond = Math.round(
+            minSpeed + speedRange * speedFactor,
+          )
+          yield* post("typing speed is now", lettersPerSecond)
+        } else {
+          yield* post("typing speed is now", 0)
+        }
+      }
+    },
+
+    *["Letters are revealed according to the typing speed."]() {
+      let interval: number | undefined = undefined
+      let speed = 0
+      for (;;) {
+        const nextSpeed = yield* wait("typing speed is now")
+        if (nextSpeed !== speed) {
+          speed = nextSpeed
+          clearInterval(interval)
+          if (nextSpeed > 0) {
+            interval = setInterval(() => {
+              run(function* () {
+                yield* emit("show one more letter")
+              })
+            }, 1000 / speed)
+          }
+        }
+      }
+    },
+  })
+
+  yield* rules({
+    *["The conclusive text is enhanced with GPT-4o."]() {
+      for (;;) {
+        yield* wait("add final phrase")
+        yield* wait("known text changed")
+
+        const lines = conclusive.split("\n")
+
+        sentences = sentences + lines.slice(0, -1).join("\n")
+        conclusive = lines.pop() || ""
+
+        if (sentences.split("\n").length < 3) {
+          continue
+        }
+
+        const image = document.querySelector("img")
+        const content: ContentPart[] = [{ type: "text", text: sentences }]
+        if (image) {
+          content.push({ type: "image_url", image_url: { url: image.src } })
+        }
+
+        yield* post("making LLM request", {
+          systemMessage: [
+            "Fix likely transcription errors.",
+            "Split run-on sentences and improve punctuation.",
+            "Use CAPS on key salient words for emphasis and flow.",
+            "Use varying EMOJIS before each sentence for visual interest.",
+            "Respond ONLY with the edited transcript.",
+            "Use em dashes liberally, for a more interesting rhythm.",
+          ].join(" "),
+          messages: [{ role: "user", content }],
+          temperature: 0.4,
+          maxTokens: 500,
+        })
+      }
+    },
+
+    *["LLM requests are made serially using GPT-4o."]() {
+      for (;;) {
+        const request = yield* wait("making LLM request")
+        yield* exec(
+          function* () {
+            const response = yield* think(gpt4o, request)
+            yield* emit("LLM starting for", sentences)
+            for (;;) {
+              const { value, done } = yield* response.next()
+              if (done) {
+                return ["LLM done"]
+              }
+              yield* emit("LLM text", value.content as string)
+            }
+          },
+          { halt: ([tag]) => tag === "making LLM request" },
+        )
+      }
+    },
+
+    *["LLM text is used to update the known text."]() {
+      for (;;) {
+        const orig = yield* wait("LLM starting for")
+        let llm = ""
+
+        for (;;) {
+          const p = yield sync({
+            wait: ([tag]) => tag === "LLM text" || tag === "LLM done",
+          })
+          if (p[0] === "LLM done") {
+            break
+          } else if (p[0] === "LLM text") {
+            llm += p[1].replaceAll(/([.!?])\s*/g, "$1\n")
+            sentences = (llm + orig.slice(llm.length)).trim()
+
+            yield* post("known text changed")
+          }
+        }
+
+        sentences = llm
+        yield* post("known text changed")
+      }
+    },
+  })
 
   yield* rules({
     *["Document mutations are queued."]() {
@@ -228,26 +400,26 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
 
-    // *["Request an image when the user says 'Look here'."]() {
-    //   for (;;) {
-    //     yield* wait(
-    //       "phrase heard conclusively",
-    //       (words) => wordsToText(words).trim() === "Look here.",
-    //     )
-    //     yield* post("request video image")
-    //   }
-    // },
+    *["Request an image when the user says 'Look here'."]() {
+      for (;;) {
+        yield* wait(
+          "add final phrase",
+          (words) => wordsToText(words).trim() === "Look here.",
+        )
+        yield* post("request video image")
+      }
+    },
 
-    // *["Images are captured regularly."]() {
-    //   yield* wait("video started")
-    //   yield* post("request video image")
-    //   for (;;) {
-    //     yield* exec(function* () {
-    //       yield* sleep(1000)
-    //       return ["request video image"]
-    //     })
-    //   }
-    // },
+    *["Images are captured regularly."]() {
+      yield* wait("video started")
+      yield* post("request video image")
+      for (;;) {
+        yield* exec(function* () {
+          yield* sleep(1000)
+          return ["request video image"]
+        })
+      }
+    },
 
     *["Captured images are shown."]() {
       for (;;) {
@@ -266,191 +438,6 @@ const swash = system<Step>(function* (rule, sync) {
           body.querySelectorAll("img").forEach((x) => x.remove())
           body.prepend(img)
         })
-      }
-    },
-
-    // *["Send images to GPT-4o."]() {
-    //   for (;;) {
-    //     const imageData = yield* wait("captured video image")
-    //     yield* post("making LLM request", {
-    //       systemMessage: "Generate a caption for this image.",
-    //       messages: [
-    //         {
-    //           role: "user",
-    //           content: [{ type: "image_url", image_url: { url: imageData } }],
-    //         },
-    //       ],
-    //       temperature: 0.4,
-    //       maxTokens: 200,
-    //     })
-    //   }
-    // },
-
-    *["The latest tentative phrase is tracked."]() {
-      for (;;) {
-        const words = yield* wait("phrase heard tentatively")
-        tentative = wordsToText(words)
-        yield* post("known text changed")
-      }
-    },
-
-    *["The conclusive phrases are tracked."]() {
-      for (;;) {
-        const words = yield* wait("phrase heard conclusively")
-        conclusive += wordsToText(words)
-        tentative = ""
-        yield* post("known text changed")
-      }
-    },
-
-    *["The shown text is updated a letter at a time."]() {
-      for (;;) {
-        yield* wait("show one more letter")
-        shownText = knownText().slice(0, shownText.length + 1)
-        yield* post("shown text is now", shownText)
-      }
-    },
-
-    *["When the visible prefix of the known text changes, the shown text is updated."]() {
-      for (;;) {
-        yield* wait("known text changed")
-        if (knownText().slice(0, shownText.length) !== shownText) {
-          shownText = knownText().slice(0, shownText.length)
-          yield* post("shown text is now", shownText)
-        }
-      }
-    },
-
-    *["The shown text is shown in a paragraph."]() {
-      const p = html("p")
-      document.body.append(p)
-      for (;;) {
-        const text = yield* wait("shown text is now")
-        yield* post("document mutation requested", () => {
-          p.replaceChildren(html("span", {}, text))
-        })
-      }
-    },
-
-    *["The typing speed is dynamically adjusted."]() {
-      for (;;) {
-        yield sync({
-          wait: ([tag]) =>
-            tag === "known text changed" || tag === "shown text is now",
-        })
-        const lettersLeft = knownText().length - shownText.length
-        if (lettersLeft > 0) {
-          const maxSpeed = 70
-          const minSpeed = 20
-          const speedRange = maxSpeed - minSpeed
-          const progressRatio = 1 - lettersLeft / knownText().length
-          const speedFactor = progressRatio ** 2
-          const lettersPerSecond = Math.round(
-            minSpeed + speedRange * speedFactor,
-          )
-          yield* post("typing speed is now", lettersPerSecond)
-        } else {
-          yield* post("typing speed is now", 0)
-        }
-      }
-    },
-
-    *["Letters are revealed according to the typing speed."]() {
-      let interval: number | undefined = undefined
-      let speed = 0
-      for (;;) {
-        const nextSpeed = yield* wait("typing speed is now")
-        if (nextSpeed !== speed) {
-          speed = nextSpeed
-          clearInterval(interval)
-          if (nextSpeed > 0) {
-            interval = setInterval(() => {
-              run(function* () {
-                yield* emit("show one more letter")
-              })
-            }, 1000 / speed)
-          }
-        }
-      }
-    },
-
-    *["The conclusive text is enhanced with GPT-4o."]() {
-      for (;;) {
-        yield* wait("phrase heard conclusively")
-        yield* wait("known text changed")
-
-        const lines = conclusive.split("\n")
-
-        sentences = sentences + lines.slice(0, -1).join("\n")
-        conclusive = lines.pop() || ""
-
-        if (sentences.split("\n").length < 3) {
-          continue
-        }
-
-        const image = document.querySelector("img")
-        const content: ContentPart[] = [{ type: "text", text: sentences }]
-        if (image) {
-          content.push({ type: "image_url", image_url: { url: image.src } })
-        }
-
-        yield* post("making LLM request", {
-          systemMessage: [
-            "Fix likely transcription errors.",
-            "Split run-on sentences and improve punctuation.",
-            "Use CAPS on key salient words for emphasis and flow.",
-            "Use varying EMOJIS before each sentence for visual interest.",
-            "Respond ONLY with the edited transcript.",
-            "Use em dashes liberally, for a more interesting rhythm.",
-          ].join(" "),
-          messages: [{ role: "user", content }],
-          temperature: 0.4,
-          maxTokens: 500,
-        })
-      }
-    },
-
-    *["LLM requests are made serially using GPT-4o."]() {
-      for (;;) {
-        const request = yield* wait("making LLM request")
-        yield* exec(
-          function* () {
-            const response = yield* think(gpt4o, request)
-            yield* emit("LLM starting for", sentences)
-            for (;;) {
-              const { value, done } = yield* response.next()
-              if (done) {
-                return ["LLM done"]
-              }
-              yield* emit("LLM text", value.content as string)
-            }
-          },
-          { halt: ([tag]) => tag === "making LLM request" },
-        )
-      }
-    },
-
-    *["LLM text is used to update the known text."]() {
-      for (;;) {
-        const orig = yield* wait("LLM starting for")
-        let llm = ""
-
-        for (;;) {
-          const p = yield sync({
-            wait: ([tag]) => tag === "LLM text" || tag === "LLM done",
-          })
-          if (p[0] === "LLM done") {
-            break
-          } else if (p[0] === "LLM text") {
-            llm += p[1].replaceAll(/([.!?])\s*/g, "$1\n")
-            sentences = (llm + orig.slice(llm.length)).trim()
-
-            yield* post("known text changed")
-          }
-        }
-
-        sentences = llm
-        yield* post("known text changed")
       }
     },
   })
@@ -479,9 +466,9 @@ const swash = system<Step>(function* (rule, sync) {
           if (channel && channel.alternatives[0].transcript) {
             const { words } = channel.alternatives[0]
             if (is_final) {
-              yield* emit("phrase heard conclusively", words)
+              yield* emit("add final phrase", words)
             } else {
-              yield* emit("phrase heard tentatively", words)
+              yield* emit("new interim phrase", words)
             }
           }
         }
@@ -620,23 +607,6 @@ const DeepgramResultSchema = z.object({
 type DeepgramResult = z.infer<typeof DeepgramResultSchema>
 type Word = DeepgramResult["channel"]["alternatives"][0]["words"][0]
 
-export const useAnimationFrames: Stream<number, never> = resource(function* (
-  provide,
-) {
-  const signal = createSignal<number, never>()
-  let id = 0
-  const callback: FrameRequestCallback = (timestamp) => {
-    signal.send(timestamp)
-    id = requestAnimationFrame(callback)
-  }
-  id = requestAnimationFrame(callback)
-  try {
-    yield* provide(yield* signal)
-  } finally {
-    cancelAnimationFrame(id)
-  }
-})
-
 function applyMutationQueue(queue: ((document: Document) => void)[]) {
   const f = () => {
     for (const thunk of queue) {
@@ -645,7 +615,7 @@ function applyMutationQueue(queue: ((document: Document) => void)[]) {
     queue.length = 0
   }
 
-  if (false && document.startViewTransition) {
+  if (document.startViewTransition) {
     return document.startViewTransition(f).updateCallbackDone
   } else {
     f()
