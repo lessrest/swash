@@ -33,7 +33,29 @@ import { into } from "./nest.ts"
 
 import { pong } from "./pong.ts"
 
-//import "@types/dom-webcodecs"
+declare global {
+  interface AudioEncoderConfig {
+    opus?: OpusEncoderConfig
+  }
+
+  interface OpusEncoderConfig {
+    format?: "opus" | "ogg"
+    signal?: "auto" | "music" | "voice"
+    application?: "voip" | "audio" | "lowdelay"
+    frameDuration?: number
+    /**
+     * Encoder complexity (0-10). 10 is highest.
+     * Default: 5 on mobile, 9 on other platforms.
+     */
+    complexity?: number
+    /** Configures the encoder's expected packet loss percentage (0 to 100). */
+    packetlossperc?: number
+    /** Enables Opus in-band Forward Error Correction (FEC) */
+    useinbandfec?: boolean
+    /** Enables Discontinuous Transmission (DTX) */
+    usedtx?: boolean
+  }
+}
 
 type TagName = Step[0]
 type Payload<T extends TagName> = Extract<Step, [T, unknown]>[1]
@@ -373,15 +395,13 @@ const swash = system<Step>(function* (rule, sync) {
     },
 
     *["The video stream is shown."]() {
-      if (false) {
-        const video = html<HTMLVideoElement>("video", {
-          srcObject: yield* wait("acquired video stream"),
-          controls: false,
-        })
-        document.body.append(video)
-        video.play()
-        yield* post("video started")
-      }
+      const video = html<HTMLVideoElement>("video", {
+        srcObject: yield* wait("acquired video stream"),
+        controls: false,
+      })
+      document.body.append(video)
+      video.play()
+      yield* post("video started")
     },
 
     *["Capture video images on request."]() {
@@ -499,76 +519,18 @@ const swash = system<Step>(function* (rule, sync) {
     }
   })
 
-  const audioContext = new AudioContext()
-  const sourceNode = audioContext.createMediaStreamSource(mediaStream)
-  const numberOfChannels =
-    mediaStream.getAudioTracks()[0].getSettings().channelCount || 1
-  const processorNode = audioContext.createScriptProcessor(
-    16384,
-    numberOfChannels,
-    1,
-  )
-
   const packets = createSignal<ArrayBuffer>()
-
-  const audioEncoder = new AudioEncoder({
-    output: (encodedPacket: EncodedAudioChunk) => {
-      const arrayBuffer = new ArrayBuffer(encodedPacket.byteLength)
-      encodedPacket.copyTo(arrayBuffer)
-      packets.send(arrayBuffer)
-    },
-    error: (error: Error) => {
-      console.error("AudioEncoder error:", error)
-    },
-  })
-
-  audioEncoder.configure({
-    codec: "opus",
-    sampleRate: 48000,
-    numberOfChannels,
-    bitrate: 16000,
-    opus: {
-      application: "lowdelay",
-      signal: "voice",
-    },
-  })
-
-  sourceNode.connect(processorNode)
-  processorNode.connect(audioContext.destination)
-
-  processorNode.onaudioprocess = (event) => {
-    const numberOfFrames = event.inputBuffer.length
-    const inputBuffer = new ArrayBuffer(numberOfFrames * 4 * 1)
-    const inputView = new DataView(inputBuffer)
-
-    const inputData = event.inputBuffer.getChannelData(0)
-    for (let i = 0; i < numberOfFrames; i++) {
-      inputView.setFloat32(i * 4, inputData[i], true)
-    }
-
-    audioEncoder.encode(
-      new AudioData({
-        data: inputBuffer,
-        timestamp: event.playbackTime * 1000000,
-        format: "f32",
-        numberOfChannels: 1,
-        numberOfFrames,
-        sampleRate: 48000,
-      }),
-    )
+  const onPacket = (packet: ArrayBuffer) => {
+    packets.send(packet)
   }
 
+  recordAudioPackets(mediaStream, onPacket)
+
   return yield* spawn(function* () {
-    const packetSubscription = yield* packets
-
-    do {
-      const { done, value } = yield* packetSubscription.next()
-      if (done) {
-        break
-      }
-
-      yield* socket.send(value)
-    } while (true)
+    for (const packet of yield* each(packets)) {
+      yield* socket.send(packet)
+      yield* each.next()
+    }
   })
 
   function* emit<T extends TagName>(tag: T, payload?: Payload<T>) {
@@ -587,10 +549,6 @@ const swash = system<Step>(function* (rule, sync) {
     for (const [name, ruleBody] of Object.entries(rules)) {
       yield* rule(name, ruleBody)
     }
-  }
-
-  function _byTag<T extends TagName>(tag: T) {
-    return (x: Step) => x[0] === tag
   }
 })
 
@@ -625,6 +583,74 @@ const DeepgramResultSchema = z.object({
 
 type DeepgramResult = z.infer<typeof DeepgramResultSchema>
 type Word = DeepgramResult["channel"]["alternatives"][0]["words"][0]
+
+function* recordAudioPackets(
+  mediaStream: MediaStream,
+  onPacket: (packet: ArrayBuffer) => void,
+) {
+  const audioContext = new AudioContext()
+  const sourceNode = audioContext.createMediaStreamSource(mediaStream)
+  const numberOfChannels =
+    mediaStream.getAudioTracks()[0].getSettings().channelCount || 1
+  const processorNode = audioContext.createScriptProcessor(
+    16384,
+    numberOfChannels,
+    1,
+  )
+
+  const audioEncoder = new AudioEncoder({
+    output: (encodedPacket: EncodedAudioChunk) => {
+      const arrayBuffer = new ArrayBuffer(encodedPacket.byteLength)
+      encodedPacket.copyTo(arrayBuffer)
+      onPacket(arrayBuffer)
+    },
+    error: (error: Error) => {
+      console.error("AudioEncoder error:", error)
+    },
+  })
+
+  audioEncoder.configure({
+    codec: "opus",
+    sampleRate: 48000,
+    numberOfChannels,
+    bitrate: 16000,
+    opus: {
+      application: "lowdelay",
+      signal: "voice",
+    },
+  })
+
+  sourceNode.connect(processorNode)
+  processorNode.connect(audioContext.destination)
+
+  try {
+    for (const event of yield* each(on(processorNode, "audioprocess"))) {
+      const numberOfFrames = event.inputBuffer.length
+      const inputBuffer = new ArrayBuffer(numberOfFrames * 4 * 1)
+      const inputView = new DataView(inputBuffer)
+
+      const inputData = event.inputBuffer.getChannelData(0)
+      for (let i = 0; i < numberOfFrames; i++) {
+        inputView.setFloat32(i * 4, inputData[i], true)
+      }
+
+      audioEncoder.encode(
+        new AudioData({
+          data: inputBuffer,
+          timestamp: event.playbackTime * 1000000,
+          format: "f32",
+          numberOfChannels: 1,
+          numberOfFrames,
+          sampleRate: 48000,
+        }),
+      )
+    }
+  } finally {
+    audioEncoder.close()
+    processorNode.disconnect()
+    sourceNode.disconnect()
+  }
+}
 
 function applyMutationQueue(queue: ((document: Document) => void)[]) {
   const f = () => {

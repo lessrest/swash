@@ -6,6 +6,7 @@
       "dom.asynciterable",
       "deno.ns",
       "deno.unstable"
-    ]
+    ],
+    "types": ["https://esm.sh/@types/dom-webcodecs/index.d.ts"]
   }
 }
