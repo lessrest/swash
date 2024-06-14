@@ -73,7 +73,7 @@ func saveToken(path string, token *oauth2.Token) {
 
 func main() {
 	ctx := context.Background()
-	b, err := os.ReadFile("credentials2.json")
+	b, err := os.ReadFile("credentials.json")
 	if err != nil {
 		log.Fatalf("Unable to read client secret file: %v", err)
 	}
