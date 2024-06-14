@@ -32,6 +32,7 @@ import {
 import { into } from "./nest.ts"
 
 import { pong } from "./pong.ts"
+import { graphemesOf } from "./text.ts"
 
 declare global {
   interface AudioEncoderConfig {
@@ -147,10 +148,7 @@ const swash = system<Step>(function* (rule, sync) {
       wordsToText(tentative),
     ]
       .join(" ")
-      // remove consecutive newlines
       .replaceAll(/\n\s*/g, "\n")
-
-  let shownText = ""
 
   yield* rules({
     *["The latest tentative phrase is tracked."]() {
@@ -170,74 +168,14 @@ const swash = system<Step>(function* (rule, sync) {
       }
     },
 
-    *["The shown text is updated a letter at a time."]() {
-      for (;;) {
-        yield* wait("show one more letter")
-        shownText = knownText().slice(0, shownText.length + 1)
-        yield* post("shown text is now", shownText)
-      }
-    },
-
-    *["When the visible prefix of the known text changes, the shown text is updated."]() {
-      for (;;) {
-        yield* wait("known text changed")
-        if (knownText().slice(0, shownText.length) !== shownText) {
-          shownText = knownText().slice(0, shownText.length)
-          yield* post("shown text is now", shownText)
-        }
-      }
-    },
-
     *["The shown text is shown in a paragraph."]() {
       const p = html("p")
-      document.body.append(p)
+      document.body.append(html("type-writer", {}, p))
       for (;;) {
-        const text = yield* wait("shown text is now")
+        yield* wait("known text changed")
         yield* post("document mutation requested", () => {
-          p.replaceChildren(html("span", {}, text))
+          p.replaceChildren(html("span", {}, knownText()))
         })
-      }
-    },
-
-    *["The typing speed is dynamically adjusted."]() {
-      for (;;) {
-        yield sync({
-          wait: ([tag]) =>
-            tag === "known text changed" || tag === "shown text is now",
-        })
-        const lettersLeft = knownText().length - shownText.length
-        if (lettersLeft > 0) {
-          const maxSpeed = 70
-          const minSpeed = 20
-          const speedRange = maxSpeed - minSpeed
-          const progressRatio = 1 - lettersLeft / knownText().length
-          const speedFactor = progressRatio ** 2
-          const lettersPerSecond = Math.round(
-            minSpeed + speedRange * speedFactor,
-          )
-          yield* post("typing speed is now", lettersPerSecond)
-        } else {
-          yield* post("typing speed is now", 0)
-        }
-      }
-    },
-
-    *["Letters are revealed according to the typing speed."]() {
-      let interval: number | undefined = undefined
-      let speed = 0
-      for (;;) {
-        const nextSpeed = yield* wait("typing speed is now")
-        if (nextSpeed !== speed) {
-          speed = nextSpeed
-          clearInterval(interval)
-          if (nextSpeed > 0) {
-            interval = setInterval(() => {
-              run(function* () {
-                yield* emit("show one more letter")
-              })
-            }, 1000 / speed)
-          }
-        }
       }
     },
   })
@@ -261,6 +199,7 @@ const swash = system<Step>(function* (rule, sync) {
 
           conclusive = sentence
           sentences = [...sentences, ...newSentences]
+          yield* post("known text changed")
         }
 
         if (sentences.length < 3) {
@@ -280,7 +219,7 @@ const swash = system<Step>(function* (rule, sync) {
           systemMessage: [
             "Fix likely transcription errors.",
             "Split run-on sentences and improve punctuation.",
-            "Use CAPS on key salient words for emphasis and flow.",
+            "Use CAPS where a speaker would put stress.",
             "Use varying EMOJIS before each sentence for visual interest.",
             "Respond ONLY with the edited transcript.",
             "Use em dashes liberally, for a more interesting rhythm.",
@@ -327,7 +266,6 @@ const swash = system<Step>(function* (rule, sync) {
             break
           } else if (tag === "LLM text") {
             llm += payload
-            // yield* post("known text changed")
           }
         }
 
@@ -684,3 +622,135 @@ function applyMutationQueue(queue: ((document: Document) => void)[]) {
     return Promise.resolve()
   }
 }
+
+function updateSuffixRange(range: Range, root: Node, limit: number) {
+  console.log(limit)
+  let node: Text | null = null
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  while (walker.nextNode()) {
+    node = walker.currentNode as Text
+
+    if (node instanceof Text) {
+      const graphemes = node.data.slice(0, limit)
+      limit = Math.max(0, limit - graphemes.length)
+      if (limit === 0) {
+        range.setStart(node, graphemes.length)
+        break
+      }
+    }
+  }
+
+  if (limit !== 0) range.setStart(root, 0)
+
+  range.setEndAfter(root)
+
+  return range
+}
+
+function textContents(node: Node): string {
+  const range = new Range()
+  range.setStart(node, 0)
+  range.setEndAfter(node)
+  return range.toString()
+}
+
+class TypeWriter extends HTMLElement {
+  range = new Range()
+  observer = new MutationObserver(() => {
+    this.update()
+    if (!this.timeout) this.proceed()
+  })
+
+  timeout: number | undefined
+  limit = 0
+
+  connectedCallback() {
+    this.range.setStart(this, 0)
+    this.range.setEndAfter(this)
+
+    const highlight = CSS.highlights.get("hidden") ?? new Highlight()
+    CSS.highlights.set("hidden", highlight)
+    highlight.add(this.range)
+    this.observer.observe(this, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    })
+
+    this.proceed()
+  }
+
+  disconnectedCallback() {
+    this.observer.disconnect()
+    const highlight = CSS.highlights.get("hidden")
+    if (highlight) {
+      highlight.delete(this.range)
+    }
+    clearTimeout(this.timeout)
+  }
+
+  update() {
+    updateSuffixRange(this.range, this, this.limit)
+  }
+
+  proceed() {
+    const knownText = textContents(this)
+    const hiddenText = this.range.toString()
+    const lettersLeft = hiddenText.length
+
+    if (lettersLeft > 0) {
+      const { maxSpeed, minSpeed } = { maxSpeed: 80, minSpeed: 30 }
+      const speedRange = maxSpeed - minSpeed
+      const speedFactor = 1 - lettersLeft / knownText.length
+      const lettersPerSecond = Math.round(
+        minSpeed + speedRange * speedFactor ** 2,
+      )
+      this.limit = Math.min(this.limit + 1, knownText.length)
+      this.update()
+      const grapheme = hiddenText[0]
+      const delay = delayForGrapheme(grapheme, 1000 / lettersPerSecond)
+      this.timeout = setTimeout(() => this.proceed(), delay)
+    } else {
+      this.timeout = void 0
+    }
+
+    function delayForGrapheme(grapheme: string, baseDelay: number) {
+      const factors: Record<string, number> = {
+        " ": 3,
+        "–": 7,
+        ",": 8,
+        ";": 8,
+        ":": 9,
+        ".": 10,
+        "—": 12,
+        "!": 15,
+        "?": 15,
+        "\n": 20,
+      }
+      return baseDelay * (factors[grapheme] ?? 1) * 0.8
+    }
+  }
+}
+
+customElements.define("type-writer", TypeWriter)
+
+document.addEventListener("DOMContentLoaded", () => {
+  document.body.append(
+    html("style", {}, `::highlight(hidden) { color: transparent }`),
+  )
+  const poem = html(
+    "type-writer",
+    {},
+    html(
+      "p",
+      {},
+      `
+    Two roads diverged in a wood, and I—
+    I took the one less traveled by,
+    And that has made all the difference.
+  `,
+    ),
+  )
+  //  document.body.append(poem)
+})

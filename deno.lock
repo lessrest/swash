@@ -137,6 +137,8 @@
   "redirects": {
     "https://deno.land/x/deno_dom/deno-dom-wasm.ts": "https://deno.land/x/deno_dom@v0.1.45/deno-dom-wasm.ts",
     "https://deno.land/x/emit/mod.ts": "https://deno.land/x/emit@0.40.0/mod.ts",
+    "https://esm.sh/@types/dom-webcodecs/index.d.ts": "https://esm.sh/@types/dom-webcodecs@0.1.11/index.d.ts",
+    "https://esm.sh/@types/dom-webcodecs@0.1.11/index.d.ts": "https://esm.sh/v135/@types/dom-webcodecs@0.1.11/index.d.ts",
     "https://esm.sh/v135/@types/he@~1.2/index.d.ts": "https://esm.sh/v135/@types/he@1.2.3/index.d.ts",
     "https://esm.sh/v135/@types/marked@~4.0/index.d.ts": "https://esm.sh/v135/@types/marked@4.0.8/index.d.ts",
     "https://esm.sh/v135/@types/prismjs@~1/index.d.ts": "https://esm.sh/v135/@types/prismjs@1.26.3/index.d.ts",

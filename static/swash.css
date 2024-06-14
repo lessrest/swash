@@ -6,16 +6,21 @@
 }
 
 body {
-  font-family: "graphik", "big caslon", "berkeley mono", "Graphik", sans-serif;
+  font-family: "dm sans", "big caslon", "berkeley mono", "Graphik", sans-serif;
   font-optical-sizing: auto;
-  background-color: black;
-  color: #ffc;
   transition: border-color 0.5s ease-in, color 0.5s ease-in;
-  border: 8px solid rgb(186, 63, 19);
+  border-left: 8px solid rgb(186, 63, 19);
   min-height: 100vh;
   padding: 0.75rem 0.75rem 0.75rem 0.75rem;
   font-size: 20px;
   line-height: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: black;
+    color: #ffc;
+  }
 }
 
 body:not(.ok) {
