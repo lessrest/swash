@@ -95,6 +95,7 @@ const swash = system<Step>(function* (rule, sync) {
 
   const documentMutations: ((document: Document) => void)[] = []
 
+  let glaciers: Word[][] = []
   let sentences: Word[][] = []
   let conclusive: Word[] = []
   let tentative: Word[] = []
@@ -104,7 +105,12 @@ const swash = system<Step>(function* (rule, sync) {
   }
 
   function render() {
-    return [...sentences.flat(), ...conclusive, ...tentative].map((word) =>
+    return [
+      ...glaciers.flat(),
+      ...sentences.flat(),
+      ...conclusive,
+      ...tentative,
+    ].map((word) =>
       html(
         "span",
         {
@@ -174,14 +180,26 @@ const swash = system<Step>(function* (rule, sync) {
           yield* post("known text changed")
         }
 
-        if (sentences.length < 3) {
+        if (glaciers.length + sentences.length < 2) {
           // prevent hallucination by waiting for more sentences
           continue
         }
 
         const image = document.querySelector("img")
         const content: ContentPart[] = [
-          { type: "text", text: sentences.map(wordsToText).join("\n") },
+          {
+            type: "text",
+            text: [
+              "[begin old transcripts]",
+              glaciers.slice(-3, -1).map(wordsToText).join("\n"),
+              "[end old transcripts]",
+              "[begin new sentences]",
+              sentences.map(wordsToText).join("\n"),
+              "[end new sentences]",
+              "Task: reply with only the reformatted NEW sentences.",
+              "They will be replaced. (Don't include any of the old sentences.)",
+            ].join("\n"),
+          },
         ]
         if (image) {
           content.push({ type: "image_url", image_url: { url: image.src } })
@@ -189,15 +207,17 @@ const swash = system<Step>(function* (rule, sync) {
 
         yield* post("LLM request", {
           systemMessage: [
-            "Fix likely transcription errors.",
-            "Split run-on sentences and improve punctuation.",
-            "Use CAPS where a speaker would put stress.",
-            "Use varying EMOJIS before each sentence for visual interest.",
-            "Respond ONLY with the edited transcript.",
+            "Fix likely transcription errors in the NEW sentences.",
+            "Split run-on sentences, improve punctuation, omit nervous repetitive filler, etc.",
+            "Use CAPS where a speaker would put stress or emphasis.",
+            "Use varying EMOJIS before each sentence, with spaces around—for visual interest.",
+            "Respond ONLY with the edited new sentences.",
             "Use em dashes liberally, for a more interesting rhythm.",
+            "You may also use parentheses and other punctuation to clarify.",
+            "Only respond with the edited new sentences.",
           ].join(" "),
           messages: [{ role: "user", content }],
-          temperature: 0.4,
+          temperature: 0.7,
           maxTokens: 500,
         })
 
@@ -256,7 +276,8 @@ const swash = system<Step>(function* (rule, sync) {
             })),
           )
 
-        sentences = [...llmSentences, ...sentences.slice(orig.length)]
+        sentences = sentences.slice(orig.length)
+        glaciers = [...glaciers, ...llmSentences]
 
         yield* post("known text changed")
       }
