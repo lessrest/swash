@@ -14,6 +14,7 @@ func main() {
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(googleCmd)
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(cmd.ListStreamsCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)

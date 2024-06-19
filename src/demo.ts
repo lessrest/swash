@@ -606,7 +606,6 @@ export function* recordAudioPackets(
     codec: "opus",
     sampleRate: 48000,
     numberOfChannels: 1,
-    bitrate: 12000,
     opus: {
       application: "lowdelay",
       signal: "voice",
