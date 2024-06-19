@@ -4,8 +4,7 @@ import (
 	"database/sql"
 	_ "embed"
 	"log"
-	"os"
-	"path/filepath"
+	"github.com/adrg/xdg"
 
 	_ "github.com/mattn/go-sqlite3"
 )
