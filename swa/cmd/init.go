@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"database/sql"
+	"io/ioutil"
 	"log"
+	"path/filepath"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -14,22 +16,13 @@ func InitDB() {
 	}
 	defer db.Close()
 
-	_, err = db.Exec(`
-        CREATE TABLE IF NOT EXISTS media_clips (
-            id INTEGER PRIMARY KEY,
-            start_time DATETIME,
-            end_time DATETIME,
-            sample_rate INTEGER
-        );
-        
-        CREATE TABLE IF NOT EXISTS opus_frames (
-            id INTEGER PRIMARY KEY,
-            media_clip_id INTEGER,
-            sequence_num INTEGER,
-            compressed_audio BLOB,
-            FOREIGN KEY (media_clip_id) REFERENCES media_clips (id)
-        );
-    `)
+	schemaPath := filepath.Join("swa", "cmd", "schema.sql")
+	schema, err := ioutil.ReadFile(schemaPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = db.Exec(string(schema))
 	if err != nil {
 		log.Fatal(err)
 	}
