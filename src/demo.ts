@@ -29,7 +29,6 @@ import {
 import { into } from "./nest.ts"
 
 import "./TypeWriter.ts"
-import { recordAudioPackets } from "./opus.ts"
 
 document.addEventListener("DOMContentLoaded", async function () {
   await main(() => swash)
@@ -191,9 +190,9 @@ const swash = system<Step>(function* (rule, sync) {
           {
             type: "text",
             text: [
-              "[begin old transcripts]",
-              glaciers.slice(-3, -1).map(wordsToText).join("\n"),
-              "[end old transcripts]",
+              // "[begin old transcripts]",
+              // glaciers.slice(-3, -1).map(wordsToText).join("\n"),
+              // "[end old transcripts]",
               "[begin new sentences]",
               sentences.map(wordsToText).join("\n"),
               "[end new sentences]",
