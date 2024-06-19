@@ -85,11 +85,6 @@ func forwardMessages(from, to *websocket.Conn) {
 	}
 }
 
-import (
-	"net/http"
-	"strings"
-)
-
 func handleWhisperDeepgram(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		http.Error(w, "No file uploaded", http.StatusBadRequest)
