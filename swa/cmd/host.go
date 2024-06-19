@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,11 +16,9 @@ import (
 )
 
 var (
-	deepgramAPIKey   = os.Getenv("DEEPGRAM_API_KEY")
-	openaiAPIKey     = os.Getenv("OPENAI_API_KEY")
-	anthropicAPIKey  = os.Getenv("ANTHROPIC_API_KEY")
-	telegramAPIID, _ = strconv.Atoi(os.Getenv("TELEGRAM_API_ID"))
-	telegramAPIHash  = os.Getenv("TELEGRAM_API_HASH")
+	deepgramAPIKey  = os.Getenv("DEEPGRAM_API_KEY")
+	openaiAPIKey    = os.Getenv("OPENAI_API_KEY")
+	anthropicAPIKey = os.Getenv("ANTHROPIC_API_KEY")
 )
 
 func deepgramURL(language string) string {
