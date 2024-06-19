@@ -2,9 +2,8 @@ package cmd
 
 import (
 	"database/sql"
-	"io/ioutil"
+	_ "embed"
 	"log"
-	"path/filepath"
 
 	_ "github.com/mattn/go-sqlite3"
 )
