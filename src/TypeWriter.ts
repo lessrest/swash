@@ -1,23 +1,25 @@
-import { html } from "./html.ts"
-
 class TypeWriter extends HTMLElement {
   limit = 0
-  range = new Range()
+  blind = new Range()
   timer?: number
-  snitch = new MutationObserver(() => {
+  scout = new MutationObserver(() => {
     this.update()
     if (!this.timer) this.proceed()
   })
 
   connectedCallback() {
-    this.range.selectNodeContents(this)
+    const css = new CSSStyleSheet()
+    css.replaceSync(`::highlight(transparent) { color: transparent }`)
+    document.adoptedStyleSheets.push(css)
+
+    this.blind.selectNodeContents(this)
 
     CSS.highlights.set(
-      "hidden",
-      (CSS.highlights.get("hidden") ?? new Highlight()).add(this.range),
+      "transparent",
+      (CSS.highlights.get("transparent") ?? new Highlight()).add(this.blind),
     )
 
-    this.snitch.observe(this, {
+    this.scout.observe(this, {
       childList: true,
       subtree: true,
       characterData: true,
@@ -27,8 +29,8 @@ class TypeWriter extends HTMLElement {
   }
 
   disconnectedCallback() {
-    this.snitch.disconnect()
-    CSS.highlights.get("hidden")?.delete(this.range)
+    this.scout.disconnect()
+    CSS.highlights.get("transparent")?.delete(this.blind)
     clearTimeout(this.timer)
   }
 
@@ -42,19 +44,18 @@ class TypeWriter extends HTMLElement {
       const { length } = node.data.slice(0, limit)
       limit -= length
       if (limit <= 0) {
-        this.range.setStart(node, length)
+        this.blind.setStart(node, length)
         break
       }
     }
 
-    if (limit > 0) this.range.setStart(this, 0)
+    if (limit > 0) this.blind.setStart(this, 0)
 
-    this.range.setEndAfter(this)
+    this.blind.setEndAfter(this)
   }
 
   proceed() {
-    console.log({ range: this.range.toString(), inner: this.innerText })
-    if (this.range.toString().trim() === "") {
+    if (this.blind.toString().trim() === "") {
       this.timer = undefined
       return
     }
@@ -62,7 +63,7 @@ class TypeWriter extends HTMLElement {
     this.limit = Math.min(this.limit + 1, this.innerText.length)
     this.update()
 
-    const delay = adjustSpeed(this.innerText.length, this.range.toString())
+    const delay = adjustSpeed(this.innerText.length, this.blind.toString())
     this.timer = setTimeout(() => this.proceed(), 1000 / delay)
   }
 }
@@ -93,9 +94,5 @@ function adjustSpeed(length: number, suffix: string) {
     return baseDelay * (factors[grapheme] ?? 1) * 0.8
   }
 }
+
 customElements.define("type-writer", TypeWriter)
-document.addEventListener("DOMContentLoaded", () => {
-  document.body.append(
-    html("style", {}, `::highlight(hidden) { color: transparent }`),
-  )
-})

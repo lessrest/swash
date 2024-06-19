@@ -29,6 +29,7 @@ import {
 import { into } from "./nest.ts"
 
 import "./TypeWriter.ts"
+import { recordAudioPackets } from "./opus.ts"
 
 document.addEventListener("DOMContentLoaded", async function () {
   await main(() => swash)
@@ -505,76 +506,6 @@ const DeepgramResultSchema = z.object({
 type DeepgramResult = z.infer<typeof DeepgramResultSchema>
 type Word = DeepgramResult["channel"]["alternatives"][0]["words"][0]
 
-function* recordAudioPackets(
-  mediaStream: MediaStream,
-  onPacket: (packet: ArrayBuffer) => void,
-) {
-  const audioContext = new AudioContext()
-  const sourceNode = audioContext.createMediaStreamSource(mediaStream)
-  const streamChannels = mediaStream.getAudioTracks()[0].getSettings()
-    .channelCount!
-  const processor = audioContext.createScriptProcessor(
-    16384,
-    streamChannels,
-    1,
-  )
-
-  const audioEncoder = new AudioEncoder({
-    output: (encodedPacket: EncodedAudioChunk) => {
-      const arrayBuffer = new ArrayBuffer(encodedPacket.byteLength)
-      encodedPacket.copyTo(arrayBuffer)
-      onPacket(arrayBuffer)
-    },
-    error: (error: Error) => {
-      console.error("AudioEncoder error:", error)
-    },
-  })
-
-  audioEncoder.configure({
-    codec: "opus",
-    sampleRate: 48000,
-    numberOfChannels: 1,
-    bitrate: 16000,
-    opus: {
-      application: "lowdelay",
-      signal: "voice",
-    },
-  })
-
-  sourceNode.connect(processor)
-  processor.connect(audioContext.destination)
-
-  processor.addEventListener("audioprocess", (event) => {
-    const numberOfFrames = event.inputBuffer.length
-    const inputBuffer = new ArrayBuffer(numberOfFrames * 4 * 1)
-    const inputView = new DataView(inputBuffer)
-
-    const inputData = event.inputBuffer.getChannelData(0)
-    for (let i = 0; i < numberOfFrames; i++) {
-      inputView.setFloat32(i * 4, inputData[i], true)
-    }
-
-    audioEncoder.encode(
-      new AudioData({
-        data: inputBuffer,
-        timestamp: event.playbackTime * 1000000,
-        format: "f32",
-        numberOfChannels: 1,
-        numberOfFrames,
-        sampleRate: 48000,
-      }),
-    )
-  })
-
-  try {
-    yield* suspend()
-  } finally {
-    audioEncoder.close()
-    processor.disconnect()
-    sourceNode.disconnect()
-  }
-}
-
 function applyMutationQueue(queue: ((document: Document) => void)[]) {
   const f = () => {
     for (const thunk of queue) {
@@ -621,4 +552,98 @@ function captureVideoImage(video: HTMLVideoElement) {
   )
 
   return canvas.toDataURL("image/png")
+}
+
+declare global {
+  interface AudioEncoderConfig {
+    opus?: OpusEncoderConfig
+  }
+
+  interface OpusEncoderConfig {
+    format?: "opus" | "ogg"
+    signal?: "auto" | "music" | "voice"
+    application?: "voip" | "audio" | "lowdelay"
+    frameDuration?: number
+    /**
+     * Encoder complexity (0-10). 10 is highest.
+     * Default: 5 on mobile, 9 on other platforms.
+     */
+    complexity?: number
+    /** Configures the encoder's expected packet loss percentage (0 to 100). */
+    packetlossperc?: number
+    /** Enables Opus in-band Forward Error Correction (FEC) */
+    useinbandfec?: boolean
+    /** Enables Discontinuous Transmission (DTX) */
+    usedtx?: boolean
+  }
+}
+
+export function* recordAudioPackets(
+  mediaStream: MediaStream,
+  onPacket: (packet: ArrayBuffer) => void,
+) {
+  const audioContext = new AudioContext()
+  const sourceNode = audioContext.createMediaStreamSource(mediaStream)
+  const streamChannels = mediaStream.getAudioTracks()[0].getSettings()
+    .channelCount!
+  const processor = audioContext.createScriptProcessor(
+    16384,
+    streamChannels,
+    1,
+  )
+
+  const audioEncoder = new AudioEncoder({
+    output: (encodedPacket: EncodedAudioChunk) => {
+      const arrayBuffer = new ArrayBuffer(encodedPacket.byteLength)
+      encodedPacket.copyTo(arrayBuffer)
+      onPacket(arrayBuffer)
+    },
+    error: (error: Error) => {
+      console.error("AudioEncoder error:", error)
+    },
+  })
+
+  audioEncoder.configure({
+    codec: "opus",
+    sampleRate: 48000,
+    numberOfChannels: 1,
+    bitrate: 12000,
+    opus: {
+      application: "lowdelay",
+      signal: "voice",
+    },
+  })
+
+  sourceNode.connect(processor)
+  processor.connect(audioContext.destination)
+
+  processor.addEventListener("audioprocess", (event) => {
+    const numberOfFrames = event.inputBuffer.length
+    const inputBuffer = new ArrayBuffer(numberOfFrames * 4 * 1)
+    const inputView = new DataView(inputBuffer)
+
+    const inputData = event.inputBuffer.getChannelData(0)
+    for (let i = 0; i < numberOfFrames; i++) {
+      inputView.setFloat32(i * 4, inputData[i], true)
+    }
+
+    audioEncoder.encode(
+      new AudioData({
+        data: inputBuffer,
+        timestamp: event.playbackTime * 1000000,
+        format: "f32",
+        numberOfChannels: 1,
+        numberOfFrames,
+        sampleRate: 48000,
+      }),
+    )
+  })
+
+  try {
+    yield* suspend()
+  } finally {
+    audioEncoder.close()
+    processor.disconnect()
+    sourceNode.disconnect()
+  }
 }
