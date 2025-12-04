@@ -33,8 +33,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+import base64
 
 import anyio
+
+# Import identity module
+import busker_identity as identity
+import busker_journal as bjournal
 from anyio.streams.buffered import BufferedByteReceiveStream
 
 from rich.console import Console
@@ -77,124 +82,6 @@ def log(tag: str, msg: dict):
     """Log to stderr (goes to journald via systemd)."""
     compact = json.dumps(msg, separators=(",", ":"))
     print(f"[{tag}] {compact}", file=sys.stderr, flush=True)
-
-
-# ============================================================================
-# EventLog - Append-only event log with cursor-based streaming
-# ============================================================================
-
-@dataclass
-class Event:
-    """A single event in the log."""
-    seq: int
-    kind: str
-    data: Any
-    timestamp: float = field(default_factory=time.time)
-
-    def to_dict(self) -> dict:
-        return {
-            "seq": self.seq,
-            "kind": self.kind,
-            "data": self.data,
-            "timestamp": self.timestamp,
-        }
-
-
-class EventLog:
-    """Append-only event log with cursor-based access and async waiting."""
-
-    def __init__(self):
-        self._events: list[Event] = []
-        self._cursor = 0
-        self._lock = anyio.Lock()
-        self._condition = anyio.Condition(self._lock)
-        self._gist: dict = {}
-
-    @property
-    def cursor(self) -> int:
-        """Current end-of-log position."""
-        return self._cursor
-
-    @property
-    def gist(self) -> dict:
-        """Current state summary."""
-        return self._gist.copy()
-
-    def set_gist(self, gist: dict):
-        """Update the gist."""
-        self._gist = gist
-
-    def update_gist(self, **kwargs):
-        """Merge updates into gist."""
-        self._gist.update(kwargs)
-
-    async def append(self, kind: str, data: Any) -> int:
-        """Append event and notify waiters. Returns event sequence number."""
-        async with self._condition:
-            event = Event(seq=self._cursor, kind=kind, data=data)
-            self._events.append(event)
-            self._cursor += 1
-            self._condition.notify_all()
-            return event.seq
-
-    async def poll(self, since: int = 0) -> tuple[list[Event], int]:
-        """Get events since cursor. Returns (events, new_cursor)."""
-        async with self._lock:
-            events = self._events[since:] if since < len(self._events) else []
-            return events, self._cursor
-
-    async def wait(self, since: int, timeout: float) -> tuple[list[Event], int, bool]:
-        """Wait for events after cursor. Returns (events, new_cursor, timed_out)."""
-        try:
-            with anyio.fail_after(timeout):
-                async with self._condition:
-                    while self._cursor <= since:
-                        await self._condition.wait()
-                    events = self._events[since:]
-                    return events, self._cursor, False
-        except TimeoutError:
-            async with self._lock:
-                events = self._events[since:] if since < len(self._events) else []
-                return events, self._cursor, True
-
-    async def gather(self, since: int, gather_secs: float, timeout: float) -> tuple[list[Event], int, bool]:
-        """Wait for first event, then gather for duration. Returns (events, new_cursor, timed_out)."""
-        deadline = time.time() + timeout
-        gather_until = time.time() + gather_secs
-
-        try:
-            # Wait for at least one event
-            with anyio.fail_after(timeout):
-                async with self._condition:
-                    while self._cursor <= since:
-                        await self._condition.wait()
-
-            # Gather for the gather period
-            remaining = min(gather_until - time.time(), deadline - time.time())
-            if remaining > 0:
-                await anyio.sleep(remaining)
-
-            async with self._lock:
-                events = self._events[since:]
-                return events, self._cursor, False
-
-        except TimeoutError:
-            async with self._lock:
-                events = self._events[since:] if since < len(self._events) else []
-                return events, self._cursor, True
-
-    def tail(self, n: int = DEFAULT_TAIL) -> list[Event]:
-        """Get last n events (non-async, for formatting)."""
-        return self._events[-n:] if self._events else []
-
-    def scrollback(self, offset: int = 0, limit: int = 100) -> list[Event]:
-        """Get events from offset with limit."""
-        return self._events[offset:offset + limit]
-
-    def clear(self):
-        """Clear all events (use when restarting process)."""
-        self._events.clear()
-        self._cursor = 0
 
 
 # ============================================================================
@@ -392,17 +279,16 @@ PROTOCOLS = {
 
 
 # ============================================================================
-# Session - Process + Protocol + EventLog
+# Session - Process + Protocol + Journal Events
 # ============================================================================
 
 class Session:
-    """Interactive process session with protocol-based event parsing."""
+    """Process session that writes events directly to systemd journal."""
 
     def __init__(self, session_id: str, protocol: Protocol, task_group: anyio.abc.TaskGroup):
         self.session_id = session_id
         self.protocol = protocol
         self._tg = task_group
-        self.events = EventLog()
         self._process: anyio.abc.Process | None = None
         self._gist: dict = {}
 
@@ -427,8 +313,8 @@ class Session:
         return base
 
     async def _emit(self, kind: str, data: Any):
-        """Emit an event to the log and update gist."""
-        await self.events.append(kind, data)
+        """Emit event to journal and update gist."""
+        bjournal.journal_send(self.session_id, kind, data)
         self._gist = self.protocol.update_gist(self._gist, kind, data)
 
     async def start(self, command: list[str], cwd: str | None = None):
@@ -442,7 +328,7 @@ class Session:
         )
 
         self._gist["command"] = " ".join(command)
-        await self._emit("state", {"event": "started", "pid": self._process.pid})
+        await self._emit("state", {"event": "started", "pid": self._process.pid, "command": " ".join(command)})
 
         # Start I/O tasks
         self._tg.start_soon(self._read_stdout)
@@ -493,15 +379,21 @@ class Session:
 
 
 # ============================================================================
-# D-Bus Service - Exposes session over D-Bus
+# D-Bus Service - Minimal interface for process control
 # ============================================================================
 
 class BuskerService(DbusInterfaceCommonAsync, interface_name=DBUS_NAME_PREFIX):
-    """D-Bus interface for busker sessions."""
+    """
+    D-Bus interface for busker sessions.
 
-    def __init__(self, session: Session):
+    Events are accessed via systemd journal, not D-Bus methods.
+    This service only exposes process control and identity properties.
+    """
+
+    def __init__(self, session: Session, service_identity: identity.ServiceIdentity | None = None):
         super().__init__()
         self.session = session
+        self.service_identity = service_identity
 
     # -------------------------------------------------------------------------
     # Properties
@@ -511,8 +403,34 @@ class BuskerService(DbusInterfaceCommonAsync, interface_name=DBUS_NAME_PREFIX):
     def gist(self) -> str:
         return json.dumps(self.session.gist)
 
+    @dbus_property_async(property_signature="s")
+    def did(self) -> str:
+        """DID (Decentralized Identifier) for this session."""
+        if self.service_identity:
+            return self.service_identity.did()
+        return ""
+
+    @dbus_property_async(property_signature="s")
+    def uri(self) -> str:
+        """URI for this session."""
+        if self.service_identity:
+            return self.service_identity.uri()
+        return f"urn:busker:{self.session.session_id}"
+
+    @dbus_property_async(property_signature="s")
+    def lineage(self) -> str:
+        """Verifiable Presentation of attestation chain."""
+        if self.service_identity:
+            return json.dumps(self.service_identity.present_lineage())
+        return "{}"
+
+    @dbus_property_async(property_signature="s")
+    def session_id(self) -> str:
+        """Session ID for journal filtering."""
+        return self.session.session_id
+
     # -------------------------------------------------------------------------
-    # Methods - Process Control
+    # Methods - Process Control Only
     # -------------------------------------------------------------------------
 
     @dbus_method_async(input_signature="s", result_signature="s")
@@ -532,72 +450,33 @@ class BuskerService(DbusInterfaceCommonAsync, interface_name=DBUS_NAME_PREFIX):
         await self.session.kill()
         return json.dumps({"killed": True})
 
-    # -------------------------------------------------------------------------
-    # Methods - Event Access
-    # -------------------------------------------------------------------------
-
-    @dbus_method_async(input_signature="i", result_signature="s")
-    async def poll_events(self, since: int) -> str:
-        events, cursor = await self.session.events.poll(since)
-        return json.dumps({
-            "events": [e.to_dict() for e in events],
-            "cursor": cursor,
-            "gist": self.session.gist,
-        })
-
-    @dbus_method_async(input_signature="id", result_signature="s")
-    async def wait_events(self, since: int, timeout: float) -> str:
-        events, cursor, timed_out = await self.session.events.wait(since, timeout)
-        return json.dumps({
-            "events": [e.to_dict() for e in events],
-            "cursor": cursor,
-            "gist": self.session.gist,
-            "timed_out": timed_out,
-        })
-
-    @dbus_method_async(input_signature="idd", result_signature="s")
-    async def gather_events(self, since: int, gather: float, timeout: float) -> str:
-        events, cursor, timed_out = await self.session.events.gather(since, gather, timeout)
-        return json.dumps({
-            "events": [e.to_dict() for e in events],
-            "cursor": cursor,
-            "gist": self.session.gist,
-            "timed_out": timed_out,
-        })
-
-    @dbus_method_async(input_signature="ii", result_signature="s")
-    async def scrollback(self, offset: int, limit: int) -> str:
-        events = self.session.events.scrollback(offset, limit)
-        return json.dumps({
-            "events": [e.to_dict() for e in events],
-            "total": self.session.events.cursor,
-        })
-
-    @dbus_method_async(input_signature="i", result_signature="s")
-    async def tail(self, n: int) -> str:
-        events = self.session.events.tail(n)
-        return json.dumps({
-            "events": [e.to_dict() for e in events],
-            "gist": self.session.gist,
-        })
-
 
 # ============================================================================
 # Server Entry Point
 # ============================================================================
 
 async def run_server(session_id: str, protocol_name: str, command: list[str], cwd: str):
-    """Run session server with specified protocol."""
+    """Run session server with specified protocol.
+
+    Args:
+        session_id: Unique session identifier
+        protocol_name: Protocol to use (shell, dap)
+        command: Command to run
+        cwd: Working directory
+    """
     if sys.stdin.isatty():
         sys.exit("ERROR: must be launched via systemd-run")
 
     dbus_name = f"{DBUS_NAME_PREFIX}.{session_id}"
     protocol_cls = PROTOCOLS.get(protocol_name, ShellProtocol)
 
+    # Load identity from credentials (if available)
+    service_identity = identity.ServiceIdentity.load_from_credentials()
+
     async with anyio.create_task_group() as tg:
         protocol = protocol_cls()
         session = Session(session_id, protocol, tg)
-        service = BuskerService(session)
+        service = BuskerService(session, service_identity)
 
         await request_default_bus_name_async(dbus_name)
         service.export_to_dbus(DBUS_PATH)
@@ -608,6 +487,10 @@ async def run_server(session_id: str, protocol_name: str, command: list[str], cw
         print(f"  Protocol: {protocol_name}", file=sys.stderr)
         print(f"  D-Bus:    {dbus_name}", file=sys.stderr)
         print(f"  Command:  {' '.join(command)}", file=sys.stderr)
+        if service_identity:
+            print(f"  DID:      {service_identity.did()}", file=sys.stderr)
+            print(f"  URI:      {service_identity.uri()}", file=sys.stderr)
+        print(f"  Events:   journalctl --user -u busker-{session_id}.service", file=sys.stderr)
         print("=" * 60, file=sys.stderr, flush=True)
 
         await session.start(command, cwd)
@@ -676,6 +559,12 @@ def start_session(
     else:
         command_str = command
 
+    # Create identity and credentials for the new service
+    service_identity, credentials = identity.ServiceIdentity.create_for_service(
+        command=command_str,
+        unit_name=unit,
+    )
+
     dbus_name = f"{DBUS_NAME_PREFIX}.{session_id}"
     systemd_cmd = [
         "systemd-run", "--user",
@@ -688,6 +577,12 @@ def start_session(
         "--property=StandardError=journal",
         f"--working-directory={working_dir}",
     ]
+
+    # Pass credentials securely via systemd credentials mechanism
+    for cred_name, cred_value in credentials.items():
+        # Base64 encode the credential value for safe transport
+        encoded = base64.b64encode(cred_value.encode()).decode()
+        systemd_cmd.append(f"--property=SetCredential={cred_name}:{encoded}")
 
     # Pass environment
     if inherit_env:
@@ -715,6 +610,8 @@ def start_session(
         "dbus_path": DBUS_PATH,
         "logs_command": f"journalctl --user -u {unit} -f",
         "working_directory": working_dir,
+        "did": service_identity.did(),
+        "uri": service_identity.uri(),
     }
 
 
@@ -730,49 +627,60 @@ def get_service_proxy(session_id: str) -> BuskerService:
 
 
 # ============================================================================
-# MCP Server
+# MCP Server (Journal-Native)
 # ============================================================================
 
 def run_mcp():
-    """Run as MCP server."""
+    """Run as MCP server with journal-native event reading."""
     from mcp.server.fastmcp import FastMCP
 
     mcp = FastMCP("busker")
-    _cursors: dict[str, int] = {}
 
-    def get_cursor(session_id: str) -> int:
-        return _cursors.get(session_id, 0)
+    # Journal cursors (strings, not ints)
+    _cursors: dict[str, str | None] = {}
+    _readers: dict[str, bjournal.JournalReader] = {}
 
-    def set_cursor(session_id: str, cursor: int):
+    def get_cursor(session_id: str) -> str | None:
+        return _cursors.get(session_id)
+
+    def set_cursor(session_id: str, cursor: str | None):
         _cursors[session_id] = cursor
 
-    def get_session() -> tuple[BuskerService, str]:
+    def get_reader(session_id: str) -> bjournal.JournalReader:
+        if session_id not in _readers:
+            _readers[session_id] = bjournal.JournalReader(session_id)
+        return _readers[session_id]
+
+    def get_session_info() -> dict:
+        """Get info about the current session."""
         sessions = list_sessions()
         if not sessions:
             raise RuntimeError("No session running. Use run() to start one.")
-        s = sessions[0]
-        return get_service_proxy(s["id"]), s["id"]
+        return sessions[0]
 
-    def format_events(data: dict, session_id: str) -> dict:
-        """Format event response and update cursor."""
-        events = data.get("events", [])
-        cursor = data.get("cursor", 0)
-        gist = data.get("gist", {})
-        timed_out = data.get("timed_out", False)
+    def get_proxy(session_id: str) -> BuskerService:
+        """Get D-Bus proxy for session (for send_input/kill only)."""
+        dbus_name = f"{DBUS_NAME_PREFIX}.{session_id}"
+        return BuskerService.new_proxy(dbus_name, DBUS_PATH)
 
+    def format_events(events: list[bjournal.JournalEvent], cursor: str | None, session_id: str, timed_out: bool = False) -> dict:
+        """Format journal events for MCP response."""
         set_cursor(session_id, cursor)
 
+        # Compute gist from events
+        gist = bjournal.compute_gist(events)
+
         # Separate output from other events
-        output = [e for e in events if e.get("kind") == "output"]
-        state_events = [e for e in events if e.get("kind") == "state"]
+        output = [e for e in events if e.kind == "output"]
+        state_events = [e for e in events if e.kind == "state"]
 
         result = {"gist": gist, "timed_out": timed_out}
 
         if state_events:
-            result["state_changes"] = [e["data"] for e in state_events]
+            result["state_changes"] = [e.data for e in state_events]
 
         if output:
-            lines = [e["data"] for e in output]
+            lines = [e.data for e in output]
             if len(lines) > DEFAULT_TAIL:
                 result["output"] = {
                     "lines": lines[-DEFAULT_TAIL:],
@@ -805,42 +713,69 @@ def run_mcp():
             return {"error": "no session running"}
         s = sessions[0]
         stop_session(s["id"])
+        # Clean up reader
+        if s["id"] in _readers:
+            _readers[s["id"]].close()
+            del _readers[s["id"]]
         return {"stopped": s["id"]}
 
     @mcp.tool()
-    async def poll() -> dict:
-        """Get recent output and gist."""
-        proxy, session_id = get_session()
+    def poll() -> dict:
+        """Get recent output and gist from journal."""
+        info = get_session_info()
+        session_id = info["id"]
+        reader = get_reader(session_id)
         cursor = get_cursor(session_id)
-        data = json.loads(await proxy.poll_events(cursor))
-        return format_events(data, session_id)
+
+        events, new_cursor = reader.poll(cursor)
+        return format_events(events, new_cursor, session_id)
 
     @mcp.tool()
-    async def wait(timeout: float = 30, gather: float | None = None) -> dict:
-        """Wait for events."""
-        proxy, session_id = get_session()
+    def wait(timeout: float = 30, gather: float | None = None) -> dict:
+        """Wait for events from journal."""
+        info = get_session_info()
+        session_id = info["id"]
+        reader = get_reader(session_id)
         cursor = get_cursor(session_id)
+
         if gather:
-            data = json.loads(await proxy.gather_events(cursor, gather, timeout))
+            events, new_cursor, timed_out = reader.gather(cursor, gather, timeout)
         else:
-            data = json.loads(await proxy.wait_events(cursor, timeout))
-        return format_events(data, session_id)
+            events, new_cursor, timed_out = reader.wait(cursor, timeout)
+
+        return format_events(events, new_cursor, session_id, timed_out)
 
     @mcp.tool()
     async def send(input: str) -> dict:
-        """Send input to the process."""
-        proxy, _ = get_session()
+        """Send input to the process via D-Bus."""
+        info = get_session_info()
+        proxy = get_proxy(info["id"])
         return json.loads(await proxy.send_input(input))
 
     @mcp.tool()
-    async def scroll(offset: int = 0, limit: int = 100) -> dict:
-        """Read scrollback buffer."""
-        proxy, _ = get_session()
-        data = json.loads(await proxy.scrollback(offset, limit))
-        events = data.get("events", [])
+    def scroll(limit: int = 100) -> dict:
+        """Read recent output from journal (tail)."""
+        info = get_session_info()
+        session_id = info["id"]
+        reader = get_reader(session_id)
+
+        events = reader.tail(limit)
+        output = [e.data for e in events if e.kind == "output"]
+
         return {
-            "lines": [e["data"] for e in events if e.get("kind") == "output"],
-            "total": data.get("total", 0),
+            "lines": output,
+            "total": len(output),
+        }
+
+    @mcp.tool()
+    def status() -> dict:
+        """Get session status."""
+        sessions = list_sessions()
+        if not sessions:
+            return {"running": False, "sessions": []}
+        return {
+            "running": True,
+            "sessions": sessions,
         }
 
     mcp.run(transport="stdio")

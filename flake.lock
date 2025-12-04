@@ -18,7 +18,24 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "tagflow": "tagflow"
+      }
+    },
+    "tagflow": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1762754357,
+        "narHash": "sha256-CLeLDoh2cxPkqt4rircCUUxemdgskWJYBdPBd7X07Bo=",
+        "owner": "lessrest",
+        "repo": "tagflow",
+        "rev": "cf84326fb41037db8efcefd09898b7659931e77e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "lessrest",
+        "repo": "tagflow",
+        "type": "github"
       }
     }
   },
