@@ -7,6 +7,11 @@
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
+
+      # Font configuration for fcft to find JetBrains Mono
+      fontsConf = pkgs.makeFontsConf {
+        fontDirectories = [ pkgs.jetbrains-mono ];
+      };
     in
     {
       packages.${system}.default = pkgs.stdenv.mkDerivation {
@@ -19,12 +24,22 @@
           meson
           ninja
           pkg-config
+          makeWrapper
         ];
 
         buildInputs = with pkgs; [
           sdbus-cpp
           systemdLibs
+          fcft
+          pixman
+          libpng
         ];
+
+        # Make fontconfig find JetBrains Mono at runtime
+        postInstall = ''
+          wrapProgram $out/bin/vterm-service \
+            --set FONTCONFIG_FILE ${fontsConf}
+        '';
 
         meta = {
           description = "Terminal emulator over D-Bus using libvterm";
@@ -38,8 +53,14 @@
           pkg-config
           sdbus-cpp
           systemdLibs
+          fcft
+          pixman
+          libpng
           clang-tools  # for clangd
+          jetbrains-mono
         ];
+
+        FONTCONFIG_FILE = fontsConf;
       };
     };
 }

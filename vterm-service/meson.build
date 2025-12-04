@@ -4,6 +4,9 @@ project('vterm-service', 'cpp', 'c',
 
 # Dependencies
 sdbus_dep = dependency('sdbus-c++')
+fcft_dep = dependency('fcft')
+pixman_dep = dependency('pixman-1')
+png_dep = dependency('libpng')
 
 # libvterm (vendored)
 libvterm_sources = files(
@@ -33,7 +36,7 @@ libvterm_dep = declare_dependency(
 
 # Main executable
 executable('vterm-service',
-  'vterm-service.cpp',
-  dependencies : [sdbus_dep, libvterm_dep],
+  ['vterm-service.cpp', 'fcft_wrapper.c'],
+  dependencies : [sdbus_dep, libvterm_dep, fcft_dep, pixman_dep, png_dep],
   install : true,
 )
