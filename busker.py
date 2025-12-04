@@ -198,17 +198,213 @@ class EventLog:
 
 
 # ============================================================================
-# BaseSession - Abstract session with event log
+# Protocol - Codec between raw I/O and typed events
 # ============================================================================
 
-class BaseSession(ABC):
-    """Base class for interactive process sessions."""
+class Protocol(ABC):
+    """Protocol for interpreting process I/O as typed events."""
 
-    def __init__(self, session_id: str, task_group: anyio.abc.TaskGroup):
+    @abstractmethod
+    async def on_stdout(self, data: bytes, emit: Callable) -> None:
+        """Handle stdout bytes. Call emit(kind, data) to produce events."""
+        pass
+
+    @abstractmethod
+    async def on_stderr(self, data: bytes, emit: Callable) -> None:
+        """Handle stderr bytes. Call emit(kind, data) to produce events."""
+        pass
+
+    @abstractmethod
+    async def on_exit(self, code: int, emit: Callable) -> None:
+        """Handle process exit. Call emit(kind, data) to produce events."""
+        pass
+
+    @abstractmethod
+    def format_command(self, name: str, args: dict) -> bytes:
+        """Format a command for sending to process stdin."""
+        pass
+
+    @abstractmethod
+    def update_gist(self, gist: dict, event_kind: str, event_data: Any) -> dict:
+        """Update gist based on new event. Returns updated gist."""
+        pass
+
+
+class ShellProtocol(Protocol):
+    """Line-oriented shell protocol (default)."""
+
+    def __init__(self):
+        self._stdout_buffer = b""
+        self._stderr_buffer = b""
+
+    async def on_stdout(self, data: bytes, emit: Callable) -> None:
+        self._stdout_buffer += data
+        while b"\n" in self._stdout_buffer:
+            line, self._stdout_buffer = self._stdout_buffer.split(b"\n", 1)
+            text = line.decode("utf-8", errors="replace")
+            await emit("output", {"stream": "stdout", "text": text})
+
+    async def on_stderr(self, data: bytes, emit: Callable) -> None:
+        self._stderr_buffer += data
+        while b"\n" in self._stderr_buffer:
+            line, self._stderr_buffer = self._stderr_buffer.split(b"\n", 1)
+            text = line.decode("utf-8", errors="replace")
+            await emit("output", {"stream": "stderr", "text": text})
+
+    async def on_exit(self, code: int, emit: Callable) -> None:
+        # Flush remaining buffers
+        if self._stdout_buffer:
+            text = self._stdout_buffer.decode("utf-8", errors="replace")
+            await emit("output", {"stream": "stdout", "text": text})
+            self._stdout_buffer = b""
+        if self._stderr_buffer:
+            text = self._stderr_buffer.decode("utf-8", errors="replace")
+            await emit("output", {"stream": "stderr", "text": text})
+            self._stderr_buffer = b""
+        await emit("state", {"event": "exited", "exit_code": code})
+
+    def format_command(self, name: str, args: dict) -> bytes:
+        # Shell protocol: just send raw text
+        text = args.get("input", "")
+        return text.encode()
+
+    def update_gist(self, gist: dict, event_kind: str, event_data: Any) -> dict:
+        if event_kind == "state":
+            event = event_data.get("event")
+            if event == "exited":
+                gist["exit_code"] = event_data.get("exit_code")
+        return gist
+
+
+class DAPProtocol(Protocol):
+    """Debug Adapter Protocol (JSON with Content-Length framing)."""
+
+    def __init__(self):
+        self._buffer = b""
+        self._seq = 1
+
+    async def on_stdout(self, data: bytes, emit: Callable) -> None:
+        self._buffer += data
+        while True:
+            msg = self._try_parse_message()
+            if msg is None:
+                break
+            await self._handle_message(msg, emit)
+
+    def _try_parse_message(self) -> dict | None:
+        """Try to parse a complete DAP message from buffer."""
+        header_end = self._buffer.find(b"\r\n\r\n")
+        if header_end == -1:
+            return None
+
+        header = self._buffer[:header_end].decode()
+        content_length = None
+        for line in header.split("\r\n"):
+            if line.startswith("Content-Length:"):
+                content_length = int(line.split(":")[1].strip())
+                break
+
+        if content_length is None:
+            return None
+
+        body_start = header_end + 4
+        body_end = body_start + content_length
+        if len(self._buffer) < body_end:
+            return None
+
+        body = self._buffer[body_start:body_end]
+        self._buffer = self._buffer[body_end:]
+        return json.loads(body.decode())
+
+    async def _handle_message(self, msg: dict, emit: Callable) -> None:
+        """Handle a parsed DAP message."""
+        msg_type = msg.get("type")
+        if msg_type == "event":
+            await self._handle_event(msg, emit)
+        elif msg_type == "response":
+            # Responses are handled by the command mechanism
+            await emit("response", msg)
+
+    async def _handle_event(self, event: dict, emit: Callable) -> None:
+        """Convert DAP event to typed event."""
+        etype = event.get("event", "")
+        body = event.get("body", {})
+
+        if etype in ("stopped", "exited", "terminated"):
+            await emit("state", {
+                "event": etype,
+                "reason": body.get("reason"),
+                "description": body.get("description"),
+                "threadId": body.get("threadId"),
+                "exitCode": body.get("exitCode"),
+            })
+        elif etype == "output":
+            text = body.get("output", "").rstrip()
+            if text:
+                await emit("output", {
+                    "stream": body.get("category", "stdout"),
+                    "text": text,
+                })
+        else:
+            await emit(etype, body)
+
+    async def on_stderr(self, data: bytes, emit: Callable) -> None:
+        # DAP stderr is usually debug logs, emit as output
+        text = data.decode("utf-8", errors="replace").rstrip()
+        if text:
+            await emit("output", {"stream": "stderr", "text": text})
+
+    async def on_exit(self, code: int, emit: Callable) -> None:
+        await emit("state", {"event": "terminated", "exit_code": code})
+
+    def format_command(self, name: str, args: dict) -> bytes:
+        """Format DAP request."""
+        request = {
+            "seq": self._seq,
+            "type": "request",
+            "command": name,
+        }
+        if args:
+            request["arguments"] = args
+        self._seq += 1
+
+        body = json.dumps(request)
+        header = f"Content-Length: {len(body)}\r\n\r\n"
+        return (header + body).encode()
+
+    def update_gist(self, gist: dict, event_kind: str, event_data: Any) -> dict:
+        if event_kind == "state":
+            event = event_data.get("event")
+            gist["debug_state"] = event
+            if event == "stopped":
+                gist["thread_id"] = event_data.get("threadId")
+                gist["stop_reason"] = event_data.get("reason")
+            elif event == "exited":
+                gist["exit_code"] = event_data.get("exitCode")
+        return gist
+
+
+# Protocol registry
+PROTOCOLS = {
+    "shell": ShellProtocol,
+    "dap": DAPProtocol,
+}
+
+
+# ============================================================================
+# Session - Process + Protocol + EventLog
+# ============================================================================
+
+class Session:
+    """Interactive process session with protocol-based event parsing."""
+
+    def __init__(self, session_id: str, protocol: Protocol, task_group: anyio.abc.TaskGroup):
         self.session_id = session_id
+        self.protocol = protocol
         self._tg = task_group
         self.events = EventLog()
         self._process: anyio.abc.Process | None = None
+        self._gist: dict = {}
 
     @property
     def running(self) -> bool:
@@ -227,80 +423,73 @@ class BaseSession(ABC):
             "running": self.running,
             "exit_code": self.exit_code,
         }
-        base.update(self.events.gist)
+        base.update(self._gist)
         return base
 
-    @abstractmethod
-    async def start(self, **kwargs):
-        """Start the session process."""
-        pass
+    async def _emit(self, kind: str, data: Any):
+        """Emit an event to the log and update gist."""
+        await self.events.append(kind, data)
+        self._gist = self.protocol.update_gist(self._gist, kind, data)
 
-    async def kill(self):
-        """Kill the process."""
-        if self._process is not None:
-            self._process.kill()
-            await self.events.append("state", {"event": "killed"})
-
-    async def send_input(self, data: str):
-        """Send input to process stdin."""
-        if self._process is not None and self._process.stdin is not None:
-            await self._process.stdin.send(data.encode())
-
-
-# ============================================================================
-# ShellSession - Basic subprocess with stdout/stderr streaming
-# ============================================================================
-
-class ShellSession(BaseSession):
-    """Interactive shell command session."""
-
-    async def start(self, command: str | list[str], cwd: str | None = None):
-        """Start shell command."""
-        if isinstance(command, str):
-            cmd = ["sh", "-c", command]
-        else:
-            cmd = command
-
+    async def start(self, command: list[str], cwd: str | None = None):
+        """Start the process."""
         self._process = await anyio.open_process(
-            cmd,
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd,
         )
 
-        self.events.update_gist(command=command if isinstance(command, str) else " ".join(command))
-        await self.events.append("state", {"event": "started", "pid": self._process.pid})
+        self._gist["command"] = " ".join(command)
+        await self._emit("state", {"event": "started", "pid": self._process.pid})
 
-        # Start reader tasks
-        self._tg.start_soon(self._read_stream, self._process.stdout, "stdout")
-        self._tg.start_soon(self._read_stream, self._process.stderr, "stderr")
+        # Start I/O tasks
+        self._tg.start_soon(self._read_stdout)
+        self._tg.start_soon(self._read_stderr)
         self._tg.start_soon(self._wait_exit)
 
-    async def _read_stream(self, stream: anyio.abc.ByteReceiveStream, name: str):
-        """Read lines from stream and append as events."""
+    async def _read_stdout(self):
+        """Read stdout and pass to protocol."""
         try:
-            buffer = b""
-            async for chunk in stream:
-                buffer += chunk
-                while b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    text = line.decode("utf-8", errors="replace")
-                    await self.events.append("output", {"stream": name, "text": text})
-            # Handle remaining buffer
-            if buffer:
-                text = buffer.decode("utf-8", errors="replace")
-                await self.events.append("output", {"stream": name, "text": text})
+            async for chunk in self._process.stdout:
+                await self.protocol.on_stdout(chunk, self._emit)
         except anyio.ClosedResourceError:
             pass
         except Exception as e:
-            log("ERR", {"error": str(e), "stream": name})
+            log("ERR", {"error": str(e), "context": "stdout"})
+
+    async def _read_stderr(self):
+        """Read stderr and pass to protocol."""
+        try:
+            async for chunk in self._process.stderr:
+                await self.protocol.on_stderr(chunk, self._emit)
+        except anyio.ClosedResourceError:
+            pass
+        except Exception as e:
+            log("ERR", {"error": str(e), "context": "stderr"})
 
     async def _wait_exit(self):
-        """Wait for process to exit."""
+        """Wait for process exit."""
         code = await self._process.wait()
-        self.events.update_gist(exit_code=code)
-        await self.events.append("state", {"event": "exited", "exit_code": code})
+        await self.protocol.on_exit(code, self._emit)
+
+    async def kill(self):
+        """Kill the process."""
+        if self._process is not None:
+            self._process.kill()
+            await self._emit("state", {"event": "killed"})
+
+    async def send_input(self, data: str):
+        """Send raw input to process stdin."""
+        if self._process is not None and self._process.stdin is not None:
+            await self._process.stdin.send(data.encode())
+
+    async def send_command(self, name: str, args: dict = None):
+        """Send protocol-formatted command."""
+        if self._process is not None and self._process.stdin is not None:
+            data = self.protocol.format_command(name, args or {})
+            await self._process.stdin.send(data)
 
 
 # ============================================================================
@@ -310,7 +499,7 @@ class ShellSession(BaseSession):
 class BuskerService(DbusInterfaceCommonAsync, interface_name=DBUS_NAME_PREFIX):
     """D-Bus interface for busker sessions."""
 
-    def __init__(self, session: BaseSession):
+    def __init__(self, session: Session):
         super().__init__()
         self.session = session
 
@@ -330,6 +519,13 @@ class BuskerService(DbusInterfaceCommonAsync, interface_name=DBUS_NAME_PREFIX):
     async def send_input(self, data: str) -> str:
         await self.session.send_input(data)
         return json.dumps({"sent": len(data)})
+
+    @dbus_method_async(input_signature="ss", result_signature="s")
+    async def send_command(self, name: str, args_json: str) -> str:
+        """Send protocol-formatted command."""
+        args = json.loads(args_json) if args_json else {}
+        await self.session.send_command(name, args)
+        return json.dumps({"sent": name})
 
     @dbus_method_async(result_signature="s")
     async def kill(self) -> str:
@@ -390,15 +586,17 @@ class BuskerService(DbusInterfaceCommonAsync, interface_name=DBUS_NAME_PREFIX):
 # Server Entry Point
 # ============================================================================
 
-async def run_shell_server(session_id: str, command: str, cwd: str):
-    """Run shell session server."""
+async def run_server(session_id: str, protocol_name: str, command: list[str], cwd: str):
+    """Run session server with specified protocol."""
     if sys.stdin.isatty():
         sys.exit("ERROR: must be launched via systemd-run")
 
     dbus_name = f"{DBUS_NAME_PREFIX}.{session_id}"
+    protocol_cls = PROTOCOLS.get(protocol_name, ShellProtocol)
 
     async with anyio.create_task_group() as tg:
-        session = ShellSession(session_id, tg)
+        protocol = protocol_cls()
+        session = Session(session_id, protocol, tg)
         service = BuskerService(session)
 
         await request_default_bus_name_async(dbus_name)
@@ -406,9 +604,10 @@ async def run_shell_server(session_id: str, command: str, cwd: str):
 
         print("=" * 60, file=sys.stderr)
         print("BUSKER SESSION STARTED", file=sys.stderr)
-        print(f"  Session: {session_id}", file=sys.stderr)
-        print(f"  D-Bus:   {dbus_name}", file=sys.stderr)
-        print(f"  Command: {command}", file=sys.stderr)
+        print(f"  Session:  {session_id}", file=sys.stderr)
+        print(f"  Protocol: {protocol_name}", file=sys.stderr)
+        print(f"  D-Bus:    {dbus_name}", file=sys.stderr)
+        print(f"  Command:  {' '.join(command)}", file=sys.stderr)
         print("=" * 60, file=sys.stderr, flush=True)
 
         await session.start(command, cwd)
@@ -459,15 +658,26 @@ def unit_name(session_id: str) -> str:
     return f"busker-{session_id}.service"
 
 
-def start_shell_session(command: str, cwd: str | None = None, inherit_env: bool = True) -> tuple[str, dict]:
-    """Start a new shell session. Returns (session_id, context)."""
+def start_session(
+    command: str | list[str],
+    protocol: str = "shell",
+    cwd: str | None = None,
+    inherit_env: bool = True,
+) -> tuple[str, dict]:
+    """Start a new session. Returns (session_id, context)."""
     session_id = gen_session_id()
     unit = unit_name(session_id)
     self_path = Path(__file__).resolve()
     working_dir = cwd or os.getcwd()
 
+    # Convert command to string for passing through
+    if isinstance(command, list):
+        command_str = " ".join(command)
+    else:
+        command_str = command
+
     dbus_name = f"{DBUS_NAME_PREFIX}.{session_id}"
-    cmd = [
+    systemd_cmd = [
         "systemd-run", "--user",
         "--collect",
         f"--unit={unit}",
@@ -483,21 +693,23 @@ def start_shell_session(command: str, cwd: str | None = None, inherit_env: bool 
     if inherit_env:
         for var, val in os.environ.items():
             if val and not var.startswith("_"):
-                cmd.append(f"--setenv={var}={val}")
+                systemd_cmd.append(f"--setenv={var}={val}")
 
-    cmd.extend([
+    systemd_cmd.extend([
         "--",
         sys.executable, str(self_path),
-        "--serve", "shell",
+        "--serve",
+        "--protocol", protocol,
         "--session", session_id,
-        "--shell-command", command,
+        "--command", command_str,
     ])
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(systemd_cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(f"Failed to start: {result.stderr}")
 
     return session_id, {
+        "protocol": protocol,
         "systemd_unit": unit,
         "dbus_name": dbus_name,
         "dbus_path": DBUS_PATH,
@@ -573,14 +785,14 @@ def run_mcp():
         return result
 
     @mcp.tool()
-    def run(command: str, cwd: str = "") -> dict:
-        """Run a shell command in a new session."""
+    def run(command: str, protocol: str = "shell", cwd: str = "") -> dict:
+        """Run a command in a new session. protocol: 'shell' (default) or 'dap'."""
         sessions = list_sessions()
         if sessions:
             return {"error": "session already running", "session_id": sessions[0]["id"]}
 
         try:
-            session_id, context = start_shell_session(command, cwd or None)
+            session_id, context = start_session(command, protocol=protocol, cwd=cwd or None)
             return {"session_id": session_id, **context}
         except RuntimeError as e:
             return {"error": str(e)}
@@ -684,16 +896,24 @@ def main():
     parser = argparse.ArgumentParser(description="Interactive process sessions over D-Bus")
     parser.add_argument("-s", "--session", help="Session ID")
     parser.add_argument("-j", "--json", action="store_true", help="JSON output")
-    parser.add_argument("--serve", help=argparse.SUPPRESS)
-    parser.add_argument("--shell-command", dest="shell_command", help=argparse.SUPPRESS)
+    parser.add_argument("-p", "--protocol", default="shell", help="Protocol: shell, dap")
+    parser.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--command", dest="serve_command", help=argparse.SUPPRESS)
     parser.add_argument("command", nargs="?", help="Command")
     parser.add_argument("args", nargs="*", help="Arguments")
 
     args = parser.parse_args()
 
-    # Server mode
-    if args.serve == "shell":
-        asyncio.run(run_shell_server(args.session, args.shell_command, os.getcwd()))
+    # Server mode (internal)
+    if args.serve:
+        if not args.serve_command:
+            sys.exit("ERROR: no command specified")
+        # Build process command based on protocol
+        if args.protocol == "shell":
+            process_cmd = ["sh", "-c", args.serve_command]
+        else:
+            process_cmd = args.serve_command.split()
+        asyncio.run(run_server(args.session, args.protocol, process_cmd, os.getcwd()))
         return
 
     # MCP mode
@@ -713,8 +933,8 @@ def main():
             error("run <command>")
         command = " ".join(args.args)
         try:
-            session_id, ctx = start_shell_session(command)
-            console.print(f"[bold cyan]{session_id}[/bold cyan] [green]started[/green]")
+            session_id, ctx = start_session(command, protocol=args.protocol)
+            console.print(f"[bold cyan]{session_id}[/bold cyan] [green]started[/green] [dim]({args.protocol})[/dim]")
             console.print(f"[dim]{command}[/dim]")
         except RuntimeError as e:
             error(str(e))
