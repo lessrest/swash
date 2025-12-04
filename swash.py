@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-busker - Interactive process sessions over D-Bus
+swash - Interactive process sessions over D-Bus
 
 Usage:
-    busker                              Show session status
-    busker run <command>                Run shell command
-    busker debug [--program <path>]     Start debug session
-    busker stop                         Stop session
-    busker mcp                          Run as MCP server (stdio)
+    swash                              Show session status
+    swash run <command>                Run shell command
+    swash debug [--program <path>]     Start debug session
+    swash stop                         Stop session
+    swash mcp                          Run as MCP server (stdio)
 
-    busker poll                         Get recent output + gist
-    busker wait [--timeout <secs>]      Wait for events
-    busker scroll [offset] [limit]      Read scrollback
-    busker send <input>                 Send input to process
-    busker kill                         Kill process
+    swash poll                         Get recent output + gist
+    swash wait [--timeout <secs>]      Wait for events
+    swash scroll [offset] [limit]      Read scrollback
+    swash send <input>                 Send input to process
+    swash kill                         Kill process
 
 Options:
     -s, --session ID      Session ID (auto-detected when only one running)
@@ -38,8 +38,8 @@ import base64
 import anyio
 
 # Import identity module
-import busker_identity as identity
-import busker_journal as bjournal
+import swash_identity as identity
+import swash_journal as sjournal
 from anyio.streams.buffered import BufferedByteReceiveStream
 
 from rich.console import Console
@@ -57,9 +57,9 @@ from sdbus import (
 # Constants
 # ============================================================================
 
-DBUS_NAME_PREFIX = "org.claude.Busker"
-DBUS_PATH = "/org/claude/Busker"
-SLICE = "busker.slice"
+DBUS_NAME_PREFIX = "sh.swa.Swash"
+DBUS_PATH = "/sh/swa/Swash"
+SLICE = "swash.slice"
 DEFAULT_TAIL = 24  # TTY vibe: ~terminal height
 
 console = Console()
@@ -314,7 +314,7 @@ class Session:
 
     async def _emit(self, kind: str, data: Any):
         """Emit event to journal and update gist."""
-        bjournal.journal_send(self.session_id, kind, data)
+        sjournal.journal_send(self.session_id, kind, data)
         self._gist = self.protocol.update_gist(self._gist, kind, data)
 
     async def start(self, command: list[str], cwd: str | None = None):
@@ -382,9 +382,9 @@ class Session:
 # D-Bus Service - Minimal interface for process control
 # ============================================================================
 
-class BuskerService(DbusInterfaceCommonAsync, interface_name=DBUS_NAME_PREFIX):
+class SwashService(DbusInterfaceCommonAsync, interface_name=DBUS_NAME_PREFIX):
     """
-    D-Bus interface for busker sessions.
+    D-Bus interface for swash sessions.
 
     Events are accessed via systemd journal, not D-Bus methods.
     This service only exposes process control and identity properties.
@@ -415,7 +415,7 @@ class BuskerService(DbusInterfaceCommonAsync, interface_name=DBUS_NAME_PREFIX):
         """URI for this session."""
         if self.service_identity:
             return self.service_identity.uri()
-        return f"urn:busker:{self.session.session_id}"
+        return f"urn:swash:{self.session.session_id}"
 
     @dbus_property_async(property_signature="s")
     def lineage(self) -> str:
@@ -476,13 +476,13 @@ async def run_server(session_id: str, protocol_name: str, command: list[str], cw
     async with anyio.create_task_group() as tg:
         protocol = protocol_cls()
         session = Session(session_id, protocol, tg)
-        service = BuskerService(session, service_identity)
+        service = SwashService(session, service_identity)
 
         await request_default_bus_name_async(dbus_name)
         service.export_to_dbus(DBUS_PATH)
 
         print("=" * 60, file=sys.stderr)
-        print("BUSKER SESSION STARTED", file=sys.stderr)
+        print("SWASH SESSION STARTED", file=sys.stderr)
         print(f"  Session:  {session_id}", file=sys.stderr)
         print(f"  Protocol: {protocol_name}", file=sys.stderr)
         print(f"  D-Bus:    {dbus_name}", file=sys.stderr)
@@ -490,7 +490,7 @@ async def run_server(session_id: str, protocol_name: str, command: list[str], cw
         if service_identity:
             print(f"  DID:      {service_identity.did()}", file=sys.stderr)
             print(f"  URI:      {service_identity.uri()}", file=sys.stderr)
-        print(f"  Events:   journalctl --user -u busker-{session_id}.service", file=sys.stderr)
+        print(f"  Events:   journalctl --user -u swash-{session_id}.service", file=sys.stderr)
         print("=" * 60, file=sys.stderr, flush=True)
 
         await session.start(command, cwd)
@@ -502,9 +502,9 @@ async def run_server(session_id: str, protocol_name: str, command: list[str], cw
 # ============================================================================
 
 def list_sessions() -> list[dict]:
-    """List all running busker sessions."""
+    """List all running swash sessions."""
     result = subprocess.run(
-        ["systemctl", "--user", "list-units", "busker-*.service",
+        ["systemctl", "--user", "list-units", "swash-*.service",
          "--no-legend", "--plain"],
         capture_output=True, text=True
     )
@@ -514,7 +514,7 @@ def list_sessions() -> list[dict]:
             continue
         parts = line.split()
         unit = parts[0]
-        session_id = unit.replace("busker-", "").replace(".service", "")
+        session_id = unit.replace("swash-", "").replace(".service", "")
 
         prop_result = subprocess.run(
             ["systemctl", "--user", "show", unit,
@@ -538,7 +538,7 @@ def list_sessions() -> list[dict]:
 
 
 def unit_name(session_id: str) -> str:
-    return f"busker-{session_id}.service"
+    return f"swash-{session_id}.service"
 
 
 def start_session(
@@ -620,10 +620,10 @@ def stop_session(session_id: str):
     subprocess.run(["systemctl", "--user", "stop", unit_name(session_id)], check=True)
 
 
-def get_service_proxy(session_id: str) -> BuskerService:
+def get_service_proxy(session_id: str) -> SwashService:
     """Get D-Bus proxy for session."""
     dbus_name = f"{DBUS_NAME_PREFIX}.{session_id}"
-    return BuskerService.new_proxy(dbus_name, DBUS_PATH)
+    return SwashService.new_proxy(dbus_name, DBUS_PATH)
 
 
 # ============================================================================
@@ -634,11 +634,11 @@ def run_mcp():
     """Run as MCP server with journal-native event reading."""
     from mcp.server.fastmcp import FastMCP
 
-    mcp = FastMCP("busker")
+    mcp = FastMCP("swash")
 
     # Journal cursors (strings, not ints)
     _cursors: dict[str, str | None] = {}
-    _readers: dict[str, bjournal.JournalReader] = {}
+    _readers: dict[str, sjournal.JournalReader] = {}
 
     def get_cursor(session_id: str) -> str | None:
         return _cursors.get(session_id)
@@ -646,9 +646,9 @@ def run_mcp():
     def set_cursor(session_id: str, cursor: str | None):
         _cursors[session_id] = cursor
 
-    def get_reader(session_id: str) -> bjournal.JournalReader:
+    def get_reader(session_id: str) -> sjournal.JournalReader:
         if session_id not in _readers:
-            _readers[session_id] = bjournal.JournalReader(session_id)
+            _readers[session_id] = sjournal.JournalReader(session_id)
         return _readers[session_id]
 
     def get_session_info() -> dict:
@@ -658,17 +658,17 @@ def run_mcp():
             raise RuntimeError("No session running. Use run() to start one.")
         return sessions[0]
 
-    def get_proxy(session_id: str) -> BuskerService:
+    def get_proxy(session_id: str) -> SwashService:
         """Get D-Bus proxy for session (for send_input/kill only)."""
         dbus_name = f"{DBUS_NAME_PREFIX}.{session_id}"
-        return BuskerService.new_proxy(dbus_name, DBUS_PATH)
+        return SwashService.new_proxy(dbus_name, DBUS_PATH)
 
-    def format_events(events: list[bjournal.JournalEvent], cursor: str | None, session_id: str, timed_out: bool = False) -> dict:
+    def format_events(events: list[sjournal.JournalEvent], cursor: str | None, session_id: str, timed_out: bool = False) -> dict:
         """Format journal events for MCP response."""
         set_cursor(session_id, cursor)
 
         # Compute gist from events
-        gist = bjournal.compute_gist(events)
+        gist = sjournal.compute_gist(events)
 
         # Separate output from other events
         output = [e for e in events if e.kind == "output"]
@@ -790,7 +790,7 @@ async def cmd_status():
     sessions = list_sessions()
     if not sessions:
         console.print("[dim]no sessions[/dim]")
-        console.print("[dim]busker run <command>[/dim]")
+        console.print("[dim]swash run <command>[/dim]")
         return
 
     for s in sessions:
@@ -894,3 +894,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

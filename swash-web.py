@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Busker web dashboard - minimal ASGI + SSE + htmx + tagflow
+Swash web dashboard - minimal ASGI + SSE + htmx + tagflow
 
-Run with: uvicorn busker-web:app --reload
-Or: python busker-web.py (uses uvicorn programmatically)
+Run with: uvicorn swash-web:app --reload
+Or: python swash-web.py (uses uvicorn programmatically)
 """
 
 import asyncio
@@ -12,11 +12,11 @@ from typing import AsyncIterator
 from tagflow import tag, text, document
 from sdbus import DbusInterfaceCommonAsync, dbus_signal_async, dbus_method_async, sd_bus_open_user
 
-# Import busker interface definitions
-from busker import BuskerService, DBUS_NAME_PREFIX as BUSKER_PREFIX, DBUS_PATH as BUSKER_PATH
+# Import swash interface definitions
+from swash import SwashService, DBUS_NAME_PREFIX as SWASH_PREFIX, DBUS_PATH as SWASH_PATH
 
 
-# D-Bus interface for VTerm (C++ service, separate from busker)
+# D-Bus interface for VTerm (C++ service, separate from swash)
 class VTermInterface(DbusInterfaceCommonAsync, interface_name="org.claude.VTerm"):
     @dbus_signal_async("ii")
     def damage(self) -> tuple[int, int]: ...
@@ -58,7 +58,7 @@ class FreedesktopDBus(DbusInterfaceCommonAsync, interface_name="org.freedesktop.
 
 
 async def discover_sessions() -> dict:
-    """Discover active busker sessions on D-Bus"""
+    """Discover active swash sessions on D-Bus"""
     sessions = {}
     try:
         bus = sd_bus_open_user()
@@ -83,12 +83,12 @@ async def discover_sessions() -> dict:
                     "title": session_id,
                     "status": "running"
                 }
-            elif name.startswith(f"{BUSKER_PREFIX}."):
-                session_id = name.replace(f"{BUSKER_PREFIX}.", "")
-                sessions[f"busker-{session_id}"] = {
-                    "type": "busker",
+            elif name.startswith(f"{SWASH_PREFIX}."):
+                session_id = name.replace(f"{SWASH_PREFIX}.", "")
+                sessions[f"swash-{session_id}"] = {
+                    "type": "swash",
                     "bus_name": name,
-                    "dbus_path": BUSKER_PATH,
+                    "dbus_path": SWASH_PATH,
                     "title": session_id,
                     "status": "running"
                 }
@@ -151,7 +151,7 @@ def render_index(sessions: dict) -> str:
         with tag.html(lang="en"):
             with tag.head():
                 with tag.title():
-                    text("Busker Dashboard")
+                    text("Swash Dashboard")
                 with tag.script(src="https://unpkg.com/htmx.org@2.0.4"):
                     pass
                 with tag.script():
@@ -259,11 +259,11 @@ window.onresize = () => document.querySelectorAll('.terminal-screen').forEach(c 
                     """)
             with tag.body():
                 with tag.h1():
-                    text("Busker Sessions")
+                    text("Swash Sessions")
                 with tag.div(classes="sessions"):
                     if not sessions:
                         with tag.div(classes="no-sessions"):
-                            text("No active sessions. Start a vterm-service or busdap session.")
+                            text("No active sessions. Start a vterm-service or swash session.")
                     for sid, session in sessions.items():
                         with tag.div(classes="session", id=f"session-{sid}"):
                             with tag.div(classes="session-header"):
@@ -351,11 +351,11 @@ async def subscribe_vterm_events(session_id: str, bus_name: str) -> AsyncIterato
         yield ("error", str(e))
 
 
-async def subscribe_busker_events(session_id: str, bus_name: str) -> AsyncIterator[tuple[str, str]]:
-    """Subscribe to busker session events via poll_events"""
+async def subscribe_swash_events(session_id: str, bus_name: str) -> AsyncIterator[tuple[str, str]]:
+    """Subscribe to swash session events via poll_events"""
     import json
     try:
-        proxy = BuskerService.new_proxy(bus_name, BUSKER_PATH)
+        proxy = SwashService.new_proxy(bus_name, SWASH_PATH)
         cursor = 0
 
         while True:
@@ -394,8 +394,8 @@ async def generate_events(session_id: str) -> AsyncIterator[tuple[str, str]]:
     if session["type"] == "vterm" and "bus_name" in session:
         async for event in subscribe_vterm_events(session_id, session["bus_name"]):
             yield event
-    elif session["type"] == "busker" and "bus_name" in session:
-        async for event in subscribe_busker_events(session_id, session["bus_name"]):
+    elif session["type"] == "swash" and "bus_name" in session:
+        async for event in subscribe_swash_events(session_id, session["bus_name"]):
             yield event
     else:
         # Fallback mock for debug sessions or missing bus
@@ -509,3 +509,4 @@ if __name__ == "__main__":
 
     # Run with short graceful shutdown timeout (SSE streams can block)
     uvicorn.run(app, host=host, port=port, timeout_graceful_shutdown=2)
+

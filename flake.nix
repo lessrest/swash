@@ -1,5 +1,5 @@
 {
-  description = "busker - Interactive process sessions over D-Bus";
+  description = "swash - Interactive process sessions over D-Bus";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -39,12 +39,12 @@
         tagflowPkg
       ]);
 
-      busker = pkgs.writeShellApplication {
-        name = "busker";
+      swash = pkgs.writeShellApplication {
+        name = "swash";
         runtimeInputs = [ python pkgs.lldb ];
         text = ''
           export PYTHONPATH="${./.}:''${PYTHONPATH:-}"
-          exec python3 ${./busker.py} "$@"
+          exec python3 ${./swash.py} "$@"
         '';
       };
 
@@ -57,29 +57,29 @@
         '';
       };
 
-      buskerWeb = pkgs.writeShellApplication {
-        name = "busker-web";
+      swashWeb = pkgs.writeShellApplication {
+        name = "swash-web";
         runtimeInputs = [ webPython ];
         text = ''
           export PYTHONPATH="${./.}:''${PYTHONPATH:-}"
-          exec python3 ${./busker-web.py} "$@"
+          exec python3 ${./swash-web.py} "$@"
         '';
       };
     in
     {
       packages.${system} = {
-        inherit busker busdap buskerWeb;
-        default = busker;
+        inherit swash busdap swashWeb;
+        default = swash;
       };
 
       apps.${system} = {
         default = {
           type = "app";
-          program = "${busker}/bin/busker";
+          program = "${swash}/bin/swash";
         };
         web = {
           type = "app";
-          program = "${buskerWeb}/bin/busker-web";
+          program = "${swashWeb}/bin/swash-web";
         };
       };
 

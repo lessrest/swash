@@ -1,5 +1,5 @@
 """
-Busker Identity: Cryptographic identity and verifiable credentials.
+Swash Identity: Cryptographic identity and verifiable credentials.
 
 Uses systemd's machine/boot/invocation IDs to derive deterministic keypairs,
 and issues verifiable credentials for attestation chains.
@@ -27,9 +27,9 @@ from typing import Any
 # For a real implementation, use nacl or cryptography
 # Here we use a minimal approach with HMAC-based key derivation
 
-# Busker application UUID - generated once, never changes
+# Swash application UUID - generated once, never changes
 # Used for app-specific ID derivation
-BUSKER_APP_UUID = uuid.UUID("7b35a4f2-9c8d-4e1a-b6f3-2d8e9a1c5b7d")
+SWASH_APP_UUID = uuid.UUID("7b35a4f2-9c8d-4e1a-b6f3-2d8e9a1c5b7d")
 
 
 def _read_id_file(path: str) -> bytes:
@@ -56,7 +56,7 @@ def get_invocation_id() -> bytes:
     return inv_id.replace("-", "").encode()
 
 
-def derive_app_specific(base_id: bytes, app_uuid: uuid.UUID = BUSKER_APP_UUID) -> bytes:
+def derive_app_specific(base_id: bytes, app_uuid: uuid.UUID = SWASH_APP_UUID) -> bytes:
     """
     Derive an app-specific ID from a base ID.
     Mimics sd_id128_get_machine_app_specific() behavior.
@@ -139,7 +139,7 @@ class Identity:
         return {
             **obj,
             "proof": {
-                "type": "BuskerSignature2024",
+                "type": "SwashSignature2024",
                 "verificationMethod": self.did(),
                 "signature": base64.b64encode(signature).decode(),
             }
@@ -195,7 +195,7 @@ def create_vc(
     vc = {
         "@context": [
             "https://www.w3.org/2018/credentials/v1",
-            "https://busker.dev/credentials/v1",
+            "https://swa.sh/credentials/v1",
         ],
         "type": ["VerifiableCredential", credential_type],
         "issuer": issuer.did(),
@@ -323,7 +323,7 @@ class ServiceIdentity:
 
     def uri(self) -> str:
         """Return a URI for this service instance."""
-        return f"urn:busker:{self.invocation.app_specific_id.hex()}"
+        return f"urn:swash:{self.invocation.app_specific_id.hex()}"
 
     def present_lineage(self) -> dict:
         """Create a Verifiable Presentation of our attestation chain."""
@@ -440,7 +440,7 @@ if __name__ == "__main__":
     print("\n=== Simulating service identity ===")
     identity, creds = ServiceIdentity.create_for_service(
         command="make -j8",
-        unit_name="busker-TEST123.service"
+        unit_name="swash-TEST123.service"
     )
     print(f"\nService DID: {identity.did()}")
     print(f"Service URI: {identity.uri()}")
@@ -448,3 +448,4 @@ if __name__ == "__main__":
     pprint.pprint(identity.invocation_vc)
     print("\nLineage VP:")
     pprint.pprint(identity.present_lineage())
+

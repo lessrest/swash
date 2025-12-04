@@ -1,15 +1,15 @@
 """
-Busker Journal: Journal-native event streaming.
+Swash Journal: Journal-native event streaming.
 
 Uses systemd journal as the canonical event store instead of in-memory EventLog.
 Events are written with structured fields and read using cursor-based streaming.
 
 Event Fields:
-    BUSKER_SESSION=<session_id>     - Session identifier
-    BUSKER_EVENT=<event_type>       - Event type (output, state, etc.)
-    BUSKER_STREAM=<stdout|stderr>   - Stream for output events
-    BUSKER_DATA=<json>              - Event data as JSON
-    MESSAGE=<text>                  - Human-readable message
+    SWASH_SESSION=<session_id>     - Session identifier
+    SWASH_EVENT=<event_type>       - Event type (output, state, etc.)
+    SWASH_STREAM=<stdout|stderr>   - Stream for output events
+    SWASH_DATA=<json>              - Event data as JSON
+    MESSAGE=<text>                 - Human-readable message
 """
 
 from __future__ import annotations
@@ -38,16 +38,16 @@ def journal_send(
 ):
     """Send a structured event to the journal."""
     fields = {
-        "BUSKER_SESSION": session_id,
-        "BUSKER_EVENT": event_type,
-        "BUSKER_TIMESTAMP": str(time.time()),
+        "SWASH_SESSION": session_id,
+        "SWASH_EVENT": event_type,
+        "SWASH_TIMESTAMP": str(time.time()),
     }
 
     if stream:
-        fields["BUSKER_STREAM"] = stream
+        fields["SWASH_STREAM"] = stream
 
     if data is not None:
-        fields["BUSKER_DATA"] = json.dumps(data)
+        fields["SWASH_DATA"] = json.dumps(data)
 
     if message is None:
         if event_type == "output" and isinstance(data, dict):
@@ -101,18 +101,18 @@ class JournalEvent:
 
 
 class JournalReader:
-    """Read busker events from the journal."""
+    """Read swash events from the journal."""
 
     def __init__(self, session_id: str, unit: str | None = None):
         """
         Create a journal reader for a session.
 
         Args:
-            session_id: The busker session ID
-            unit: Optional systemd unit name to filter by (e.g., "busker-ABC123.service")
+            session_id: The swash session ID
+            unit: Optional systemd unit name to filter by (e.g., "swash-ABC123.service")
         """
         self.session_id = session_id
-        self.unit = unit or f"busker-{session_id}.service"
+        self.unit = unit or f"swash-{session_id}.service"
         self._reader: journal.Reader | None = None
 
     def _ensure_reader(self) -> journal.Reader:
@@ -123,7 +123,7 @@ class JournalReader:
             self._reader.add_match(_SYSTEMD_USER_UNIT=self.unit)
             # Also match by session ID in case we log without unit context
             self._reader.add_disjunction()
-            self._reader.add_match(BUSKER_SESSION=self.session_id)
+            self._reader.add_match(SWASH_SESSION=self.session_id)
             # Seek to beginning
             self._reader.seek_head()
         return self._reader
@@ -145,11 +145,11 @@ class JournalReader:
         else:
             timestamp = time.time()
 
-        # Check if it's a busker event
-        event_type = entry.get("BUSKER_EVENT")
+        # Check if it's a swash event
+        event_type = entry.get("SWASH_EVENT")
         if event_type:
-            # Structured busker event
-            data_str = entry.get("BUSKER_DATA")
+            # Structured swash event
+            data_str = entry.get("SWASH_DATA")
             if data_str:
                 try:
                     data = json.loads(data_str)
@@ -452,5 +452,6 @@ if __name__ == "__main__":
         journal_state(test_id, "exited", exit_code=0)
 
         print("Done. Read with:")
-        print(f"  python busker_journal.py {test_id}")
-        print(f"  journalctl --user -t python --output=verbose | grep BUSKER")
+        print(f"  python swash_journal.py {test_id}")
+        print(f"  journalctl --user -t python --output=verbose | grep SWASH")
+
