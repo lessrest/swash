@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# Nix
+result
+
+# Test artifacts
+test
+*.o
