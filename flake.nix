@@ -1,5 +1,5 @@
 {
-  description = "busdap - Debug Adapter Protocol over D-Bus";
+  description = "busker - Interactive process sessions over D-Bus";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -10,6 +10,15 @@
 
       python = pkgs.python3.withPackages (ps: [ ps.sdbus ps.rich ps.mcp ps.anyio ]);
 
+      busker = pkgs.writeShellApplication {
+        name = "busker";
+        runtimeInputs = [ python pkgs.lldb ];
+        text = ''
+          exec python3 ${./busker.py} "$@"
+        '';
+      };
+
+      # Keep legacy busdap for now
       busdap = pkgs.writeShellApplication {
         name = "busdap";
         runtimeInputs = [ python pkgs.lldb ];
@@ -20,13 +29,13 @@
     in
     {
       packages.${system} = {
-        inherit busdap;
-        default = busdap;
+        inherit busker busdap;
+        default = busker;
       };
 
       apps.${system}.default = {
         type = "app";
-        program = "${busdap}/bin/busdap";
+        program = "${busker}/bin/busker";
       };
 
       devShells.${system}.default = pkgs.mkShell {
