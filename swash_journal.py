@@ -16,11 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import select
 import time
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any
 
 from systemd import journal
 
@@ -35,6 +34,7 @@ def journal_send(
     data: Any = None,
     stream: str | None = None,
     message: str | None = None,
+    extra_fields: dict | None = None,
 ):
     """Send a structured event to the journal."""
     fields = {
@@ -43,15 +43,26 @@ def journal_send(
         "SWASH_TIMESTAMP": str(time.time()),
     }
 
+    # Add any extra fields (like CLAUDE_SESSION)
+    if extra_fields:
+        fields.update(extra_fields)
+
     if stream:
         fields["SWASH_STREAM"] = stream
 
     if data is not None:
-        fields["SWASH_DATA"] = json.dumps(data)
+        # For SSE events, data is already a JSON string - don't double-encode
+        if event_type == "sse" and isinstance(data, str):
+            fields["SWASH_DATA"] = data
+        else:
+            fields["SWASH_DATA"] = json.dumps(data)
 
     if message is None:
         if event_type == "output" and isinstance(data, dict):
             message = data.get("text", "")
+        elif event_type == "sse" and isinstance(data, str):
+            # For SSE, the message IS the raw JSON data
+            message = data
         else:
             message = f"[{event_type}] {json.dumps(data)}"
 
@@ -347,6 +358,64 @@ class JournalReader:
 
         return events, last_cursor, len(events) == 0
 
+    def follow(self, raw: bool = False, debug: bool = False):
+        """
+        Follow journal events until the process exits.
+
+        Yields events as they arrive. Stops when it sees a state event
+        with "exited" or "terminated".
+
+        Args:
+            raw: If True, yield the raw MESSAGE string instead of JournalEvent
+            debug: If True, print debug info to stderr
+
+        Yields:
+            JournalEvent objects (or raw MESSAGE strings if raw=True)
+        """
+        import sys
+        def dbg(msg):
+            if debug:
+                print(f"[follow] {msg}", file=sys.stderr, flush=True)
+
+        reader = self._ensure_reader()
+        reader.seek_head()
+        dbg(f"started, unit={self.unit}")
+
+        while True:
+            entry = reader.get_next()
+            if entry:
+                dbg(f"got entry: SWASH_EVENT={entry.get('SWASH_EVENT')}")
+
+                if raw:
+                    message = entry.get("MESSAGE", "")
+                    if message:
+                        yield message
+                else:
+                    event = self._parse_entry(entry)
+                    if event:
+                        yield event
+
+                # Check if process exited
+                event_type = entry.get("SWASH_EVENT")
+                if event_type == "state":
+                    data_str = entry.get("SWASH_DATA", "{}")
+                    try:
+                        data = json.loads(data_str)
+                        if data.get("event") in ("exited", "terminated"):
+                            dbg("saw exit event, returning")
+                            return
+                    except json.JSONDecodeError:
+                        pass
+                continue
+
+            # No entry, wait for journal changes
+            dbg("no entry, waiting on select...")
+            fd = reader.fileno()
+            readable, _, _ = select.select([fd], [], [], 1.0)
+            dbg(f"select returned: readable={bool(readable)}")
+            if readable:
+                reader.process()
+
 
 # ============================================================================
 # Async Wrappers
@@ -453,5 +522,5 @@ if __name__ == "__main__":
 
         print("Done. Read with:")
         print(f"  python swash_journal.py {test_id}")
-        print(f"  journalctl --user -t python --output=verbose | grep SWASH")
+        print("  journalctl --user -t python --output=verbose | grep SWASH")
 

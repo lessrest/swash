@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 swash - Interactive process sessions over D-Bus
 
@@ -11,6 +10,7 @@ Usage:
 
     swash poll                         Get recent output + gist
     swash wait [--timeout <secs>]      Wait for events
+    swash follow [session_id]          Follow output, exit when process exits
     swash scroll [offset] [limit]      Read scrollback
     swash send <input>                 Send input to process
     swash kill                         Kill process
@@ -18,6 +18,7 @@ Usage:
 Options:
     -s, --session ID      Session ID (auto-detected when only one running)
     -j, --json            Output raw JSON
+    -p, --protocol        Protocol: shell, dap, sse
 """
 
 import argparse
@@ -28,9 +29,7 @@ import random
 import string
 import subprocess
 import sys
-import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 import base64
@@ -40,11 +39,8 @@ import anyio
 # Import identity module
 import swash_identity as identity
 import swash_journal as sjournal
-from anyio.streams.buffered import BufferedByteReceiveStream
 
 from rich.console import Console
-from rich.panel import Panel
-from rich import box
 
 from sdbus import (
     DbusInterfaceCommonAsync,
@@ -271,10 +267,86 @@ class DAPProtocol(Protocol):
         return gist
 
 
+class SSEProtocol(Protocol):
+    """Server-Sent Events protocol (for streaming APIs like Anthropic)."""
+
+    def __init__(self):
+        self._buffer = b""
+        self._stderr_buffer = b""
+
+    async def on_stdout(self, data: bytes, emit: Callable) -> None:
+        self._buffer += data
+        # SSE events are delimited by blank lines (\n\n)
+        while b"\n\n" in self._buffer:
+            event_data, self._buffer = self._buffer.split(b"\n\n", 1)
+            await self._parse_event(event_data.decode("utf-8", errors="replace"), emit)
+
+    def _parse_sse_event(self, raw: str) -> tuple[str | None, str | None]:
+        """Parse SSE event, return (event_type, data)."""
+        event_type = None
+        data_lines = []
+
+        for line in raw.split("\n"):
+            if line.startswith("event:"):
+                event_type = line[6:].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line[5:].strip())
+            # Ignore other fields (id:, retry:, comments starting with :)
+
+        data = "\n".join(data_lines) if data_lines else None
+        return event_type, data
+
+    async def _parse_event(self, raw: str, emit: Callable) -> None:
+        """Parse and emit an SSE event."""
+        event_type, data = self._parse_sse_event(raw)
+
+        if data:
+            # Emit with SWASH_EVENT="sse", MESSAGE=the raw JSON data
+            # The data itself is preserved as-is (not parsed/transformed)
+            await emit("sse", data)
+
+    async def on_stderr(self, data: bytes, emit: Callable) -> None:
+        # Stderr from curl/process - emit as output
+        self._stderr_buffer += data
+        while b"\n" in self._stderr_buffer:
+            line, self._stderr_buffer = self._stderr_buffer.split(b"\n", 1)
+            text = line.decode("utf-8", errors="replace")
+            if text:
+                await emit("output", {"stream": "stderr", "text": text})
+
+    async def on_exit(self, code: int, emit: Callable) -> None:
+        # Flush remaining buffers
+        if self._buffer:
+            # Try to parse any remaining partial event
+            raw = self._buffer.decode("utf-8", errors="replace")
+            _, data = self._parse_sse_event(raw)
+            if data:
+                await emit("sse", data)
+            self._buffer = b""
+        if self._stderr_buffer:
+            text = self._stderr_buffer.decode("utf-8", errors="replace")
+            if text:
+                await emit("output", {"stream": "stderr", "text": text})
+            self._stderr_buffer = b""
+        await emit("state", {"event": "exited", "exit_code": code})
+
+    def format_command(self, name: str, args: dict) -> bytes:
+        # SSE is typically read-only (no stdin commands)
+        return b""
+
+    def update_gist(self, gist: dict, event_kind: str, event_data: Any) -> dict:
+        if event_kind == "state":
+            event = event_data.get("event")
+            if event == "exited":
+                gist["exit_code"] = event_data.get("exit_code")
+        return gist
+
+
 # Protocol registry
 PROTOCOLS = {
     "shell": ShellProtocol,
     "dap": DAPProtocol,
+    "sse": SSEProtocol,
 }
 
 
@@ -285,12 +357,19 @@ PROTOCOLS = {
 class Session:
     """Process session that writes events directly to systemd journal."""
 
-    def __init__(self, session_id: str, protocol: Protocol, task_group: anyio.abc.TaskGroup):
+    def __init__(
+        self,
+        session_id: str,
+        protocol: Protocol,
+        task_group: anyio.abc.TaskGroup,
+        extra_fields: dict | None = None,
+    ):
         self.session_id = session_id
         self.protocol = protocol
         self._tg = task_group
         self._process: anyio.abc.Process | None = None
         self._gist: dict = {}
+        self._extra_fields = extra_fields or {}
 
     @property
     def running(self) -> bool:
@@ -314,7 +393,7 @@ class Session:
 
     async def _emit(self, kind: str, data: Any):
         """Emit event to journal and update gist."""
-        sjournal.journal_send(self.session_id, kind, data)
+        sjournal.journal_send(self.session_id, kind, data, extra_fields=self._extra_fields)
         self._gist = self.protocol.update_gist(self._gist, kind, data)
 
     async def start(self, command: list[str], cwd: str | None = None):
@@ -455,7 +534,13 @@ class SwashService(DbusInterfaceCommonAsync, interface_name=DBUS_NAME_PREFIX):
 # Server Entry Point
 # ============================================================================
 
-async def run_server(session_id: str, protocol_name: str, command: list[str], cwd: str):
+async def run_server(
+    session_id: str,
+    protocol_name: str,
+    command: list[str],
+    cwd: str,
+    extra_fields: dict | None = None,
+):
     """Run session server with specified protocol.
 
     Args:
@@ -463,6 +548,7 @@ async def run_server(session_id: str, protocol_name: str, command: list[str], cw
         protocol_name: Protocol to use (shell, dap)
         command: Command to run
         cwd: Working directory
+        extra_fields: Extra fields to add to all journal entries
     """
     if sys.stdin.isatty():
         sys.exit("ERROR: must be launched via systemd-run")
@@ -475,7 +561,7 @@ async def run_server(session_id: str, protocol_name: str, command: list[str], cw
 
     async with anyio.create_task_group() as tg:
         protocol = protocol_cls()
-        session = Session(session_id, protocol, tg)
+        session = Session(session_id, protocol, tg, extra_fields=extra_fields)
         service = SwashService(session, service_identity)
 
         await request_default_bus_name_async(dbus_name)
@@ -546,6 +632,7 @@ def start_session(
     protocol: str = "shell",
     cwd: str | None = None,
     inherit_env: bool = True,
+    tags: dict | None = None,
 ) -> tuple[str, dict]:
     """Start a new session. Returns (session_id, context)."""
     session_id = gen_session_id()
@@ -553,10 +640,12 @@ def start_session(
     self_path = Path(__file__).resolve()
     working_dir = cwd or os.getcwd()
 
-    # Convert command to string for passing through
+    # Normalize command to list and string forms
     if isinstance(command, list):
+        command_list = command
         command_str = " ".join(command)
     else:
+        command_list = None  # Will use sh -c for string commands
         command_str = command
 
     # Create identity and credentials for the new service
@@ -596,8 +685,17 @@ def start_session(
         "--serve",
         "--protocol", protocol,
         "--session", session_id,
-        "--command", command_str,
     ])
+
+    # Pass command - use JSON for list (preserves arguments), string for shell
+    if command_list:
+        systemd_cmd.extend(["--command-json", json.dumps(command_list)])
+    else:
+        systemd_cmd.extend(["--command", command_str])
+
+    # Pass tags as JSON
+    if tags:
+        systemd_cmd.extend(["--tags-json", json.dumps(tags)])
 
     result = subprocess.run(systemd_cmd, capture_output=True, text=True)
     if result.returncode != 0:
@@ -800,7 +898,7 @@ async def cmd_status():
             status = "[green]running[/green]" if gist.get("running") else "[red]exited[/red]"
             cmd = gist.get("command", "?")
             console.print(f"[bold cyan]{s['id']}[/bold cyan] {status} {cmd}")
-        except Exception as e:
+        except Exception:
             console.print(f"[bold cyan]{s['id']}[/bold cyan] [red]unreachable[/red]")
 
 
@@ -831,9 +929,14 @@ def main():
     parser = argparse.ArgumentParser(description="Interactive process sessions over D-Bus")
     parser.add_argument("-s", "--session", help="Session ID")
     parser.add_argument("-j", "--json", action="store_true", help="JSON output")
-    parser.add_argument("-p", "--protocol", default="shell", help="Protocol: shell, dap")
+    parser.add_argument("-p", "--protocol", default="shell", help="Protocol: shell, dap, sse")
+    parser.add_argument("-t", "--tag", action="append", dest="tags", metavar="KEY=VALUE",
+                        help="Add custom journal field (can be repeated)")
+    parser.add_argument("--debug", action="store_true", help="Debug output")
     parser.add_argument("--serve", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--command", dest="serve_command", help=argparse.SUPPRESS)
+    parser.add_argument("--command-json", dest="serve_command_json", help=argparse.SUPPRESS)
+    parser.add_argument("--tags-json", dest="serve_tags_json", help=argparse.SUPPRESS)
     parser.add_argument("command", nargs="?", help="Command")
     parser.add_argument("args", nargs="*", help="Arguments")
 
@@ -841,14 +944,22 @@ def main():
 
     # Server mode (internal)
     if args.serve:
-        if not args.serve_command:
-            sys.exit("ERROR: no command specified")
-        # Build process command based on protocol
-        if args.protocol == "shell":
-            process_cmd = ["sh", "-c", args.serve_command]
+        if args.serve_command_json:
+            # Command passed as JSON list - run directly
+            process_cmd = json.loads(args.serve_command_json)
+        elif args.serve_command:
+            # Command passed as string - wrap in shell for shell protocol
+            if args.protocol == "shell":
+                process_cmd = ["sh", "-c", args.serve_command]
+            else:
+                process_cmd = args.serve_command.split()
         else:
-            process_cmd = args.serve_command.split()
-        asyncio.run(run_server(args.session, args.protocol, process_cmd, os.getcwd()))
+            sys.exit("ERROR: no command specified")
+
+        # Parse tags
+        extra_fields = json.loads(args.serve_tags_json) if args.serve_tags_json else None
+
+        asyncio.run(run_server(args.session, args.protocol, process_cmd, os.getcwd(), extra_fields))
         return
 
     # MCP mode
@@ -866,11 +977,24 @@ def main():
     if cmd == "run":
         if not args.args:
             error("run <command>")
-        command = " ".join(args.args)
+        # Pass as list to preserve argument boundaries (for -- style invocation)
+        command = args.args
+
+        # Parse tags: ["KEY=VALUE", ...] -> {"KEY": "VALUE", ...}
+        tags = None
+        if args.tags:
+            tags = {}
+            for tag in args.tags:
+                if "=" in tag:
+                    k, v = tag.split("=", 1)
+                    tags[k] = v
+                else:
+                    error(f"invalid tag format: {tag} (expected KEY=VALUE)")
+
         try:
-            session_id, ctx = start_session(command, protocol=args.protocol)
+            session_id, ctx = start_session(command, protocol=args.protocol, tags=tags)
             console.print(f"[bold cyan]{session_id}[/bold cyan] [green]started[/green] [dim]({args.protocol})[/dim]")
-            console.print(f"[dim]{command}[/dim]")
+            console.print(f"[dim]{' '.join(command)}[/dim]")
         except RuntimeError as e:
             error(str(e))
 
@@ -887,6 +1011,28 @@ def main():
         if not sessions:
             error("no sessions")
         asyncio.run(cmd_poll(sessions[0]["id"]))
+
+    elif cmd == "follow":
+        # Get session ID from args or detect
+        if args.args:
+            session_id = args.args[0]
+        elif args.session:
+            session_id = args.session
+        else:
+            sessions = list_sessions()
+            if not sessions:
+                error("no sessions running")
+            session_id = sessions[0]["id"]
+
+        # Follow the journal, output raw messages (like journalctl -o cat)
+        reader = sjournal.JournalReader(session_id)
+        try:
+            for message in reader.follow(raw=True, debug=args.debug):
+                print(message, flush=True)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            reader.close()
 
     else:
         error(f"unknown command: {cmd}")
