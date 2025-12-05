@@ -27,7 +27,7 @@
         doCheck = false;
       };
 
-      python = pkgs.python3.withPackages (ps: [ ps.sdbus ps.rich ps.mcp ps.anyio ps.systemd-python ]);
+      python = pkgs.python3.withPackages (ps: [ ps.sdbus ps.rich ps.mcp ps.anyio ps.systemd-python ps.anthropic ]);
 
       webPython = pkgs.python3.withPackages (ps: [
         ps.uvicorn
@@ -48,15 +48,6 @@
         '';
       };
 
-      # Keep legacy busdap for now
-      busdap = pkgs.writeShellApplication {
-        name = "busdap";
-        runtimeInputs = [ python pkgs.lldb ];
-        text = ''
-          exec python3 ${./busdap.py} "$@"
-        '';
-      };
-
       swashWeb = pkgs.writeShellApplication {
         name = "swash-web";
         runtimeInputs = [ webPython ];
@@ -65,10 +56,14 @@
           exec python3 ${./swash-web.py} "$@"
         '';
       };
+
+      claude = pkgs.writers.writePython3Bin "claude" {
+        libraries = with pkgs.python3Packages; [ anthropic rich systemd-python pygit2 rdflib ];
+      } (builtins.readFile ./claude.py);
     in
     {
       packages.${system} = {
-        inherit swash busdap swashWeb;
+        inherit swash swashWeb claude;
         default = swash;
       };
 
@@ -81,10 +76,30 @@
           type = "app";
           program = "${swashWeb}/bin/swash-web";
         };
+        claude = {
+          type = "app";
+          program = "${claude}/bin/claude";
+        };
       };
 
       devShells.${system}.default = pkgs.mkShell {
-        packages = [ python webPython pkgs.lldb ];
+        packages = [
+          (pkgs.python3.withPackages (ps: [ ps.pip ps.virtualenv ]))
+          pkgs.lldb
+          pkgs.pkg-config
+          pkgs.systemd.dev
+          pkgs.libgit2
+        ];
+
+        shellHook = ''
+          if [ ! -d .venv ]; then
+            echo "Creating .venv..."
+            python -m venv .venv
+            .venv/bin/pip install -q anthropic rich sdbus mcp anyio systemd-python uvicorn pygit2 rdflib
+          fi
+          source .venv/bin/activate
+          export PYTHONPATH="${./.}:''${PYTHONPATH:-}"
+        '';
       };
     };
 }
