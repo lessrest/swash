@@ -10,14 +10,13 @@
 //	swash send <session_id> <input>    Send input to process
 //	swash kill <session_id>            Kill process
 //	swash history                      Show session history
+//	swash host                         (internal) Run as task host
 package main
 
 import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"time"
 
 	"github.com/mbrock/swash/internal/swash"
@@ -37,6 +36,7 @@ Usage:
   swash send <session_id> <input>    Send input to process
   swash kill <session_id>            Kill process
   swash history                      Show session history
+  swash host                         (internal) Run as task host
 
 Flags:
 `)
@@ -86,6 +86,8 @@ Flags:
 		cmdKill(cmdArgs[0])
 	case "history":
 		cmdHistory()
+	case "host":
+		cmdHost()
 	default:
 		fatal("unknown command: %s", cmd)
 	}
@@ -127,26 +129,21 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-// findServerBinary locates the swash-server binary.
-func findServerBinary() string {
-	// First, check if swash-server is next to the current executable
+// findHostCommand returns the command to run the task host (this binary with "host" subcommand).
+func findHostCommand() []string {
 	self, err := os.Executable()
-	if err == nil {
-		dir := filepath.Dir(self)
-		serverPath := filepath.Join(dir, "swash-server")
-		if _, err := os.Stat(serverPath); err == nil {
-			return serverPath
-		}
+	if err != nil {
+		fatal("cannot find own executable: %v", err)
 	}
+	return []string{self, "host"}
+}
 
-	// Fall back to PATH
-	path, err := exec.LookPath("swash-server")
-	if err == nil {
-		return path
+// cmdHost runs as the task host (D-Bus server for a session).
+// This is launched by systemd, not by users directly.
+func cmdHost() {
+	if err := swash.RunServer(); err != nil {
+		fatal("%v", err)
 	}
-
-	fatal("swash-server not found (should be next to swash binary or in PATH)")
-	return ""
 }
 
 func cmdStatus() {
@@ -174,8 +171,8 @@ func cmdStatus() {
 
 func cmdRun(command []string) {
 	ctx := context.Background()
-	serverBinary := findServerBinary()
-	sessionID, err := swash.StartSession(ctx, command, serverBinary)
+	hostCommand := findHostCommand()
+	sessionID, err := swash.StartSession(ctx, command, hostCommand)
 	if err != nil {
 		fatal("starting session: %v", err)
 	}
