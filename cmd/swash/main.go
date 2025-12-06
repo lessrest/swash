@@ -30,6 +30,9 @@ var (
 	tagFlags     []string
 )
 
+// Global runtime (initialized for commands that need it)
+var rt *swash.Runtime
+
 func main() {
 	// Handle "host" subcommand before flag parsing, since it has its own flags
 	// that pflag doesn't know about (--session, --command-json)
@@ -116,6 +119,15 @@ func fatal(format string, args ...any) {
 	os.Exit(1)
 }
 
+// initRuntime initializes the global runtime. Call this before using rt.
+func initRuntime() {
+	var err error
+	rt, err = swash.DefaultRuntime(context.Background())
+	if err != nil {
+		fatal("initializing runtime: %v", err)
+	}
+}
+
 // formatAge converts a systemd timestamp to a relative age like "2m", "1h", "3d"
 func formatAge(timestamp string) string {
 	if timestamp == "" {
@@ -165,8 +177,10 @@ func cmdHost() {
 }
 
 func cmdStatus() {
-	ctx := context.Background()
-	sessions, err := swash.ListSessions(ctx)
+	initRuntime()
+	defer rt.Close()
+
+	sessions, err := rt.ListSessions(context.Background())
 	if err != nil {
 		fatal("listing sessions: %v", err)
 	}
@@ -188,7 +202,9 @@ func cmdStatus() {
 }
 
 func cmdRun(command []string) {
-	ctx := context.Background()
+	initRuntime()
+	defer rt.Close()
+
 	hostCommand := findHostCommand()
 
 	// Build session options from flags
@@ -197,7 +213,7 @@ func cmdRun(command []string) {
 		Tags:     parseTags(tagFlags),
 	}
 
-	sessionID, err := swash.StartSessionWithOptions(ctx, command, hostCommand, opts)
+	sessionID, err := rt.StartSessionWithOptions(context.Background(), command, hostCommand, opts)
 	if err != nil {
 		fatal("starting session: %v", err)
 	}
@@ -216,15 +232,20 @@ func parseTags(tags []string) map[string]string {
 }
 
 func cmdStop(sessionID string) {
-	ctx := context.Background()
-	if err := swash.StopSession(ctx, sessionID); err != nil {
+	initRuntime()
+	defer rt.Close()
+
+	if err := rt.StopSession(context.Background(), sessionID); err != nil {
 		fatal("stopping session: %v", err)
 	}
 	fmt.Printf("%s stopped\n", sessionID)
 }
 
 func cmdPoll(sessionID string) {
-	events, _, err := swash.PollSessionOutput(sessionID, "")
+	initRuntime()
+	defer rt.Close()
+
+	events, _, err := rt.PollSessionOutput(sessionID, "")
 	if err != nil {
 		fatal("polling journal: %v", err)
 	}
@@ -234,26 +255,38 @@ func cmdPoll(sessionID string) {
 }
 
 func cmdFollow(sessionID string) {
-	if err := swash.FollowSession(sessionID); err != nil {
+	initRuntime()
+	defer rt.Close()
+
+	if err := rt.FollowSession(context.Background(), sessionID); err != nil {
 		fatal("following: %v", err)
 	}
 }
 
 func cmdSend(sessionID, input string) {
-	if err := swash.SendInput(sessionID, input); err != nil {
+	initRuntime()
+	defer rt.Close()
+
+	if err := rt.SendInput(sessionID, input); err != nil {
 		fatal("sending input: %v", err)
 	}
 }
 
 func cmdKill(sessionID string) {
-	if err := swash.KillSession(sessionID); err != nil {
+	initRuntime()
+	defer rt.Close()
+
+	if err := rt.KillSession(sessionID); err != nil {
 		fatal("killing: %v", err)
 	}
 	fmt.Printf("%s killed\n", sessionID)
 }
 
 func cmdHistory() {
-	sessions, err := swash.ListHistory()
+	initRuntime()
+	defer rt.Close()
+
+	sessions, err := rt.ListHistory(context.Background())
 	if err != nil {
 		fatal("listing history: %v", err)
 	}

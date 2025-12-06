@@ -3,6 +3,7 @@ package swash
 import (
 	"context"
 	"fmt"
+	"iter"
 	"strconv"
 	"strings"
 	"time"
@@ -50,8 +51,9 @@ type Journal interface {
 	// Returns entries, the new cursor position, and any error.
 	Poll(ctx context.Context, matches []JournalMatch, cursor string) ([]JournalEntry, string, error)
 
-	// Follow streams entries matching filters until context is cancelled.
-	Follow(ctx context.Context, matches []JournalMatch, handler func(JournalEntry)) error
+	// Follow returns an iterator over entries matching filters.
+	// Yields entries as they arrive until context is cancelled or consumer breaks.
+	Follow(ctx context.Context, matches []JournalMatch) iter.Seq[JournalEntry]
 
 	// Close releases any resources.
 	Close() error
@@ -129,45 +131,50 @@ func (ji *journalImpl) Poll(
 	return entries, lastCursor, nil
 }
 
-// Follow streams entries matching filters until context is cancelled.
-func (ji *journalImpl) Follow(
-	ctx context.Context,
-	matches []JournalMatch,
-	handler func(JournalEntry),
-) error {
-	// Apply matches
-	ji.j.FlushMatches()
-	for _, m := range matches {
-		if err := ji.j.AddMatch(m.Field + "=" + m.Value); err != nil {
-			return fmt.Errorf("adding match %s=%s: %w", m.Field, m.Value, err)
-		}
-	}
-
-	ji.j.SeekHead()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+// Follow returns an iterator over entries matching filters.
+func (ji *journalImpl) Follow(ctx context.Context, matches []JournalMatch) iter.Seq[JournalEntry] {
+	return func(yield func(JournalEntry) bool) {
+		// Apply matches
+		ji.j.FlushMatches()
+		for _, m := range matches {
+			if err := ji.j.AddMatch(m.Field + "=" + m.Value); err != nil {
+				return // Can't report error from iterator, just stop
+			}
 		}
 
-		n, err := ji.j.Next()
-		if err != nil {
-			return fmt.Errorf("reading journal: %w", err)
-		}
+		ji.j.SeekHead()
 
-		if n == 0 {
-			// No more entries, wait for new ones
-			ji.j.Wait(time.Second)
-			continue
-		}
+		for {
+			n, err := ji.j.Next()
+			if err != nil {
+				return
+			}
 
-		entry, err := ji.parseEntry()
-		if err != nil {
-			continue
+			if n == 0 {
+				// No entries available, wait for new ones (cancellable)
+				waitCh := make(chan struct{})
+				go func() {
+					ji.j.Wait(5 * time.Second)
+					close(waitCh)
+				}()
+
+				select {
+				case <-ctx.Done():
+					return
+				case <-waitCh:
+					continue
+				}
+			}
+
+			entry, err := ji.parseEntry()
+			if err != nil {
+				continue
+			}
+
+			if !yield(entry) {
+				return // Consumer broke out of loop
+			}
 		}
-		handler(entry)
 	}
 }
 
@@ -191,6 +198,39 @@ func (ji *journalImpl) parseEntry() (JournalEntry, error) {
 // -----------------------------------------------------------------------------
 // Convenience functions for common journal operations
 // -----------------------------------------------------------------------------
+
+// Lifecycle event constants
+const (
+	EventStarted = "started"
+	EventExited  = "exited"
+)
+
+// Journal field names for swash events
+const (
+	FieldEvent    = "SWASH_EVENT"
+	FieldSession  = "SWASH_SESSION"
+	FieldCommand  = "SWASH_COMMAND"
+	FieldExitCode = "SWASH_EXIT_CODE"
+)
+
+// EmitStarted writes a session started event to the journal.
+func EmitStarted(sessionID string, command []string) error {
+	return journal.Send("Session started", journal.PriInfo, map[string]string{
+		FieldEvent:   EventStarted,
+		FieldSession: sessionID,
+		FieldCommand: strings.Join(command, " "),
+	})
+}
+
+// EmitExited writes a session exited event to the journal.
+func EmitExited(sessionID string, exitCode int, command []string) error {
+	return journal.Send("Session exited", journal.PriInfo, map[string]string{
+		FieldEvent:    EventExited,
+		FieldSession:  sessionID,
+		FieldExitCode: strconv.Itoa(exitCode),
+		FieldCommand:  strings.Join(command, " "),
+	})
+}
 
 // WriteOutput writes process output to the journal with an FD field.
 func WriteOutput(fd int, text string) error {

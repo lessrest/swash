@@ -216,12 +216,12 @@ func (j *JournalService) Send(message string, fields map[string]string) *dbus.Er
     if j.journalFile != nil {
         if err := j.journalFile.AppendEntry(allFields); err != nil {
             // Log but don't fail - in-memory storage still works
-            fmt.Fprintf(os.Stderr, "warning: failed to write to journal file: %%v\n", err)
+            fmt.Fprintf(os.Stderr, "warning: failed to write to journal file: %v\n", err)
         } else {
             // Sync immediately so external readers (journalctl) can access
             // Real journald syncs every 5 minutes, but we sync eagerly for testing
             if err := j.journalFile.Sync(); err != nil {
-                fmt.Fprintf(os.Stderr, "warning: failed to sync journal file: %%v\n", err)
+                fmt.Fprintf(os.Stderr, "warning: failed to sync journal file: %v\n", err)
             }
         }
     }
@@ -343,11 +343,11 @@ func (j *JournalService) AddFromUnit(unitName, sliceName, stream, data string) {
     // Write to journal file if available
     if j.journalFile != nil {
         if err := j.journalFile.AppendEntry(fields); err != nil {
-            fmt.Fprintf(os.Stderr, "warning: failed to write to journal file: %%v\n", err)
+            fmt.Fprintf(os.Stderr, "warning: failed to write to journal file: %v\n", err)
         } else {
             // Sync so external readers can access
             if err := j.journalFile.Sync(); err != nil {
-                fmt.Fprintf(os.Stderr, "warning: failed to sync journal file: %%v\n", err)
+                fmt.Fprintf(os.Stderr, "warning: failed to sync journal file: %v\n", err)
             }
         }
     }

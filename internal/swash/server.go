@@ -157,6 +157,11 @@ func RunServer() error {
 		return fmt.Errorf("starting process: %w", err)
 	}
 
+	// Emit lifecycle event
+	if err := EmitStarted(serverSessionID, serverCommand); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to emit started event: %v\n", err)
+	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
@@ -285,17 +290,23 @@ func startTaskProcess() (chan struct{}, error) {
 		wg.Wait()
 
 		// Get exit status from unit
+		var exitCode int
 		ctx := context.Background()
 		sd, err := ConnectUserSystemd(ctx)
 		if err == nil {
 			unit, err := sd.GetUnit(ctx, TaskUnit(serverSessionID))
 			if err == nil {
-				exitCode := int(unit.ExitStatus)
+				exitCode = int(unit.ExitStatus)
 				serverMutex.Lock()
 				serverExitCode = &exitCode
 				serverMutex.Unlock()
 			}
 			sd.Close()
+		}
+
+		// Emit lifecycle event
+		if err := EmitExited(serverSessionID, exitCode, serverCommand); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to emit exited event: %v\n", err)
 		}
 
 		serverMutex.Lock()
