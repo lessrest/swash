@@ -379,6 +379,36 @@ func (jf *File) appendEntryObject(realtime, monotonic, xorHash uint64, items []E
 	return jf.syncHeader()
 }
 
+// Sync flushes pending writes and sets state to OFFLINE so external readers
+// (like journalctl) can access the file. The file remains open for further writes.
+// This mimics journald's SyncIntervalSec behavior.
+func (jf *File) Sync() error {
+	jf.mu.Lock()
+	defer jf.mu.Unlock()
+
+	// Write entry array if we have entries
+	if len(jf.entryArrayItems) > 0 {
+		if err := jf.writeEntryArray(); err != nil {
+			return err
+		}
+	}
+
+	// Update arena size
+	endPos, err := jf.f.Seek(0, 2)
+	if err == nil {
+		jf.header.ArenaSize = uint64(endPos) - HeaderSize
+	}
+
+	// Set offline so readers can access
+	jf.header.State = StateOffline
+	if err := jf.syncHeader(); err != nil {
+		return err
+	}
+
+	// Fsync to ensure data is on disk
+	return jf.f.Sync()
+}
+
 // Close closes the journal file
 func (jf *File) Close() error {
 	jf.mu.Lock()
@@ -442,6 +472,9 @@ func (jf *File) writeEntryArray() error {
 	// For a single entry array, it's both head and tail
 	jf.header.TailEntryArrayOffset = uint32(offset)
 	jf.header.TailEntryArrayNEntries = uint32(nItems)
+
+	// Clear items so subsequent flushes only include new entries
+	jf.entryArrayItems = jf.entryArrayItems[:0]
 
 	return nil
 }

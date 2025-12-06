@@ -86,11 +86,13 @@ func (s *SwashService) Kill() (string, *dbus.Error) {
 }
 
 // RunServer runs the D-Bus server for a session.
+// Called as: swash host --session ID --command-json [...]
 func RunServer() error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	sessionIDFlag := fs.String("session", "", "Session ID")
 	commandJSONFlag := fs.String("command-json", "", "Command as JSON array")
-	fs.Parse(os.Args[1:])
+	// Skip "swash" (index 0) and "host" (index 1) to get to the flags
+	fs.Parse(os.Args[2:])
 
 	if *sessionIDFlag == "" || *commandJSONFlag == "" {
 		return fmt.Errorf("missing required flags")
