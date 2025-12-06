@@ -28,7 +28,10 @@ func main() {
 	}
 	defer conn.Close()
 
-	mgr := NewManager(conn)
+	// Create journal service first (manager needs it)
+	journal := NewJournalService()
+
+	mgr := NewManager(conn, journal)
 
 	// Request the systemd bus name
 	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
@@ -50,6 +53,12 @@ func main() {
 	// Also export our custom log interface
 	if err := conn.Export(mgr, objectPath, "sh.swa.MiniSystemd.Logs"); err != nil {
 		fmt.Fprintf(os.Stderr, "error: exporting logs interface: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Export journal service
+	if err := conn.Export(journal, objectPath, "sh.swa.MiniSystemd.Journal"); err != nil {
+		fmt.Fprintf(os.Stderr, "error: exporting journal interface: %v\n", err)
 		os.Exit(1)
 	}
 

@@ -22,6 +22,7 @@ type Unit struct {
 	WorkingDir  string
 	Environment []string
 	BusName     string // For Type=dbus services
+	Slice       string // Slice this unit belongs to
 
 	// Runtime state
 	Cmd        *exec.Cmd
@@ -44,17 +45,19 @@ type LogEntry struct {
 
 // Manager handles process lifecycle and logs
 type Manager struct {
-	mu    sync.RWMutex
-	units map[string]*Unit
-	conn  *dbus.Conn
-	jobID uint32
+	mu      sync.RWMutex
+	units   map[string]*Unit
+	conn    *dbus.Conn
+	journal *JournalService
+	jobID   uint32
 }
 
 // NewManager creates a new process manager
-func NewManager(conn *dbus.Conn) *Manager {
+func NewManager(conn *dbus.Conn, journal *JournalService) *Manager {
 	return &Manager{
-		units: make(map[string]*Unit),
-		conn:  conn,
+		units:   make(map[string]*Unit),
+		conn:    conn,
+		journal: journal,
 	}
 }
 
@@ -91,6 +94,9 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 		State: "running",
 	}
 
+	// FD passing support
+	var stdinFD, stdoutFD, stderrFD *int
+
 	// Parse properties
 	for _, prop := range properties {
 		switch prop.Name {
@@ -110,6 +116,10 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 			if envList, ok := prop.Value.Value().([]string); ok {
 				unit.Environment = envList
 			}
+		case "Slice":
+			if s, ok := prop.Value.Value().(string); ok {
+				unit.Slice = s
+			}
 		case "ExecStart":
 			// ExecStart is a(sasb) - array of (path, argv, ignore-failure)
 			val := prop.Value.Value()
@@ -120,6 +130,22 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 						unit.Command = argv
 					}
 				}
+			}
+		case "StandardInputFileDescriptor":
+			// UnixFD comes as dbus.UnixFDIndex which gets resolved to int by godbus
+			if fd, ok := prop.Value.Value().(dbus.UnixFD); ok {
+				fdInt := int(fd)
+				stdinFD = &fdInt
+			}
+		case "StandardOutputFileDescriptor":
+			if fd, ok := prop.Value.Value().(dbus.UnixFD); ok {
+				fdInt := int(fd)
+				stdoutFD = &fdInt
+			}
+		case "StandardErrorFileDescriptor":
+			if fd, ok := prop.Value.Value().(dbus.UnixFD); ok {
+				fdInt := int(fd)
+				stderrFD = &fdInt
 			}
 		}
 	}
@@ -133,14 +159,31 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 	cmd.Dir = unit.WorkingDir
 	cmd.Env = append(os.Environ(), unit.Environment...)
 
-	// Capture stdout/stderr with pipes
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []interface{}{err.Error()})
+	// Handle stdio - use passed FDs or create pipes for capture
+	var stdoutPipe, stderrPipe interface{ Read([]byte) (int, error) }
+
+	if stdinFD != nil {
+		cmd.Stdin = os.NewFile(uintptr(*stdinFD), "stdin")
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []interface{}{err.Error()})
+
+	if stdoutFD != nil {
+		cmd.Stdout = os.NewFile(uintptr(*stdoutFD), "stdout")
+	} else {
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []interface{}{err.Error()})
+		}
+		stdoutPipe = stdout
+	}
+
+	if stderrFD != nil {
+		cmd.Stderr = os.NewFile(uintptr(*stderrFD), "stderr")
+	} else {
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []interface{}{err.Error()})
+		}
+		stderrPipe = stderr
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -153,9 +196,13 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 
 	m.units[name] = unit
 
-	// Capture output in background
-	go m.captureOutput(name, stdout, "stdout")
-	go m.captureOutput(name, stderr, "stderr")
+	// Capture output in background (only for pipes we created)
+	if stdoutPipe != nil {
+		go m.captureOutput(name, stdoutPipe, "stdout")
+	}
+	if stderrPipe != nil {
+		go m.captureOutput(name, stderrPipe, "stderr")
+	}
 
 	// Monitor process exit
 	go m.waitForExit(name)
@@ -356,20 +403,28 @@ func (m *Manager) captureOutput(unitName string, pipe interface{ Read([]byte) (i
 	for {
 		n, err := pipe.Read(buf)
 		if n > 0 {
+			data := string(buf[:n])
 			m.mu.Lock()
+			var sliceName string
 			if unit, ok := m.units[unitName]; ok {
 				entry := LogEntry{
 					Timestamp: time.Now(),
 					Stream:    stream,
-					Data:      string(buf[:n]),
+					Data:      data,
 				}
 				if stream == "stdout" {
 					unit.Stdout = append(unit.Stdout, entry)
 				} else {
 					unit.Stderr = append(unit.Stderr, entry)
 				}
+				sliceName = unit.Slice
 			}
 			m.mu.Unlock()
+
+			// Also write to journal service for querying
+			if m.journal != nil {
+				m.journal.AddFromUnit(unitName, sliceName, stream, data)
+			}
 		}
 		if err != nil {
 			break
