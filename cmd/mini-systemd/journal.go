@@ -1,11 +1,16 @@
 package main
 
 import (
+	"crypto/rand"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/godbus/dbus/v5"
+	"github.com/mbrock/swash/pkg/journalfile"
 )
 
 // JournalEntry represents a log entry with fields
@@ -20,6 +25,10 @@ type JournalService struct {
 	mu      sync.RWMutex
 	entries []JournalEntry
 	cursor  int64 // Simple monotonic cursor
+
+	// Journal file for persistent storage
+	journalFile *journalfile.File
+	journalDir  string
 }
 
 // NewJournalService creates a new journal service
@@ -27,6 +36,52 @@ func NewJournalService() *JournalService {
 	return &JournalService{
 		entries: make([]JournalEntry, 0),
 	}
+}
+
+// NewJournalServiceWithFile creates a journal service with file-based storage
+func NewJournalServiceWithFile(dir string) (*JournalService, error) {
+	js := &JournalService{
+		entries:    make([]JournalEntry, 0),
+		journalDir: dir,
+	}
+
+	if err := os.MkdirAll(dir, 0750); err != nil {
+		return nil, fmt.Errorf("create journal directory: %w", err)
+	}
+
+	// Generate machine and boot IDs
+	var machineID, bootID journalfile.ID128
+	if _, err := rand.Read(machineID[:]); err != nil {
+		return nil, fmt.Errorf("generate machine ID: %w", err)
+	}
+	if _, err := rand.Read(bootID[:]); err != nil {
+		return nil, fmt.Errorf("generate boot ID: %w", err)
+	}
+
+	// Create journal file with timestamp
+	filename := fmt.Sprintf("user-%d.journal", time.Now().UnixNano())
+	path := filepath.Join(dir, filename)
+
+	jf, err := journalfile.Create(path, machineID, bootID)
+	if err != nil {
+		return nil, fmt.Errorf("create journal file: %w", err)
+	}
+
+	js.journalFile = jf
+	return js, nil
+}
+
+// Close closes the journal file
+func (j *JournalService) Close() error {
+	if j.journalFile != nil {
+		return j.journalFile.Close()
+	}
+	return nil
+}
+
+// GetJournalDir returns the journal directory path (D-Bus method)
+func (j *JournalService) GetJournalDir() (string, *dbus.Error) {
+	return j.journalDir, nil
 }
 
 // Send writes a log entry (D-Bus method on sh.swa.MiniSystemd.Journal)
@@ -50,6 +105,14 @@ func (j *JournalService) Send(message string, fields map[string]string) *dbus.Er
 
 	j.entries = append(j.entries, entry)
 	j.cursor++
+
+	// Write to journal file if available
+	if j.journalFile != nil {
+		if err := j.journalFile.AppendEntry(allFields); err != nil {
+			// Log but don't fail - in-memory storage still works
+			fmt.Fprintf(os.Stderr, "warning: failed to write to journal file: %v\n", err)
+		}
+	}
 
 	return nil
 }
@@ -133,19 +196,28 @@ func (j *JournalService) AddFromUnit(unitName, sliceName, stream, data string) {
 		fd = "2"
 	}
 
+	fields := map[string]string{
+		"MESSAGE":             data,
+		"FD":                  fd,
+		"USER_UNIT":           unitName,
+		"_SYSTEMD_USER_SLICE": sliceName,
+	}
+
 	entry := JournalEntry{
 		Timestamp: time.Now().UnixMicro(),
 		Message:   data,
-		Fields: map[string]string{
-			"MESSAGE":              data,
-			"FD":                   fd,
-			"USER_UNIT":            unitName,
-			"_SYSTEMD_USER_SLICE":  sliceName,
-		},
+		Fields:    fields,
 	}
 
 	j.entries = append(j.entries, entry)
 	j.cursor++
+
+	// Write to journal file if available
+	if j.journalFile != nil {
+		if err := j.journalFile.AppendEntry(fields); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to write to journal file: %v\n", err)
+		}
+	}
 }
 
 // SearchBySlice returns entries for a given slice, sorted by timestamp

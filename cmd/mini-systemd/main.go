@@ -6,9 +6,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/godbus/dbus/v5"
@@ -21,6 +23,10 @@ const (
 )
 
 func main() {
+	// Parse flags
+	journalDir := flag.String("journal-dir", "", "Directory for journal files (default: $XDG_RUNTIME_DIR/mini-systemd/journal)")
+	flag.Parse()
+
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: connecting to session bus: %v\n", err)
@@ -28,8 +34,25 @@ func main() {
 	}
 	defer conn.Close()
 
-	// Create journal service first (manager needs it)
-	journal := NewJournalService()
+	// Determine journal directory
+	jdir := *journalDir
+	if jdir == "" {
+		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+		if runtimeDir == "" {
+			runtimeDir = "/tmp"
+		}
+		jdir = filepath.Join(runtimeDir, "mini-systemd", "journal")
+	}
+
+	// Create journal service with file storage
+	journal, err := NewJournalServiceWithFile(jdir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to create journal file, using in-memory only: %v\n", err)
+		journal = NewJournalService()
+	} else {
+		defer journal.Close()
+		fmt.Printf("Journal directory: %s\n", jdir)
+	}
 
 	mgr := NewManager(conn, journal)
 
