@@ -13,6 +13,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -149,7 +150,8 @@ func findServerBinary() string {
 }
 
 func cmdStatus() {
-	sessions, err := swash.ListSessions()
+	ctx := context.Background()
+	sessions, err := swash.ListSessions(ctx)
 	if err != nil {
 		fatal("listing sessions: %v", err)
 	}
@@ -171,8 +173,9 @@ func cmdStatus() {
 }
 
 func cmdRun(command []string) {
+	ctx := context.Background()
 	serverBinary := findServerBinary()
-	sessionID, err := swash.StartSession(command, serverBinary)
+	sessionID, err := swash.StartSession(ctx, command, serverBinary)
 	if err != nil {
 		fatal("starting session: %v", err)
 	}
@@ -180,14 +183,15 @@ func cmdRun(command []string) {
 }
 
 func cmdStop(sessionID string) {
-	if err := swash.StopSession(sessionID); err != nil {
+	ctx := context.Background()
+	if err := swash.StopSession(ctx, sessionID); err != nil {
 		fatal("stopping session: %v", err)
 	}
 	fmt.Printf("%s stopped\n", sessionID)
 }
 
 func cmdPoll(sessionID string) {
-	events, _, err := swash.PollJournal(sessionID, "")
+	events, _, err := swash.PollSessionOutput(sessionID, "")
 	if err != nil {
 		fatal("polling journal: %v", err)
 	}
@@ -197,7 +201,7 @@ func cmdPoll(sessionID string) {
 }
 
 func cmdFollow(sessionID string) {
-	if err := swash.FollowJournal(sessionID); err != nil {
+	if err := swash.FollowSession(sessionID); err != nil {
 		fatal("following: %v", err)
 	}
 }

@@ -6,14 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
-	"time"
 
-	"github.com/coreos/go-systemd/v22/dbus"
+	"github.com/godbus/dbus/v5"
 )
 
-// Session represents a running swash session.
+// Session represents a running swash session (high-level view).
 type Session struct {
 	ID      string `json:"id"`
 	Unit    string `json:"unit"`
@@ -42,81 +40,38 @@ func GenSessionID() string {
 	return string(id)
 }
 
-func UnitName(sessionID string) string {
-	return fmt.Sprintf("swash-host-%s.service", sessionID)
-}
-
-// ListSessions returns all running swash sessions using the systemd D-Bus API.
-func ListSessions() ([]Session, error) {
-	ctx := context.Background()
-	conn, err := dbus.NewUserConnectionContext(ctx)
+// ListSessions returns all running swash sessions.
+func ListSessions(ctx context.Context) ([]Session, error) {
+	sd, err := ConnectUserSystemd(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("connecting to systemd: %w", err)
+		return nil, err
 	}
-	defer conn.Close()
+	defer sd.Close()
 
-	// List all swash-host-*.service units
-	units, err := conn.ListUnitsByPatternsContext(
+	units, err := sd.ListUnits(
 		ctx,
-		[]string{"active", "activating"},
-		[]string{"swash-host-*.service"},
+		[]UnitName{"swash-host-*.service"},
+		[]UnitState{UnitStateActive, UnitStateActivating},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("listing units: %w", err)
+		return nil, err
 	}
 
-	var sessions []Session
+	sessions := make([]Session, 0, len(units))
 	for _, u := range units {
-		// Extract session ID from unit name: swash-host-ABC123.service -> ABC123
-		sessionID := strings.TrimPrefix(strings.TrimSuffix(u.Name, ".service"), "swash-host-")
-
-		// Get unit properties (for timestamps, description)
-		unitProps, err := conn.GetUnitPropertiesContext(ctx, u.Name)
-		if err != nil {
-			continue
-		}
-
-		// Get service properties (for MainPID, ExecMainStatus)
-		serviceProps, err := conn.GetUnitTypePropertiesContext(ctx, u.Name, "Service")
-		if err != nil {
-			continue
-		}
-
 		status := "running"
-		if exitStatus, ok := serviceProps["ExecMainStatus"].(int32); ok && exitStatus != 0 {
+		if u.ExitStatus != 0 {
 			status = "exited"
 		}
 
-		var pid uint32
-		if mainPID, ok := serviceProps["MainPID"].(uint32); ok {
-			pid = mainPID
-		}
-
-		var cwd string
-		if workDir, ok := serviceProps["WorkingDirectory"].(string); ok {
-			cwd = workDir
-		}
-
-		var command string
-		if desc, ok := unitProps["Description"].(string); ok {
-			command = desc
-		}
-
-		var started string
-		if ts, ok := unitProps["ActiveEnterTimestamp"].(uint64); ok && ts > 0 {
-			// Convert microseconds to time
-			t := time.Unix(int64(ts/1000000), int64((ts%1000000)*1000))
-			started = t.Format("Mon 2006-01-02 15:04:05 MST")
-		}
-
 		sessions = append(sessions, Session{
-			ID:      sessionID,
-			Unit:    u.Name,
-			PID:     pid,
-			CWD:     cwd,
+			ID:      u.Name.SessionID(),
+			Unit:    u.Name.String(),
+			PID:     u.MainPID,
+			CWD:     u.WorkingDir,
 			Status:  status,
-			Command: command,
-			Started: started,
+			Command: u.Description,
+			Started: u.Started.Format("Mon 2006-01-02 15:04:05 MST"),
 		})
 	}
 	return sessions, nil
@@ -124,93 +79,188 @@ func ListSessions() ([]Session, error) {
 
 // StartSession starts a new swash session with the given command.
 // serverBinary is the path to the swash-server binary.
-func StartSession(command []string, serverBinary string) (string, error) {
+func StartSession(ctx context.Context, command []string, serverBinary string) (string, error) {
+	sd, err := ConnectUserSystemd(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer sd.Close()
+
 	sessionID := GenSessionID()
-	unit := UnitName(sessionID)
 	cwd, _ := os.Getwd()
 	dbusName := fmt.Sprintf("%s.%s", DBusNamePrefix, sessionID)
-
 	cmdStr := strings.Join(command, " ")
-	args := []string{
-		"systemd-run", "--user",
-		"--collect",
-		"--unit=" + unit,
-		"--slice=swash-" + sessionID + ".slice",
-		"--service-type=dbus",
-		"--property=BusName=" + dbusName,
-		"--property=StandardOutput=journal",
-		"--property=StandardError=journal",
-		"--working-directory=" + cwd,
-		"--description=" + cmdStr,
-	}
 
-	for _, env := range os.Environ() {
-		if strings.HasPrefix(env, "_") {
+	// Build environment map (excluding underscore-prefixed vars)
+	env := make(map[string]string)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "_") {
 			continue
 		}
-		args = append(args, "--setenv="+env)
+		if idx := strings.Index(e, "="); idx > 0 {
+			env[e[:idx]] = e[idx+1:]
+		}
 	}
 
-	args = append(args, "--", serverBinary,
+	// Build the actual command: serverBinary --session ID --command-json [...]
+	serverCmd := []string{
+		serverBinary,
 		"--session", sessionID,
-		"--command-json", MustJSON(command))
+		"--command-json", MustJSON(command),
+	}
 
-	cmd := exec.Command(args[0], args[1:]...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	spec := TransientSpec{
+		Unit:        HostUnit(sessionID),
+		Slice:       SessionSlice(sessionID),
+		ServiceType: "dbus",
+		BusName:     dbusName,
+		WorkingDir:  cwd,
+		Description: cmdStr,
+		Environment: env,
+		Command:     serverCmd,
+		Collect:     true,
+	}
 
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("systemd-run: %w", err)
+	if err := sd.StartTransient(ctx, spec); err != nil {
+		return "", err
 	}
 
 	return sessionID, nil
 }
 
-// StopSession stops a session by ID using the systemd D-Bus API.
-func StopSession(sessionID string) error {
-	ctx := context.Background()
-	conn, err := dbus.NewUserConnectionContext(ctx)
+// StopSession stops a session by ID.
+func StopSession(ctx context.Context, sessionID string) error {
+	sd, err := ConnectUserSystemd(ctx)
 	if err != nil {
-		return fmt.Errorf("connecting to systemd: %w", err)
+		return err
 	}
-	defer conn.Close()
+	defer sd.Close()
 
-	// StopUnit returns a channel that receives the job result
-	resultChan := make(chan string, 1)
-	_, err = conn.StopUnitContext(ctx, UnitName(sessionID), "replace", resultChan)
+	return sd.StopUnit(ctx, HostUnit(sessionID))
+}
+
+// SessionClient provides D-Bus operations on a running session's SwashService.
+type SessionClient interface {
+	// SendInput sends input to the process stdin.
+	SendInput(input string) error
+
+	// Kill sends SIGKILL to the process.
+	Kill() error
+
+	// Gist returns session status.
+	Gist() (map[string]any, error)
+
+	// SessionID returns the session ID.
+	SessionID() string
+
+	// Close releases the D-Bus connection.
+	Close() error
+}
+
+// sessionClient implements SessionClient via D-Bus.
+type sessionClient struct {
+	conn      *dbus.Conn
+	obj       dbus.BusObject
+	sessionID string
+}
+
+// ConnectSession connects to a running session's D-Bus service.
+func ConnectSession(sessionID string) (SessionClient, error) {
+	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
-		return fmt.Errorf("stopping unit: %w", err)
+		return nil, fmt.Errorf("connecting to session bus: %w", err)
 	}
 
-	// Wait for the job to complete
-	result := <-resultChan
-	if result != "done" {
-		return fmt.Errorf("stop job failed: %s", result)
+	busName := fmt.Sprintf("%s.%s", DBusNamePrefix, sessionID)
+	obj := conn.Object(busName, dbus.ObjectPath(DBusPath))
+
+	return &sessionClient{
+		conn:      conn,
+		obj:       obj,
+		sessionID: sessionID,
+	}, nil
+}
+
+func (c *sessionClient) Close() error {
+	return c.conn.Close()
+}
+
+func (c *sessionClient) SessionID() string {
+	return c.sessionID
+}
+
+func (c *sessionClient) SendInput(input string) error {
+	var result string
+	err := c.obj.Call(DBusNamePrefix+".SendInput", 0, input).Store(&result)
+	if err != nil {
+		return fmt.Errorf("calling SendInput: %w", err)
+	}
+
+	// Parse result JSON to check for errors
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		return fmt.Errorf("parsing response: %w", err)
+	}
+	if errMsg, ok := resp["error"].(string); ok {
+		return fmt.Errorf("%s", errMsg)
 	}
 	return nil
 }
 
-// KillSession sends SIGKILL to the process in a session.
-func KillSession(sessionID string) error {
-	ctx := context.Background()
-	conn, err := dbus.NewUserConnectionContext(ctx)
+func (c *sessionClient) Kill() error {
+	var result string
+	err := c.obj.Call(DBusNamePrefix+".Kill", 0).Store(&result)
 	if err != nil {
-		return fmt.Errorf("connecting to systemd: %w", err)
+		return fmt.Errorf("calling Kill: %w", err)
 	}
-	defer conn.Close()
 
-	// KillUnitContext sends a signal to all of the unit's processes
-	// int32(9) is SIGKILL
-	conn.KillUnitWithTarget(ctx, UnitName(sessionID), dbus.All, int32(9))
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		return fmt.Errorf("parsing response: %w", err)
+	}
+	if errMsg, ok := resp["error"].(string); ok {
+		return fmt.Errorf("%s", errMsg)
+	}
 	return nil
+}
+
+func (c *sessionClient) Gist() (map[string]any, error) {
+	var result string
+	err := c.obj.Call(DBusNamePrefix+".Gist", 0).Store(&result)
+	if err != nil {
+		return nil, fmt.Errorf("calling Gist: %w", err)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		return nil, fmt.Errorf("parsing response: %w", err)
+	}
+	return resp, nil
+}
+
+// Convenience functions that open a connection, do the operation, and close.
+
+// KillSession sends SIGKILL to the process in a session via D-Bus.
+func KillSession(sessionID string) error {
+	client, err := ConnectSession(sessionID)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.Kill()
 }
 
 // SendInput sends input to the process via the swash D-Bus service.
 func SendInput(sessionID string, input string) error {
-	// TODO: implement via godbus calling our SwashService.SendInput
-	return fmt.Errorf("not implemented")
+	client, err := ConnectSession(sessionID)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.SendInput(input)
 }
 
+// MustJSON marshals v to JSON, panicking on error.
 func MustJSON(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {

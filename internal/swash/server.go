@@ -2,12 +2,12 @@ package swash
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -21,7 +21,6 @@ import (
 var (
 	serverSessionID string
 	serverCommand   []string
-	serverProcess   *exec.Cmd
 	serverStdin     io.WriteCloser
 	serverMutex     sync.Mutex
 	serverRunning   bool
@@ -72,15 +71,18 @@ func (s *SwashService) SendInput(data string) (string, *dbus.Error) {
 
 // Kill kills the process.
 func (s *SwashService) Kill() (string, *dbus.Error) {
-	serverMutex.Lock()
-	proc := serverProcess
-	serverMutex.Unlock()
-
-	if proc != nil && proc.Process != nil {
-		proc.Process.Kill()
-		return `{"killed":true}`, nil
+	ctx := context.Background()
+	sd, err := ConnectUserSystemd(ctx)
+	if err != nil {
+		return fmt.Sprintf(`{"error":%q}`, err.Error()), nil
 	}
-	return `{"error":"no process"}`, nil
+	defer sd.Close()
+
+	err = sd.KillUnit(ctx, TaskUnit(serverSessionID), syscall.SIGKILL)
+	if err != nil {
+		return fmt.Sprintf(`{"error":%q}`, err.Error()), nil
+	}
+	return `{"killed":true}`, nil
 }
 
 // RunServer runs the D-Bus server for a session.
@@ -101,7 +103,7 @@ func RunServer() error {
 	}
 
 	if isatty(os.Stdin.Fd()) {
-		return fmt.Errorf("must be launched via systemd-run")
+		return fmt.Errorf("must be launched via systemd (stdin is a tty)")
 	}
 
 	conn, err := dbus.ConnectSessionBus()
@@ -136,7 +138,7 @@ func RunServer() error {
 	}
 	conn.Export(introspect.NewIntrospectable(node), dbus.ObjectPath(DBusPath), "org.freedesktop.DBus.Introspectable")
 
-	doneChan, err := startProcess()
+	doneChan, err := startTaskProcess()
 	if err != nil {
 		return fmt.Errorf("starting process: %w", err)
 	}
@@ -146,62 +148,95 @@ func RunServer() error {
 
 	select {
 	case <-doneChan:
-		// Process exited (logging already done in startProcess)
+		// Process exited
 	case sig := <-sigChan:
-		fmt.Fprintf(os.Stderr, "Received %v, killing process\n", sig)
-		if serverProcess != nil && serverProcess.Process != nil {
-			serverProcess.Process.Kill()
+		fmt.Fprintf(os.Stderr, "Received %v, killing task\n", sig)
+		ctx := context.Background()
+		if sd, err := ConnectUserSystemd(ctx); err == nil {
+			sd.KillUnit(ctx, TaskUnit(serverSessionID), syscall.SIGKILL)
+			sd.Close()
 		}
-		<-doneChan // Wait for process to fully exit
+		<-doneChan
 	}
 
 	return nil
 }
 
-func startProcess() (chan struct{}, error) {
-	cmdUnit := fmt.Sprintf("swash-task-%s.service", serverSessionID)
-	cwd, _ := os.Getwd()
+// startTaskProcess starts the task subprocess via systemd D-Bus API.
+func startTaskProcess() (chan struct{}, error) {
+	ctx := context.Background()
 
-	args := []string{
-		"systemd-run", "--user",
-		"--pipe",
-		"--collect",
-		"--unit=" + cmdUnit,
-		"--slice-inherit",
-		"--working-directory=" + cwd,
+	// Create pipes for stdio
+	stdinRead, stdinWrite, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("creating stdin pipe: %w", err)
+	}
+	stdoutRead, stdoutWrite, err := os.Pipe()
+	if err != nil {
+		stdinRead.Close()
+		stdinWrite.Close()
+		return nil, fmt.Errorf("creating stdout pipe: %w", err)
+	}
+	stderrRead, stderrWrite, err := os.Pipe()
+	if err != nil {
+		stdinRead.Close()
+		stdinWrite.Close()
+		stdoutRead.Close()
+		stdoutWrite.Close()
+		return nil, fmt.Errorf("creating stderr pipe: %w", err)
 	}
 
-	for _, env := range os.Environ() {
-		if !strings.HasPrefix(env, "_") {
-			args = append(args, "--setenv="+env)
+	// Build environment (excluding underscore-prefixed vars)
+	env := make(map[string]string)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "_") {
+			continue
+		}
+		if idx := strings.Index(e, "="); idx > 0 {
+			env[e[:idx]] = e[idx+1:]
 		}
 	}
 
-	args = append(args, "--")
-	args = append(args, serverCommand...)
+	cwd, _ := os.Getwd()
 
-	cmd := exec.Command(args[0], args[1:]...)
+	// Get file descriptor numbers
+	stdinFd := int(stdinRead.Fd())
+	stdoutFd := int(stdoutWrite.Fd())
+	stderrFd := int(stderrWrite.Fd())
 
-	stdin, err := cmd.StdinPipe()
+	spec := TransientSpec{
+		Unit:        TaskUnit(serverSessionID),
+		Slice:       SessionSlice(serverSessionID), // same slice as host unit
+		ServiceType: "exec",
+		WorkingDir:  cwd,
+		Description: strings.Join(serverCommand, " "),
+		Environment: env,
+		Command:     serverCommand,
+		Collect:     true,
+		Stdin:       &stdinFd,
+		Stdout:      &stdoutFd,
+		Stderr:      &stderrFd,
+	}
+
+	sd, err := ConnectUserSystemd(ctx)
 	if err != nil {
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, err
-	}
 
-	if err := cmd.Start(); err != nil {
+	if err := sd.StartTransient(ctx, spec); err != nil {
+		sd.Close()
 		return nil, err
 	}
+	sd.Close()
 
+	// Close the unit-facing ends of the pipes (they're now owned by systemd)
+	stdinRead.Close()
+	stdoutWrite.Close()
+	stderrWrite.Close()
+
+	// Store stdin for SendInput
 	serverMutex.Lock()
-	serverProcess = cmd
-	serverStdin = stdin
+	serverStdin = stdinWrite
 	serverRunning = true
 	serverMutex.Unlock()
 
@@ -210,34 +245,49 @@ func startProcess() (chan struct{}, error) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Read stdout and write to journal
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stdout)
+		scanner := bufio.NewScanner(stdoutRead)
 		for scanner.Scan() {
-			JournalOutput(1, scanner.Text())
+			WriteOutput(1, scanner.Text())
 		}
+		stdoutRead.Close()
 	}()
 
+	// Read stderr and write to journal
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stderr)
+		scanner := bufio.NewScanner(stderrRead)
 		for scanner.Scan() {
-			JournalOutput(2, scanner.Text())
+			WriteOutput(2, scanner.Text())
 		}
+		stderrRead.Close()
 	}()
 
+	// Wait for pipes to close (unit exited) and get exit status
 	go func() {
 		wg.Wait()
-		cmd.Wait()
 
-		var exitCode int
-		if cmd.ProcessState != nil {
-			exitCode = cmd.ProcessState.ExitCode()
+		// Get exit status from unit
+		ctx := context.Background()
+		sd, err := ConnectUserSystemd(ctx)
+		if err == nil {
+			unit, err := sd.GetUnit(ctx, TaskUnit(serverSessionID))
+			if err == nil {
+				exitCode := int(unit.ExitStatus)
+				serverMutex.Lock()
+				serverExitCode = &exitCode
+				serverMutex.Unlock()
+			}
+			sd.Close()
 		}
 
 		serverMutex.Lock()
 		serverRunning = false
-		serverExitCode = &exitCode
+		if serverStdin != nil {
+			serverStdin.Close()
+		}
 		serverStdin = nil
 		serverMutex.Unlock()
 
