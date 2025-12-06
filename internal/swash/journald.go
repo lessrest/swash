@@ -194,9 +194,18 @@ func (ji *journalImpl) parseEntry() (JournalEntry, error) {
 
 // WriteOutput writes process output to the journal with an FD field.
 func WriteOutput(fd int, text string) error {
-	return journal.Send(text, journal.PriInfo, map[string]string{
+	return WriteOutputWithFields(fd, text, nil)
+}
+
+// WriteOutputWithFields writes process output to the journal with FD and extra fields.
+func WriteOutputWithFields(fd int, text string, extraFields map[string]string) error {
+	fields := map[string]string{
 		"FD": fmt.Sprintf("%d", fd),
-	})
+	}
+	for k, v := range extraFields {
+		fields[k] = v
+	}
+	return journal.Send(text, journal.PriInfo, fields)
 }
 
 // Event represents a parsed output event from the journal.

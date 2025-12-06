@@ -17,10 +17,17 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mbrock/swash/internal/swash"
 	flag "github.com/spf13/pflag"
+)
+
+// Global flags
+var (
+	protocolFlag string
+	tagFlags     []string
 )
 
 func main() {
@@ -31,12 +38,16 @@ func main() {
 		return
 	}
 
+	// Register flags
+	flag.StringVarP(&protocolFlag, "protocol", "p", "shell", "Protocol: shell, sse")
+	flag.StringArrayVarP(&tagFlags, "tag", "t", nil, "Add journal field KEY=VALUE (can be repeated)")
+
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `swash - Interactive process sessions over D-Bus
 
 Usage:
   swash                              Show running sessions
-  swash run <command>                Run command in new session
+  swash run [flags] -- <command>     Run command in new session
   swash stop <session_id>            Stop session
   swash poll <session_id>            Get recent output
   swash follow <session_id>          Follow output until exit
@@ -179,11 +190,29 @@ func cmdStatus() {
 func cmdRun(command []string) {
 	ctx := context.Background()
 	hostCommand := findHostCommand()
-	sessionID, err := swash.StartSession(ctx, command, hostCommand)
+
+	// Build session options from flags
+	opts := swash.SessionOptions{
+		Protocol: swash.Protocol(protocolFlag),
+		Tags:     parseTags(tagFlags),
+	}
+
+	sessionID, err := swash.StartSessionWithOptions(ctx, command, hostCommand, opts)
 	if err != nil {
 		fatal("starting session: %v", err)
 	}
 	fmt.Printf("%s started\n", sessionID)
+}
+
+// parseTags converts ["KEY=VALUE", ...] to map[string]string
+func parseTags(tags []string) map[string]string {
+	result := make(map[string]string)
+	for _, tag := range tags {
+		if idx := strings.Index(tag, "="); idx > 0 {
+			result[tag[:idx]] = tag[idx+1:]
+		}
+	}
+	return result
 }
 
 func cmdStop(sessionID string) {

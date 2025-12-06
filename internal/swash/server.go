@@ -1,7 +1,6 @@
 package swash
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -21,6 +20,8 @@ import (
 var (
 	serverSessionID string
 	serverCommand   []string
+	serverProtocol  Protocol
+	serverTags      map[string]string
 	serverStdin     io.WriteCloser
 	serverMutex     sync.Mutex
 	serverRunning   bool
@@ -86,11 +87,13 @@ func (s *SwashService) Kill() (string, *dbus.Error) {
 }
 
 // RunServer runs the D-Bus server for a session.
-// Called as: swash host --session ID --command-json [...]
+// Called as: swash host --session ID --command-json [...] [--protocol shell|sse] [--tags-json {...}]
 func RunServer() error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	sessionIDFlag := fs.String("session", "", "Session ID")
 	commandJSONFlag := fs.String("command-json", "", "Command as JSON array")
+	protocolFlag := fs.String("protocol", "shell", "Protocol: shell, sse")
+	tagsJSONFlag := fs.String("tags-json", "", "Extra journal fields as JSON object")
 	// Skip "swash" (index 0) and "host" (index 1) to get to the flags
 	fs.Parse(os.Args[2:])
 
@@ -99,6 +102,15 @@ func RunServer() error {
 	}
 
 	serverSessionID = *sessionIDFlag
+	serverProtocol = Protocol(*protocolFlag)
+
+	// Parse tags
+	serverTags = make(map[string]string)
+	if *tagsJSONFlag != "" {
+		if err := json.Unmarshal([]byte(*tagsJSONFlag), &serverTags); err != nil {
+			return fmt.Errorf("parsing tags: %w", err)
+		}
+	}
 
 	if err := json.Unmarshal([]byte(*commandJSONFlag), &serverCommand); err != nil {
 		return fmt.Errorf("parsing command: %w", err)
@@ -247,23 +259,24 @@ func startTaskProcess() (chan struct{}, error) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Read stdout and write to journal
+	// Output handler that writes to journal with tags
+	outputHandler := func(fd int, text string, fields map[string]string) {
+		WriteOutputWithFields(fd, text, fields)
+	}
+
+	// Read stdout and write to journal (protocol-aware)
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stdoutRead)
-		for scanner.Scan() {
-			WriteOutput(1, scanner.Text())
-		}
+		reader := NewProtocolReader(serverProtocol, 1, outputHandler, serverTags)
+		reader.Process(stdoutRead)
 		stdoutRead.Close()
 	}()
 
-	// Read stderr and write to journal
+	// Read stderr and write to journal (always line-oriented)
 	go func() {
 		defer wg.Done()
-		scanner := bufio.NewScanner(stderrRead)
-		for scanner.Scan() {
-			WriteOutput(2, scanner.Text())
-		}
+		reader := NewProtocolReader(ProtocolShell, 2, outputHandler, serverTags)
+		reader.Process(stderrRead)
 		stderrRead.Close()
 	}()
 

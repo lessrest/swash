@@ -77,9 +77,20 @@ func ListSessions(ctx context.Context) ([]Session, error) {
 	return sessions, nil
 }
 
+// SessionOptions configures a new session.
+type SessionOptions struct {
+	Protocol Protocol          // shell (default), sse
+	Tags     map[string]string // Extra journal fields
+}
+
 // StartSession starts a new swash session with the given command.
 // hostCommand is the command prefix to run the task host (e.g., []string{"/path/to/swash", "host"}).
 func StartSession(ctx context.Context, command []string, hostCommand []string) (string, error) {
+	return StartSessionWithOptions(ctx, command, hostCommand, SessionOptions{})
+}
+
+// StartSessionWithOptions starts a new swash session with the given command and options.
+func StartSessionWithOptions(ctx context.Context, command []string, hostCommand []string, opts SessionOptions) (string, error) {
 	sd, err := ConnectUserSystemd(ctx)
 	if err != nil {
 		return "", err
@@ -102,12 +113,22 @@ func StartSession(ctx context.Context, command []string, hostCommand []string) (
 		}
 	}
 
-	// Build the actual command: hostCommand... --session ID --command-json [...]
+	// Build the actual command: hostCommand... --session ID --command-json [...] [--protocol ...] [--tags-json ...]
 	serverCmd := append([]string{}, hostCommand...)
 	serverCmd = append(serverCmd,
 		"--session", sessionID,
 		"--command-json", MustJSON(command),
 	)
+
+	// Add protocol if not default
+	if opts.Protocol != "" && opts.Protocol != ProtocolShell {
+		serverCmd = append(serverCmd, "--protocol", string(opts.Protocol))
+	}
+
+	// Add tags if present
+	if len(opts.Tags) > 0 {
+		serverCmd = append(serverCmd, "--tags-json", MustJSON(opts.Tags))
+	}
 
 	spec := TransientSpec{
 		Unit:        HostUnit(sessionID),
