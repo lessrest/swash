@@ -473,6 +473,9 @@ func (jf *File) writeEntryArray() error {
 	jf.header.TailEntryArrayOffset = uint32(offset)
 	jf.header.TailEntryArrayNEntries = uint32(nItems)
 
+	// Clear items so subsequent flushes only include new entries
+	jf.entryArrayItems = jf.entryArrayItems[:0]
+
 	return nil
 }
 
