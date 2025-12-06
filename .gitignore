@@ -1,4 +1,11 @@
 .direnv
+.env
+
+# Go binaries
+/swash
+/swash-server
+/main
+
 # Python
 __pycache__/
 *.pyc
@@ -9,5 +16,4 @@ result
 # Test artifacts
 test
 *.o
-.env
 
