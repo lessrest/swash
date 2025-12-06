@@ -13,9 +13,10 @@ import (
 // TestEnv represents a test environment with dbus-daemon and mini-systemd.
 type TestEnv struct {
 	// Paths
-	TempDir    string
-	SocketPath string
-	JournalDir string
+	TempDir       string
+	SocketPath    string
+	JournalDir    string
+	JournalSocket string // Path to journal socket for journal.Send()
 
 	// Processes
 	dbusDaemon  *exec.Cmd
@@ -46,6 +47,14 @@ func (e *TestEnv) Start(ctx context.Context) error {
 		return fmt.Errorf("create journal dir: %w", err)
 	}
 
+	// Try to use /run/systemd/journal/socket so journal.Send() works
+	// (go-systemd hardcodes this path)
+	e.JournalSocket = "/run/systemd/journal/socket"
+	if err := os.MkdirAll("/run/systemd/journal", 0755); err != nil {
+		// Fall back to temp dir (journal.Send() won't work)
+		e.JournalSocket = filepath.Join(e.TempDir, "journal.socket")
+	}
+
 	// Start dbus-daemon
 	e.dbusDaemon = exec.CommandContext(ctx,
 		"dbus-daemon",
@@ -70,10 +79,11 @@ func (e *TestEnv) Start(ctx context.Context) error {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Start mini-systemd
+	// Start mini-systemd with journal socket
 	e.miniSystemd = exec.CommandContext(ctx,
 		"mini-systemd",
 		"--journal-dir="+e.JournalDir,
+		"--journal-socket="+e.JournalSocket,
 	)
 	e.miniSystemd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS="+e.BusAddress)
 	e.miniSystemd.Stderr = os.Stderr
@@ -83,8 +93,13 @@ func (e *TestEnv) Start(ctx context.Context) error {
 		return fmt.Errorf("start mini-systemd: %w", err)
 	}
 
-	// Wait for mini-systemd to register on the bus
-	time.Sleep(100 * time.Millisecond)
+	// Wait for mini-systemd to register on the bus and create socket
+	for i := 0; i < 50; i++ {
+		if _, err := os.Stat(e.JournalSocket); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	return nil
 }

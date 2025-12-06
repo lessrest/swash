@@ -25,6 +25,7 @@ const (
 func main() {
 	// Parse flags
 	journalDir := flag.String("journal-dir", "", "Directory for journal files (default: $XDG_RUNTIME_DIR/mini-systemd/journal)")
+	journalSocket := flag.String("journal-socket", "", "Path for journal socket (default: $XDG_RUNTIME_DIR/mini-systemd/journal.socket)")
 	flag.Parse()
 
 	conn, err := dbus.ConnectSessionBus()
@@ -36,11 +37,11 @@ func main() {
 
 	// Determine journal directory
 	jdir := *journalDir
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		runtimeDir = "/tmp"
+	}
 	if jdir == "" {
-		runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-		if runtimeDir == "" {
-			runtimeDir = "/tmp"
-		}
 		jdir = filepath.Join(runtimeDir, "mini-systemd", "journal")
 	}
 
@@ -52,6 +53,20 @@ func main() {
 	} else {
 		defer journal.Close()
 		fmt.Printf("Journal directory: %s\n", jdir)
+	}
+
+	// Start journal socket listener
+	socketPath := *journalSocket
+	if socketPath == "" {
+		socketPath = filepath.Join(runtimeDir, "mini-systemd", "journal.socket")
+	}
+	socketListener, err := NewJournalSocketListener(socketPath, journal)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to create journal socket: %v\n", err)
+	} else {
+		defer socketListener.Close()
+		go socketListener.Run()
+		fmt.Printf("Journal socket: %s\n", socketPath)
 	}
 
 	mgr := NewManager(conn, journal)
