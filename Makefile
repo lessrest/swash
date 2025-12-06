@@ -25,7 +25,7 @@ test: test-unit test-integration
 test-unit:
 	go test ./pkg/... ./internal/...
 
-test-integration: bin/swash bin/mini-systemd
+test-integration:
 	./test/integration.sh
 
 clean:

@@ -1,20 +1,12 @@
 #!/bin/bash
 # Integration tests for swash with mini-systemd
 #
-# Prerequisites: binaries built via `make bin/swash bin/mini-systemd`
+# This script builds swash with a custom journal socket path to route
+# output through mini-systemd's journal instead of real journald.
 
 set -e
 
 cd "$(dirname "$0")/.."
-export PATH="$PWD/bin:$PATH"
-
-# Check binaries exist
-for bin in swash mini-systemd; do
-    if ! command -v $bin &>/dev/null; then
-        echo "ERROR: $bin not found in PATH. Run 'make' first." >&2
-        exit 1
-    fi
-done
 
 # Setup temp directory and cleanup trap
 TMPDIR=$(mktemp -d)
@@ -26,7 +18,20 @@ cleanup() {
 trap cleanup EXIT
 
 JOURNAL_DIR="$TMPDIR/journal"
+JOURNAL_SOCKET="$TMPDIR/journal.socket"
 mkdir -p "$JOURNAL_DIR"
+
+# Build binaries with test-specific journal socket
+echo "Building binaries..."
+export CGO_CFLAGS="-I$PWD/cvendor"
+
+go build -o "$TMPDIR/swash" \
+    -ldflags "-X github.com/coreos/go-systemd/v22/journal.journalSocket=$JOURNAL_SOCKET" \
+    ./cmd/swash/
+
+go build -o "$TMPDIR/mini-systemd" ./cmd/mini-systemd/
+
+export PATH="$TMPDIR:$PATH"
 
 # Start dbus-daemon
 export DBUS_SESSION_BUS_ADDRESS="unix:path=$TMPDIR/bus.sock"
@@ -39,10 +44,16 @@ for i in $(seq 1 50); do
     sleep 0.01
 done
 
-# Start mini-systemd
-mini-systemd --journal-dir="$JOURNAL_DIR" &
+# Start mini-systemd with explicit journal socket
+mini-systemd --journal-dir="$JOURNAL_DIR" --journal-socket="$JOURNAL_SOCKET" &
 MS_PID=$!
-sleep 0.5  # wait for registration
+
+# Wait for mini-systemd to be ready
+for i in $(seq 1 50); do
+    [ -S "$JOURNAL_SOCKET" ] && break
+    sleep 0.01
+done
+sleep 0.2  # extra time for D-Bus registration
 
 # Test helpers
 TESTS_RUN=0
@@ -108,8 +119,6 @@ test_swash_run() {
 }
 
 test_task_output_capture() {
-    # This test verifies task output appears in mini-systemd's journal
-    # Known issue: swash host uses journal.Send() which writes to real journald socket
     local out session_id
     out=$(swash run echo "UNIQUE_OUTPUT_12345" 2>&1)
     session_id=$(echo "$out" | awk '{print $1}')
@@ -117,15 +126,12 @@ test_task_output_capture() {
     sleep 1  # wait for output capture
 
     local journal_out
-    journal_out=$(dbus-send --print-reply \
-        --dest=org.freedesktop.systemd1 \
-        /org/freedesktop/systemd1 \
-        sh.swa.MiniSystemd.Journal.GetEntries 2>&1) || true
+    journal_out=$(journalctl --file="$JOURNAL_DIR"/*.journal -o cat 2>&1) || true
 
     if echo "$journal_out" | grep -q "UNIQUE_OUTPUT_12345"; then
         pass "task output captured in journal"
     else
-        fail "task output not captured (known issue: swash uses real journald socket)"
+        fail "task output not captured" "$journal_out"
     fi
 }
 
@@ -144,22 +150,19 @@ SCRIPT
     sleep 1
 
     local journal_out
-    journal_out=$(dbus-send --print-reply \
-        --dest=org.freedesktop.systemd1 \
-        /org/freedesktop/systemd1 \
-        sh.swa.MiniSystemd.Journal.GetEntries 2>&1) || true
+    journal_out=$(journalctl --file="$JOURNAL_DIR"/*.journal -o cat 2>&1) || true
 
     local found=0
     for line in LINE_ONE LINE_TWO LINE_THREE; do
         if echo "$journal_out" | grep -q "$line"; then
-            ((found++))
+            found=$((found + 1))
         fi
     done
 
     if [ "$found" -eq 3 ]; then
         pass "newline splitting works"
     else
-        fail "newline splitting: found $found/3 lines (known issue: output capture)"
+        fail "newline splitting: found $found/3 lines" "$journal_out"
     fi
 }
 

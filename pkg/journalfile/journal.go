@@ -465,16 +465,20 @@ func (jf *File) writeEntryArray() error {
 		return err
 	}
 
+	// Update header to point to new entry array
+	// We always rewrite the full array, so just update the offset
+	if jf.header.EntryArrayOffset == 0 {
+		// First entry array
+		jf.header.NObjects++
+		jf.header.NEntryArrays++
+	}
 	jf.header.EntryArrayOffset = uint64(offset)
-	jf.header.NObjects++
-	jf.header.NEntryArrays++
 	jf.header.TailObjectOffset = uint64(offset)
-	// For a single entry array, it's both head and tail
 	jf.header.TailEntryArrayOffset = uint32(offset)
 	jf.header.TailEntryArrayNEntries = uint32(nItems)
 
-	// Clear items so subsequent flushes only include new entries
-	jf.entryArrayItems = jf.entryArrayItems[:0]
+	// Don't clear entryArrayItems - we keep all entries and rewrite the full array each sync
+	// This wastes some space but is simpler than linking multiple entry arrays
 
 	return nil
 }
