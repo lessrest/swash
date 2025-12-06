@@ -78,8 +78,8 @@ func ListSessions(ctx context.Context) ([]Session, error) {
 }
 
 // StartSession starts a new swash session with the given command.
-// serverBinary is the path to the swash-server binary.
-func StartSession(ctx context.Context, command []string, serverBinary string) (string, error) {
+// hostCommand is the command prefix to run the task host (e.g., []string{"/path/to/swash", "host"}).
+func StartSession(ctx context.Context, command []string, hostCommand []string) (string, error) {
 	sd, err := ConnectUserSystemd(ctx)
 	if err != nil {
 		return "", err
@@ -102,12 +102,12 @@ func StartSession(ctx context.Context, command []string, serverBinary string) (s
 		}
 	}
 
-	// Build the actual command: serverBinary --session ID --command-json [...]
-	serverCmd := []string{
-		serverBinary,
+	// Build the actual command: hostCommand... --session ID --command-json [...]
+	serverCmd := append([]string{}, hostCommand...)
+	serverCmd = append(serverCmd,
 		"--session", sessionID,
 		"--command-json", MustJSON(command),
-	}
+	)
 
 	spec := TransientSpec{
 		Unit:        HostUnit(sessionID),
