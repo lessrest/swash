@@ -270,8 +270,12 @@ func FollowSession(sessionID string) error {
 
 	// Also match by task unit name (for exit events from systemd)
 	taskUnit := TaskUnit(sessionID)
-	j.AddDisjunction()
-	j.AddMatch("USER_UNIT=" + taskUnit.String())
+	if err := j.AddDisjunction(); err != nil {
+		return fmt.Errorf("adding disjunction: %w", err)
+	}
+	if err := j.AddMatch("USER_UNIT=" + taskUnit.String()); err != nil {
+		return fmt.Errorf("adding match: %w", err)
+	}
 
 	j.SeekHead()
 
