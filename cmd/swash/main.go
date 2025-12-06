@@ -24,6 +24,13 @@ import (
 )
 
 func main() {
+	// Handle "host" subcommand before flag parsing, since it has its own flags
+	// that pflag doesn't know about (--session, --command-json)
+	if len(os.Args) >= 2 && os.Args[1] == "host" {
+		cmdHost()
+		return
+	}
+
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `swash - Interactive process sessions over D-Bus
 
