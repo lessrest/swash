@@ -67,14 +67,11 @@ func JenkinsHashLittle2(data []byte) (pc, pb uint32) {
 	}
 
 	// Handle the last (probably partial) block
+	// Based on lookup3.c switch statement - cases fall through in groups
 	switch len(data) {
 	case 12:
 		c += uint32(data[8]) | uint32(data[9])<<8 | uint32(data[10])<<16 | uint32(data[11])<<24
-		fallthrough
-	case 8:
 		b += uint32(data[4]) | uint32(data[5])<<8 | uint32(data[6])<<16 | uint32(data[7])<<24
-		fallthrough
-	case 4:
 		a += uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
 	case 11:
 		c += uint32(data[10]) << 16
@@ -84,7 +81,12 @@ func JenkinsHashLittle2(data []byte) (pc, pb uint32) {
 		fallthrough
 	case 9:
 		c += uint32(data[8])
-		fallthrough
+		// Fall through to case 8's logic (not case 7!)
+		b += uint32(data[4]) | uint32(data[5])<<8 | uint32(data[6])<<16 | uint32(data[7])<<24
+		a += uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
+	case 8:
+		b += uint32(data[4]) | uint32(data[5])<<8 | uint32(data[6])<<16 | uint32(data[7])<<24
+		a += uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
 	case 7:
 		b += uint32(data[6]) << 16
 		fallthrough
@@ -93,6 +95,9 @@ func JenkinsHashLittle2(data []byte) (pc, pb uint32) {
 		fallthrough
 	case 5:
 		b += uint32(data[4])
+		// Fall through to case 4's logic
+		a += uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
+	case 4:
 		a += uint32(data[0]) | uint32(data[1])<<8 | uint32(data[2])<<16 | uint32(data[3])<<24
 	case 3:
 		a += uint32(data[2]) << 16
