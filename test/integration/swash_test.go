@@ -10,24 +10,51 @@ import (
 	"time"
 )
 
-// ensureBinaries builds swash and mini-systemd if needed
+// ensureBinaries builds swash and mini-systemd if needed and adds them to PATH
 func ensureBinaries(t *testing.T) {
 	t.Helper()
 
-	// Check if binaries exist in PATH or build them
-	if _, err := exec.LookPath("swash"); err != nil {
+	binDir := "/tmp/bin"
+
+	// Add bin directory to PATH so harness can find binaries
+	currentPath := os.Getenv("PATH")
+	if currentPath == "" {
+		os.Setenv("PATH", binDir)
+	} else {
+		os.Setenv("PATH", binDir+":"+currentPath)
+	}
+
+	// Create bin directory
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+
+	// Get project root for CGO_CFLAGS (vendored systemd headers)
+	projectRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatalf("failed to get project root: %v", err)
+	}
+	cgoFlags := "-I" + filepath.Join(projectRoot, "cvendor")
+
+	// Build swash if not present
+	swashPath := filepath.Join(binDir, "swash")
+	if _, err := os.Stat(swashPath); os.IsNotExist(err) {
 		t.Log("Building swash...")
-		cmd := exec.Command("go", "build", "-o", "/tmp/bin/swash", "./cmd/swash/")
+		cmd := exec.Command("go", "build", "-o", swashPath, "./cmd/swash/")
 		cmd.Dir = "../.."
+		cmd.Env = append(os.Environ(), "CGO_CFLAGS="+cgoFlags)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("failed to build swash: %v\n%s", err, out)
 		}
 	}
 
-	if _, err := exec.LookPath("mini-systemd"); err != nil {
+	// Build mini-systemd if not present
+	miniSystemdPath := filepath.Join(binDir, "mini-systemd")
+	if _, err := os.Stat(miniSystemdPath); os.IsNotExist(err) {
 		t.Log("Building mini-systemd...")
-		cmd := exec.Command("go", "build", "-o", "/tmp/bin/mini-systemd", "./cmd/mini-systemd/")
+		cmd := exec.Command("go", "build", "-o", miniSystemdPath, "./cmd/mini-systemd/")
 		cmd.Dir = "../.."
+		cmd.Env = append(os.Environ(), "CGO_CFLAGS="+cgoFlags)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("failed to build mini-systemd: %v\n%s", err, out)
 		}
