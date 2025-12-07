@@ -43,23 +43,37 @@ type SessionOptions struct {
 	Tags     map[string]string // Extra journal fields
 }
 
-// SessionClient provides D-Bus operations on a running session's SwashService.
-type SessionClient interface {
+// SessionController defines the methods exposed over D-Bus for controlling a session.
+// Both Host (server) and sessionClient (client) implement this interface.
+// This provides compile-time checking that signatures match.
+type SessionController interface {
 	// SendInput sends input to the process stdin.
-	SendInput(input string) error
+	// Returns the number of bytes written.
+	SendInput(input string) (int, error)
 
 	// Kill sends SIGKILL to the process.
 	Kill() error
 
 	// Gist returns session status.
-	Gist() (map[string]any, error)
+	Gist() (HostStatus, error)
 
 	// SessionID returns the session ID.
-	SessionID() string
+	SessionID() (string, error)
+}
+
+// Compile-time check that Host implements SessionController.
+var _ SessionController = (*Host)(nil)
+
+// SessionClient extends SessionController with connection management.
+type SessionClient interface {
+	SessionController
 
 	// Close releases the D-Bus connection.
 	Close() error
 }
+
+// Compile-time check that sessionClient implements SessionClient.
+var _ SessionClient = (*sessionClient)(nil)
 
 // sessionClient implements SessionClient via D-Bus.
 type sessionClient struct {
@@ -89,57 +103,30 @@ func (c *sessionClient) Close() error {
 	return c.conn.Close()
 }
 
-func (c *sessionClient) SessionID() string {
-	return c.sessionID
+func (c *sessionClient) SessionID() (string, error) {
+	return c.sessionID, nil
 }
 
-func (c *sessionClient) SendInput(input string) error {
-	var result string
-	err := c.obj.Call(DBusNamePrefix+".SendInput", 0, input).Store(&result)
+func (c *sessionClient) SendInput(input string) (int, error) {
+	var n int
+	err := c.obj.Call(DBusNamePrefix+".SendInput", 0, input).Store(&n)
 	if err != nil {
-		return fmt.Errorf("calling SendInput: %w", err)
+		return 0, fmt.Errorf("calling SendInput: %w", err)
 	}
-
-	// Parse result JSON to check for errors
-	var resp map[string]any
-	if err := json.Unmarshal([]byte(result), &resp); err != nil {
-		return fmt.Errorf("parsing response: %w", err)
-	}
-	if errMsg, ok := resp["error"].(string); ok {
-		return fmt.Errorf("%s", errMsg)
-	}
-	return nil
+	return n, nil
 }
 
 func (c *sessionClient) Kill() error {
-	var result string
-	err := c.obj.Call(DBusNamePrefix+".Kill", 0).Store(&result)
-	if err != nil {
-		return fmt.Errorf("calling Kill: %w", err)
-	}
-
-	var resp map[string]any
-	if err := json.Unmarshal([]byte(result), &resp); err != nil {
-		return fmt.Errorf("parsing response: %w", err)
-	}
-	if errMsg, ok := resp["error"].(string); ok {
-		return fmt.Errorf("%s", errMsg)
-	}
-	return nil
+	return c.obj.Call(DBusNamePrefix+".Kill", 0).Err
 }
 
-func (c *sessionClient) Gist() (map[string]any, error) {
-	var result string
-	err := c.obj.Call(DBusNamePrefix+".Gist", 0).Store(&result)
+func (c *sessionClient) Gist() (HostStatus, error) {
+	var status HostStatus
+	err := c.obj.Call(DBusNamePrefix+".Gist", 0).Store(&status)
 	if err != nil {
-		return nil, fmt.Errorf("calling Gist: %w", err)
+		return HostStatus{}, fmt.Errorf("calling Gist: %w", err)
 	}
-
-	var resp map[string]any
-	if err := json.Unmarshal([]byte(result), &resp); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
-	}
-	return resp, nil
+	return status, nil
 }
 
 // Convenience functions that open a connection, do the operation, and close.
@@ -155,10 +142,10 @@ func KillSession(sessionID string) error {
 }
 
 // SendInput sends input to the process via the swash D-Bus service.
-func SendInput(sessionID string, input string) error {
+func SendInput(sessionID string, input string) (int, error) {
 	client, err := ConnectSession(sessionID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer client.Close()
 	return client.SendInput(input)

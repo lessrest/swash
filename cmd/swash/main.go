@@ -267,7 +267,7 @@ func cmdSend(sessionID, input string) {
 	initRuntime()
 	defer rt.Close()
 
-	if err := rt.SendInput(sessionID, input); err != nil {
+	if _, err := rt.SendInput(sessionID, input); err != nil {
 		fatal("sending input: %v", err)
 	}
 }

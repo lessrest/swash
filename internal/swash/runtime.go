@@ -159,10 +159,10 @@ func (r *Runtime) KillSession(sessionID string) error {
 }
 
 // SendInput sends input to the process via the swash D-Bus service.
-func (r *Runtime) SendInput(sessionID string, input string) error {
+func (r *Runtime) SendInput(sessionID string, input string) (int, error) {
 	client, err := r.ConnectSession(sessionID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer client.Close()
 	return client.SendInput(input)
