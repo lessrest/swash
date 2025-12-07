@@ -8,99 +8,65 @@ input, kill process) and uses the journal for output streaming.
 
 ## Architecture
 
-```
-┌─────────────┐     D-Bus      ┌──────────────────┐
-│  swash CLI  │───────────────▶│  systemd (user)  │
-└─────────────┘                └──────────────────┘
-       │                              │
-       │ D-Bus                        │ StartTransient
-       ▼                              ▼
-┌─────────────────────────────────────────────────┐
-│  swash-host-ABC123.service (D-Bus activated)    │
-│  ┌───────────────────────────────────────────┐  │
-│  │  Host / TTYHost                           │  │
-│  │  - Exposes SendInput, Kill, Gist methods  │  │
-│  │  - Starts task unit                       │  │
-│  │  - Captures output to journal             │  │
-│  └───────────────────────────────────────────┘  │
-│                      │                          │
-│                      │ StartTransient           │
-│                      ▼                          │
-│  ┌───────────────────────────────────────────┐  │
-│  │  swash-task-ABC123.service                │  │
-│  │  (the actual command)                     │  │
-│  └───────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────┘
-                       │
-                       │ Write
-                       ▼
-              ┌─────────────────┐
-              │  systemd journal │
-              │  SWASH_SESSION=  │
-              │  ABC123          │
-              └─────────────────┘
+```mermaid
+flowchart TD
+    CLI[swash CLI]
+    
+    CLI -->|D-Bus| SYSTEMD[systemd user]
+    CLI -->|D-Bus| HOST
+    
+    subgraph HOST[swash-host-ABC123.service]
+        HOSTINNER[Host / TTYHost<br/>SendInput, Kill, Gist]
+    end
+    
+    SYSTEMD -->|StartTransient| HOST
+    HOST -->|StartTransient| TASK
+    
+    subgraph SLICE[swash-ABC123.slice]
+        TASK[swash-task-ABC123.service<br/>the actual command]
+    end
+    
+    HOST -->|Write| JOURNAL[(systemd journal<br/>SWASH_SESSION=ABC123)]
+    TASK -.->|stdout/stderr| HOST
 ```
 
-For each session:
+When you run `swash run echo hello`, the CLI asks systemd to start a transient
+service called `swash-host-ABC123.service`. This host service owns a D-Bus name
+(`sh.swa.Swash.ABC123`) and exposes methods for sending input, killing the
+process, and querying status. The host then starts another transient unit,
+`swash-task-ABC123.service`, which runs the actual command. Both units live
+inside `swash-ABC123.slice` for resource grouping.
 
-1. **swash-host-ABC123.service** - A D-Bus activated service that:
-   - Owns bus name `sh.swa.Swash.ABC123`
-   - Exposes methods: `SendInput`, `Kill`, `Gist`, `SessionID`
-   - Starts the actual task as a nested transient unit
-   - Captures stdout/stderr and writes to journal with `SWASH_SESSION=ABC123`
-
-2. **swash-task-ABC123.service** - The actual command, running inside
-   `swash-ABC123.slice` for resource grouping.
+The host captures stdout and stderr from the task and writes each line to the
+systemd journal with `SWASH_SESSION=ABC123`. This means output survives even if
+the original client disconnects - you can reconnect later and query the journal
+to see what happened.
 
 ## Usage
 
 ```bash
-# Run a command in a new session
-swash run echo "hello world"
-# ABC123 started
-
-# List running sessions
-swash
-# ID       STATUS   AGE      PID      COMMAND
-# ABC123   running  2s       12345    echo hello world
-
-# Follow output until exit
-swash follow ABC123
-
-# Send input to stdin
-swash send ABC123 "some input"
-
-# Poll recent output
-swash poll ABC123
-
-# Stop gracefully
-swash stop ABC123
-
-# Kill immediately
-swash kill ABC123
-
-# Show session history (from journal)
-swash history
+swash run echo "hello world"    # start a session
+swash                           # list running sessions
+swash follow ABC123             # stream output until exit
+swash send ABC123 "input"       # send to stdin
+swash kill ABC123               # terminate
+swash history                   # show past sessions from journal
 ```
 
 ### TTY Mode
 
-TTY mode allocates a pseudo-terminal and runs the command with full terminal
-emulation via libvterm. This enables proper handling of interactive programs,
-colors, cursor movement, and alternate screen mode.
+For interactive programs, swash can allocate a pseudo-terminal and emulate a
+full terminal using libvterm. This handles colors, cursor movement, alternate
+screen mode (used by vim, htop, etc.), and other terminal features correctly.
 
 ```bash
-# Run with PTY
-swash run --tty -- vim file.txt
-
-# Specify terminal size
-swash run --tty --rows 40 --cols 120 -- htop
-
-# View current screen content (with colors)
-swash screen ABC123
+swash run --tty -- htop
+swash run --tty --rows 40 --cols 120 -- vim file.txt
+swash screen ABC123             # view current screen content
 ```
 
-Example session with htop:
+The `swash screen` command returns a snapshot of the terminal screen with ANSI
+color codes preserved. Here's what it looks like with htop:
 
 ```
 $ swash run --tty --rows 10 --cols 70 -- htop
@@ -118,148 +84,90 @@ $ swash screen XYZ789
 F1Help F2Setup F3Search F4Filter F5Tree F6SortBy F9Kill F10Quit
 ```
 
-In TTY mode:
-- Output is processed through libvterm before logging to journal
-- Lines pushed to scrollback are logged as they scroll
-- Final screen state is captured on exit (`SWASH_EVENT=screen`)
-- ANSI color codes are preserved in journal entries
+In TTY mode, output goes through libvterm before being logged. Lines are
+captured as they scroll off the screen, and the final screen state is saved
+to the journal when the process exits (as a `SWASH_EVENT=screen` entry).
 
-### Tags
+### Tags and Protocols
 
-Add custom journal fields to session output:
+You can attach custom metadata to sessions using tags, which become journal
+fields:
 
 ```bash
 swash run -t PROJECT=myapp -t ENV=staging -- ./deploy.sh
 ```
 
-### Protocols
-
-The `--protocol` flag controls how stdout is parsed:
-
-- `shell` (default): Line-oriented, each line becomes a journal entry
-- `sse`: Server-Sent Events format, parses `data:` lines
+The `--protocol` flag controls how stdout is parsed. The default `shell`
+protocol treats each line as a separate journal entry. The `sse` protocol
+parses Server-Sent Events format, extracting the content from `data:` lines.
 
 ## Components
 
-### cmd/swash
+The CLI (`cmd/swash`) is the main entry point. It talks to systemd over D-Bus
+to start sessions and connects to running host services to send input or query
+status.
 
-The CLI tool. Connects to user systemd via D-Bus to manage sessions.
+The core library (`internal/swash`) contains the session host implementations.
+`Host` handles simple pipe-based I/O, while `TTYHost` adds pseudo-terminal
+allocation and libvterm integration. Both implement the same D-Bus interface,
+so the CLI doesn't need to know which mode a session is using.
 
-### internal/swash
+The vterm package (`pkg/vterm`) provides Go bindings to libvterm. It tracks
+screen state, handles scrollback callbacks, and can render the screen back to
+ANSI escape sequences for the `swash screen` command.
 
-Core library:
-
-- `Runtime` - High-level API for session management
-- `Host` - Pipe-based session host (non-TTY mode)
-- `TTYHost` - PTY-based session host with vterm integration
-- `Systemd` interface - systemd D-Bus operations
-- `Journal` interface - journal read/write operations
-
-### pkg/vterm
-
-Go bindings to libvterm for terminal emulation. Provides:
-
-- Screen state tracking
-- Scrollback callbacks
-- ANSI escape sequence rendering
-- Color and attribute support
-
-### pkg/journalfile
-
-Native Go implementation of systemd journal file format. Used by mini-systemd
-for testing. Supports:
-
-- Journal file creation with proper headers
-- Data deduplication via hash tables
-- Field indexing for efficient queries
-- Entry arrays for enumeration
-
-### cmd/mini-systemd
-
-A minimal systemd substitute for integration testing. Implements:
-
-- `org.freedesktop.systemd1.Manager` D-Bus interface
-- `StartTransientUnit` with file descriptor passing
-- Journal socket listener (native journal protocol)
-- Journal file writer
-
-This enables running the full test suite without root or a real systemd
-instance.
+For testing without a real systemd, `cmd/mini-systemd` implements enough of the
+systemd D-Bus interface to run sessions. It also implements the native journal
+socket protocol, using `pkg/journalfile` to write actual journal files that
+journalctl can read. This lets the integration tests run in isolation without
+root privileges.
 
 ## Building
 
 ```bash
-# Build swash
 go build ./cmd/swash/
-
-# Build mini-systemd (for testing)
-go build ./cmd/mini-systemd/
-
-# Run tests
-./test/integration.sh
-
-# Run tests against real systemd
-./test/integration.sh --real
+./test/integration.sh           # runs against mini-systemd
+./test/integration.sh --real    # runs against real systemd
 ```
 
-Requires:
-- Go 1.23+
-- C compiler (for libvterm via cgo)
-- systemd headers in cvendor/
+You'll need Go 1.23+, a C compiler (for libvterm via cgo), and the systemd
+headers vendored in `cvendor/`.
 
-## Journal Fields
+## Journal Integration
 
-swash writes these fields to journal entries:
-
-| Field | Description |
-|-------|-------------|
-| `SWASH_SESSION` | Session ID (e.g., ABC123) |
-| `SWASH_EVENT` | Lifecycle event: `started`, `exited`, `screen` |
-| `SWASH_COMMAND` | The command that was run |
-| `SWASH_EXIT_CODE` | Exit code (on `exited` event) |
-| `FD` | File descriptor: 1 (stdout) or 2 (stderr) |
-| `MESSAGE` | The actual output text |
-
-Query session output with journalctl:
+swash writes structured fields to the journal, making it easy to query session
+output:
 
 ```bash
-# All output from a session
-journalctl --user SWASH_SESSION=ABC123
-
-# Just exit events
-journalctl --user SWASH_EVENT=exited
-
-# Output as plain text
-journalctl --user SWASH_SESSION=ABC123 -o cat
+journalctl --user SWASH_SESSION=ABC123          # all output from a session
+journalctl --user SWASH_SESSION=ABC123 -o cat   # just the message text
+journalctl --user SWASH_EVENT=exited            # all exit events
 ```
 
-## Design Notes
+The `SWASH_SESSION` field identifies the session. `SWASH_EVENT` marks lifecycle
+events (`started`, `exited`, `screen`). Regular output lines include `FD` (1 for
+stdout, 2 for stderr) and `MESSAGE` (the actual text).
 
-**Why systemd transient units?**
+## Design Rationale
 
-- Process lifecycle management (start, stop, kill)
-- Resource isolation via slices
-- Automatic cleanup on exit
-- Integration with existing systemd tooling
+swash uses systemd transient units because systemd already solves process
+lifecycle management well. It handles starting, stopping, and killing processes,
+isolates resources via cgroups, cleans up automatically on exit, and integrates
+with standard tooling. There's no need to reimplement any of that.
 
-**Why D-Bus for the host service?**
+Each session gets its own D-Bus service (the host) so that clients can
+disconnect and reconnect without losing the session. The D-Bus name provides
+stable addressing - you can always reach session ABC123 at `sh.swa.Swash.ABC123`
+regardless of PIDs or transient state. D-Bus method calls are a natural fit for
+operations like "send this input" or "kill this process."
 
-- Bus activation ensures the host starts when needed
-- Named bus ownership prevents duplicate hosts
-- Method calls for input/control are straightforward
-- Works with the session bus (no root required)
+Output goes to the systemd journal rather than being held in memory or written
+to files. The journal provides structured fields, efficient queries, automatic
+rotation, and persistence across restarts. When you run `swash follow`, it's
+just tailing the journal with a filter on `SWASH_SESSION`.
 
-**Why journal for output?**
-
-- Structured logging with metadata
-- Built-in rotation and retention
-- Efficient queries by field
-- Survives process restarts
-- Standard tooling (journalctl)
-
-**Why libvterm?**
-
-- Accurate terminal emulation (state machine, not regex)
-- Handles all escape sequences correctly
-- Provides scrollback callbacks for logging
-- Separates alternate screen from main screen
+TTY mode uses libvterm because terminal emulation is surprisingly complex.
+Regex-based approaches break on edge cases; libvterm implements a proper state
+machine that handles all the escape sequences correctly. It also provides
+scrollback callbacks, which is how swash captures output as it scrolls off the
+screen rather than trying to diff screen states.
