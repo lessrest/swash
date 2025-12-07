@@ -227,6 +227,14 @@ func (s *systemdConn) StartTransient(ctx context.Context, spec TransientSpec) er
 		})
 	}
 
+	// TTY support - set TTYPath when using a PTY
+	if spec.TTYPath != "" {
+		props = append(props, dbus.Property{
+			Name:  "TTYPath",
+			Value: godbus.MakeVariant(spec.TTYPath),
+		})
+	}
+
 	resultChan := make(chan string, 1)
 	_, err := s.conn.StartTransientUnitContext(
 		ctx,

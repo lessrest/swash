@@ -295,6 +295,9 @@ func RunHost() error {
 	commandJSONFlag := fs.String("command-json", "", "Command as JSON array")
 	protocolFlag := fs.String("protocol", "shell", "Protocol: shell, sse")
 	tagsJSONFlag := fs.String("tags-json", "", "Extra journal fields as JSON object")
+	ttyFlag := fs.Bool("tty", false, "Use PTY mode with terminal emulation")
+	rowsFlag := fs.Int("rows", 24, "Terminal rows (for --tty mode)")
+	colsFlag := fs.Int("cols", 80, "Terminal columns (for --tty mode)")
 	// Skip "swash" (index 0) and "host" (index 1) to get to the flags
 	fs.Parse(os.Args[2:])
 
@@ -327,6 +330,21 @@ func RunHost() error {
 		return fmt.Errorf("opening journal: %w", err)
 	}
 	defer journal.Close()
+
+	// Use TTYHost for --tty mode, otherwise use regular Host
+	if *ttyFlag {
+		host := NewTTYHost(TTYHostConfig{
+			SessionID: *sessionIDFlag,
+			Command:   command,
+			Rows:      *rowsFlag,
+			Cols:      *colsFlag,
+			Tags:      tags,
+			Systemd:   systemd,
+			Journal:   journal,
+		})
+		defer host.Close()
+		return host.Run()
+	}
 
 	host := NewHost(HostConfig{
 		SessionID: *sessionIDFlag,

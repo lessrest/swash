@@ -114,14 +114,25 @@ func (r *Runtime) StartSessionWithOptions(ctx context.Context, command []string,
 		"--command-json", MustJSON(command),
 	)
 
-	// Add protocol if not default
-	if opts.Protocol != "" && opts.Protocol != ProtocolShell {
+	// Add protocol if not default (only for non-TTY mode)
+	if !opts.TTY && opts.Protocol != "" && opts.Protocol != ProtocolShell {
 		serverCmd = append(serverCmd, "--protocol", string(opts.Protocol))
 	}
 
 	// Add tags if present
 	if len(opts.Tags) > 0 {
 		serverCmd = append(serverCmd, "--tags-json", MustJSON(opts.Tags))
+	}
+
+	// Add TTY mode options
+	if opts.TTY {
+		serverCmd = append(serverCmd, "--tty")
+		if opts.Rows > 0 {
+			serverCmd = append(serverCmd, "--rows", fmt.Sprintf("%d", opts.Rows))
+		}
+		if opts.Cols > 0 {
+			serverCmd = append(serverCmd, "--cols", fmt.Sprintf("%d", opts.Cols))
+		}
 	}
 
 	spec := TransientSpec{

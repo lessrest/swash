@@ -28,6 +28,9 @@ import (
 var (
 	protocolFlag string
 	tagFlags     []string
+	ttyFlag      bool
+	rowsFlag     int
+	colsFlag     int
 )
 
 // Global runtime (initialized for commands that need it)
@@ -44,6 +47,9 @@ func main() {
 	// Register flags
 	flag.StringVarP(&protocolFlag, "protocol", "p", "shell", "Protocol: shell, sse")
 	flag.StringArrayVarP(&tagFlags, "tag", "t", nil, "Add journal field KEY=VALUE (can be repeated)")
+	flag.BoolVar(&ttyFlag, "tty", false, "Use PTY mode with terminal emulation")
+	flag.IntVar(&rowsFlag, "rows", 24, "Terminal rows (for --tty mode)")
+	flag.IntVar(&colsFlag, "cols", 80, "Terminal columns (for --tty mode)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `swash - Interactive process sessions over D-Bus
@@ -211,6 +217,9 @@ func cmdRun(command []string) {
 	opts := swash.SessionOptions{
 		Protocol: swash.Protocol(protocolFlag),
 		Tags:     parseTags(tagFlags),
+		TTY:      ttyFlag,
+		Rows:     rowsFlag,
+		Cols:     colsFlag,
 	}
 
 	sessionID, err := rt.StartSessionWithOptions(context.Background(), command, hostCommand, opts)

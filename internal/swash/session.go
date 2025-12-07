@@ -41,6 +41,9 @@ func GenSessionID() string {
 type SessionOptions struct {
 	Protocol Protocol          // shell (default), sse
 	Tags     map[string]string // Extra journal fields
+	TTY      bool              // Use PTY mode with terminal emulation
+	Rows     int               // Terminal rows (for TTY mode)
+	Cols     int               // Terminal columns (for TTY mode)
 }
 
 // SessionController defines the methods exposed over D-Bus for controlling a session.
