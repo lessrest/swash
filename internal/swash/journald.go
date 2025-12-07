@@ -42,6 +42,14 @@ func MatchUnit(unit UnitName) JournalMatch {
 	}
 }
 
+// MatchSession creates a match for a session's SWASH_SESSION field.
+func MatchSession(sessionID string) JournalMatch {
+	return JournalMatch{
+		Field: FieldSession,
+		Value: sessionID,
+	}
+}
+
 // Journal provides operations on the systemd journal.
 type Journal interface {
 	// Write sends a structured entry to the journal.
@@ -105,9 +113,21 @@ type journalImpl struct {
 	j *sdjournal.Journal
 }
 
+// JournalDir can be set via ldflags to read from a specific journal directory.
+// If empty, reads from the default system journal.
+// Example: -ldflags "-X github.com/mbrock/swash/internal/swash.JournalDir=/path/to/journal"
+var JournalDir string
+
 // OpenJournal opens a connection to the systemd journal.
 func OpenJournal() (Journal, error) {
-	j, err := sdjournal.NewJournal()
+	var j *sdjournal.Journal
+	var err error
+
+	if JournalDir != "" {
+		j, err = sdjournal.NewJournalFromDir(JournalDir)
+	} else {
+		j, err = sdjournal.NewJournal()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("opening journal: %w", err)
 	}
@@ -308,61 +328,6 @@ func PollSessionOutput(sessionID, cursor string) ([]Event, string, error) {
 	}
 
 	return events, lastCursor, nil
-}
-
-// FollowSession follows a session's journal until the task exits.
-func FollowSession(sessionID string) error {
-	j, err := sdjournal.NewJournal()
-	if err != nil {
-		return fmt.Errorf("opening journal: %w", err)
-	}
-	defer j.Close()
-
-	// Filter by session slice (for output with FD field)
-	slice := SessionSlice(sessionID)
-	if err := j.AddMatch("_SYSTEMD_USER_SLICE=" + slice.String()); err != nil {
-		return fmt.Errorf("adding match: %w", err)
-	}
-
-	// Also match by task unit name (for exit events from systemd)
-	taskUnit := TaskUnit(sessionID)
-	if err := j.AddDisjunction(); err != nil {
-		return fmt.Errorf("adding disjunction: %w", err)
-	}
-	if err := j.AddMatch("USER_UNIT=" + taskUnit.String()); err != nil {
-		return fmt.Errorf("adding match: %w", err)
-	}
-
-	j.SeekHead()
-
-	for {
-		n, err := j.Next()
-		if err != nil {
-			return fmt.Errorf("reading journal: %w", err)
-		}
-
-		if n == 0 {
-			j.Wait(time.Second)
-			continue
-		}
-
-		entry, err := j.GetEntry()
-		if err != nil {
-			continue
-		}
-
-		// Print output (MESSAGE field with FD tag)
-		if msg := entry.Fields["MESSAGE"]; msg != "" {
-			if entry.Fields["FD"] != "" {
-				fmt.Println(msg)
-			}
-		}
-
-		// Check for exit (systemd adds EXIT_CODE when task unit exits)
-		if entry.Fields["EXIT_CODE"] != "" {
-			return nil
-		}
-	}
 }
 
 func parseOutputEvent(j *sdjournal.Journal) *Event {

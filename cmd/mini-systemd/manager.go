@@ -161,13 +161,16 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 
 	// Handle stdio - use passed FDs or create pipes for capture
 	var stdoutPipe, stderrPipe interface{ Read([]byte) (int, error) }
+	var stdinFile, stdoutFile, stderrFile *os.File
 
 	if stdinFD != nil {
-		cmd.Stdin = os.NewFile(uintptr(*stdinFD), "stdin")
+		stdinFile = os.NewFile(uintptr(*stdinFD), "stdin")
+		cmd.Stdin = stdinFile
 	}
 
 	if stdoutFD != nil {
-		cmd.Stdout = os.NewFile(uintptr(*stdoutFD), "stdout")
+		stdoutFile = os.NewFile(uintptr(*stdoutFD), "stdout")
+		cmd.Stdout = stdoutFile
 	} else {
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -177,7 +180,8 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 	}
 
 	if stderrFD != nil {
-		cmd.Stderr = os.NewFile(uintptr(*stderrFD), "stderr")
+		stderrFile = os.NewFile(uintptr(*stderrFD), "stderr")
+		cmd.Stderr = stderrFile
 	} else {
 		stderr, err := cmd.StderrPipe()
 		if err != nil {
@@ -188,6 +192,19 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 
 	if err := cmd.Start(); err != nil {
 		return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []interface{}{err.Error()})
+	}
+
+	// Close our copies of passed FDs - child has inherited them.
+	// This is critical for PTYs: the master won't get EOF until all
+	// copies of the slave fd are closed.
+	if stdinFile != nil {
+		stdinFile.Close()
+	}
+	if stdoutFile != nil {
+		stdoutFile.Close()
+	}
+	if stderrFile != nil {
+		stderrFile.Close()
 	}
 
 	unit.Cmd = cmd
@@ -290,15 +307,15 @@ func (m *Manager) ListUnitsByPatterns(states []string, patterns []string) ([][]i
 
 		// Return in systemd's format: (ssssssouso)
 		result = append(result, []interface{}{
-			name,           // name
+			name,             // name
 			unit.Description, // description
-			"loaded",       // load state
-			unit.State,     // active state
-			"",            // sub state
-			"",            // following
+			"loaded",         // load state
+			unit.State,       // active state
+			"",               // sub state
+			"",               // following
 			dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/systemd1/unit/%s", strings.ReplaceAll(name, ".", "_"))),
-			uint32(0),     // job id
-			"",            // job type
+			uint32(0),            // job id
+			"",                   // job type
 			dbus.ObjectPath("/"), // job path
 		})
 	}
@@ -337,8 +354,8 @@ func (m *Manager) GetUnitProperties(name string) (map[string]dbus.Variant, *dbus
 
 	return map[string]dbus.Variant{
 		"Id":                   dbus.MakeVariant(name),
-		"Description":         dbus.MakeVariant(unit.Description),
-		"ActiveState":         dbus.MakeVariant(activeState),
+		"Description":          dbus.MakeVariant(unit.Description),
+		"ActiveState":          dbus.MakeVariant(activeState),
 		"ActiveEnterTimestamp": dbus.MakeVariant(uint64(unit.StartedAt.UnixMicro())),
 	}, nil
 }

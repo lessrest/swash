@@ -218,7 +218,7 @@ func (r *Runtime) PollSessionOutput(sessionID, cursor string) ([]Event, string, 
 // FollowSession follows a session's output until it exits.
 // Prints output to stdout and returns when the session emits an exited event.
 func (r *Runtime) FollowSession(ctx context.Context, sessionID string) error {
-	matches := []JournalMatch{MatchSlice(SessionSlice(sessionID))}
+	matches := []JournalMatch{MatchSession(sessionID)}
 
 	for e := range r.Journal.Follow(ctx, matches) {
 		// Check for exit event
