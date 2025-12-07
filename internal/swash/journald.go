@@ -59,6 +59,36 @@ type Journal interface {
 	Close() error
 }
 
+// EmitStarted writes a session started event to the journal.
+func EmitStarted(j Journal, sessionID string, command []string) error {
+	return j.Write("Session started", map[string]string{
+		FieldEvent:   EventStarted,
+		FieldSession: sessionID,
+		FieldCommand: strings.Join(command, " "),
+	})
+}
+
+// EmitExited writes a session exited event to the journal.
+func EmitExited(j Journal, sessionID string, exitCode int, command []string) error {
+	return j.Write("Session exited", map[string]string{
+		FieldEvent:    EventExited,
+		FieldSession:  sessionID,
+		FieldExitCode: strconv.Itoa(exitCode),
+		FieldCommand:  strings.Join(command, " "),
+	})
+}
+
+// WriteOutput writes process output to the journal with FD and extra fields.
+func WriteOutput(j Journal, fd int, text string, extraFields map[string]string) error {
+	fields := map[string]string{
+		"FD": fmt.Sprintf("%d", fd),
+	}
+	for k, v := range extraFields {
+		fields[k] = v
+	}
+	return j.Write(text, fields)
+}
+
 // journalImpl implements Journal using go-systemd/sdjournal.
 type journalImpl struct {
 	j *sdjournal.Journal
@@ -196,7 +226,7 @@ func (ji *journalImpl) parseEntry() (JournalEntry, error) {
 }
 
 // -----------------------------------------------------------------------------
-// Convenience functions for common journal operations
+// Constants for journal operations
 // -----------------------------------------------------------------------------
 
 // Lifecycle event constants
@@ -212,41 +242,6 @@ const (
 	FieldCommand  = "SWASH_COMMAND"
 	FieldExitCode = "SWASH_EXIT_CODE"
 )
-
-// EmitStarted writes a session started event to the journal.
-func EmitStarted(sessionID string, command []string) error {
-	return journal.Send("Session started", journal.PriInfo, map[string]string{
-		FieldEvent:   EventStarted,
-		FieldSession: sessionID,
-		FieldCommand: strings.Join(command, " "),
-	})
-}
-
-// EmitExited writes a session exited event to the journal.
-func EmitExited(sessionID string, exitCode int, command []string) error {
-	return journal.Send("Session exited", journal.PriInfo, map[string]string{
-		FieldEvent:    EventExited,
-		FieldSession:  sessionID,
-		FieldExitCode: strconv.Itoa(exitCode),
-		FieldCommand:  strings.Join(command, " "),
-	})
-}
-
-// WriteOutput writes process output to the journal with an FD field.
-func WriteOutput(fd int, text string) error {
-	return WriteOutputWithFields(fd, text, nil)
-}
-
-// WriteOutputWithFields writes process output to the journal with FD and extra fields.
-func WriteOutputWithFields(fd int, text string, extraFields map[string]string) error {
-	fields := map[string]string{
-		"FD": fmt.Sprintf("%d", fd),
-	}
-	for k, v := range extraFields {
-		fields[k] = v
-	}
-	return journal.Send(text, journal.PriInfo, fields)
-}
 
 // Event represents a parsed output event from the journal.
 type Event struct {

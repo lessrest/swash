@@ -1,12 +1,9 @@
 package swash
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -40,124 +37,10 @@ func GenSessionID() string {
 	return string(id)
 }
 
-// ListSessions returns all running swash sessions.
-func ListSessions(ctx context.Context) ([]Session, error) {
-	sd, err := ConnectUserSystemd(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer sd.Close()
-
-	units, err := sd.ListUnits(
-		ctx,
-		[]UnitName{"swash-host-*.service"},
-		[]UnitState{UnitStateActive, UnitStateActivating},
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	sessions := make([]Session, 0, len(units))
-	for _, u := range units {
-		status := "running"
-		if u.ExitStatus != 0 {
-			status = "exited"
-		}
-
-		sessions = append(sessions, Session{
-			ID:      u.Name.SessionID(),
-			Unit:    u.Name.String(),
-			PID:     u.MainPID,
-			CWD:     u.WorkingDir,
-			Status:  status,
-			Command: u.Description,
-			Started: u.Started.Format("Mon 2006-01-02 15:04:05 MST"),
-		})
-	}
-	return sessions, nil
-}
-
 // SessionOptions configures a new session.
 type SessionOptions struct {
 	Protocol Protocol          // shell (default), sse
 	Tags     map[string]string // Extra journal fields
-}
-
-// StartSession starts a new swash session with the given command.
-// hostCommand is the command prefix to run the task host (e.g., []string{"/path/to/swash", "host"}).
-func StartSession(ctx context.Context, command []string, hostCommand []string) (string, error) {
-	return StartSessionWithOptions(ctx, command, hostCommand, SessionOptions{})
-}
-
-// StartSessionWithOptions starts a new swash session with the given command and options.
-func StartSessionWithOptions(ctx context.Context, command []string, hostCommand []string, opts SessionOptions) (string, error) {
-	sd, err := ConnectUserSystemd(ctx)
-	if err != nil {
-		return "", err
-	}
-	defer sd.Close()
-
-	sessionID := GenSessionID()
-	cwd, _ := os.Getwd()
-	dbusName := fmt.Sprintf("%s.%s", DBusNamePrefix, sessionID)
-	cmdStr := strings.Join(command, " ")
-
-	// Build environment map (excluding underscore-prefixed vars)
-	env := make(map[string]string)
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "_") {
-			continue
-		}
-		if idx := strings.Index(e, "="); idx > 0 {
-			env[e[:idx]] = e[idx+1:]
-		}
-	}
-
-	// Build the actual command: hostCommand... --session ID --command-json [...] [--protocol ...] [--tags-json ...]
-	serverCmd := append([]string{}, hostCommand...)
-	serverCmd = append(serverCmd,
-		"--session", sessionID,
-		"--command-json", MustJSON(command),
-	)
-
-	// Add protocol if not default
-	if opts.Protocol != "" && opts.Protocol != ProtocolShell {
-		serverCmd = append(serverCmd, "--protocol", string(opts.Protocol))
-	}
-
-	// Add tags if present
-	if len(opts.Tags) > 0 {
-		serverCmd = append(serverCmd, "--tags-json", MustJSON(opts.Tags))
-	}
-
-	spec := TransientSpec{
-		Unit:        HostUnit(sessionID),
-		Slice:       SessionSlice(sessionID),
-		ServiceType: "dbus",
-		BusName:     dbusName,
-		WorkingDir:  cwd,
-		Description: cmdStr,
-		Environment: env,
-		Command:     serverCmd,
-		Collect:     true,
-	}
-
-	if err := sd.StartTransient(ctx, spec); err != nil {
-		return "", err
-	}
-
-	return sessionID, nil
-}
-
-// StopSession stops a session by ID.
-func StopSession(ctx context.Context, sessionID string) error {
-	sd, err := ConnectUserSystemd(ctx)
-	if err != nil {
-		return err
-	}
-	defer sd.Close()
-
-	return sd.StopUnit(ctx, HostUnit(sessionID))
 }
 
 // SessionClient provides D-Bus operations on a running session's SwashService.

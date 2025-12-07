@@ -171,7 +171,7 @@ func findHostCommand() []string {
 // cmdHost runs as the task host (D-Bus server for a session).
 // This is launched by systemd, not by users directly.
 func cmdHost() {
-	if err := swash.RunServer(); err != nil {
+	if err := swash.RunHost(); err != nil {
 		fatal("%v", err)
 	}
 }
