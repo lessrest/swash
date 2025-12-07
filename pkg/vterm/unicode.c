@@ -1,1 +1,1 @@
-../../vterm-service/libvterm/src/unicode.c
+libvterm/src/unicode.c

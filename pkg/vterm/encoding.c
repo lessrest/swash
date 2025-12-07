@@ -1,1 +1,1 @@
-../../vterm-service/libvterm/src/encoding.c
+libvterm/src/encoding.c

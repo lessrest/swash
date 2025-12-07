@@ -2,7 +2,7 @@
 package vterm
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../vterm-service/libvterm/include -I${SRCDIR}/../../vterm-service/libvterm/src
+#cgo CFLAGS: -I${SRCDIR}/libvterm/include -I${SRCDIR}/libvterm/src
 #include <vterm.h>
 #include <stdlib.h>
 #include <string.h>

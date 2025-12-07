@@ -1,1 +1,1 @@
-../../vterm-service/libvterm/src/mouse.c
+libvterm/src/mouse.c
