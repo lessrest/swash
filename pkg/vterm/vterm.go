@@ -76,6 +76,7 @@ import "C"
 import (
 	"fmt"
 	"runtime/cgo"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -283,60 +284,66 @@ func (v *VTerm) GetScreenANSI() string {
 	defer v.mu.Unlock()
 
 	rows, cols := v.getSizeUnsafe()
-	var result []byte
+	var lines []string
 
+	for row := 0; row < rows; row++ {
+		pos := C.VTermPos{row: C.int(row)}
+		line := v.cellsToANSI(cols, func(col int) *C.VTermScreenCell {
+			pos.col = C.int(col)
+			var cell C.VTermScreenCell
+			C.vterm_screen_get_cell(v.screen, pos, &cell)
+			return &cell
+		})
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// cellsToANSI converts a line of cells to an ANSI-formatted string.
+// getCell returns the cell at position i (0 to count-1).
+func (v *VTerm) cellsToANSI(count int, getCell func(i int) *C.VTermScreenCell) string {
+	var result []byte
 	var lastAttrs CellAttrs
 	var lastFg, lastBg Color
 	firstCell := true
 
-	for row := 0; row < rows; row++ {
-		if row > 0 {
-			result = append(result, '\n')
+	// First pass: find line end (last non-space cell)
+	lineEnd := 0
+	for i := 0; i < count; i++ {
+		cell := getCell(i)
+		if cell.chars[0] != 0 && cell.chars[0] != ' ' && cell.chars[0] != 0xFFFFFFFF {
+			lineEnd = i + 1
+		}
+	}
+
+	// Second pass: output with ANSI codes
+	for i := 0; i < lineEnd; i++ {
+		cell := getCell(i)
+
+		// Skip padding cells for wide characters
+		if cell.chars[0] == 0xFFFFFFFF {
+			continue
 		}
 
-		pos := C.VTermPos{row: C.int(row)}
-		lineEnd := 0 // Track last non-space column
+		cellData := v.cellFromC(cell)
 
-		// First pass: find line end
-		for col := 0; col < cols; col++ {
-			pos.col = C.int(col)
-			var cell C.VTermScreenCell
-			C.vterm_screen_get_cell(v.screen, pos, &cell)
-			if cell.chars[0] != 0 && cell.chars[0] != ' ' && cell.chars[0] != 0xFFFFFFFF {
-				lineEnd = col + 1
-			}
+		// Emit ANSI codes if attributes changed
+		if firstCell || cellData.Attrs != lastAttrs || cellData.Fg != lastFg || cellData.Bg != lastBg {
+			result = append(result, v.ansiForCell(cellData, lastAttrs, lastFg, lastBg, firstCell)...)
+			lastAttrs = cellData.Attrs
+			lastFg = cellData.Fg
+			lastBg = cellData.Bg
+			firstCell = false
 		}
 
-		// Second pass: output with ANSI codes
-		for col := 0; col < lineEnd; col++ {
-			pos.col = C.int(col)
-			var cell C.VTermScreenCell
-			C.vterm_screen_get_cell(v.screen, pos, &cell)
-
-			// Skip padding cells for wide characters
-			if cell.chars[0] == 0xFFFFFFFF {
-				continue
+		// Output character
+		if len(cellData.Chars) > 0 {
+			for _, r := range cellData.Chars {
+				result = append(result, runeToUTF8(r)...)
 			}
-
-			cellData := v.cellFromC(&cell)
-
-			// Emit ANSI codes if attributes changed
-			if firstCell || cellData.Attrs != lastAttrs || cellData.Fg != lastFg || cellData.Bg != lastBg {
-				result = append(result, v.ansiForCell(cellData, lastAttrs, lastFg, lastBg, firstCell)...)
-				lastAttrs = cellData.Attrs
-				lastFg = cellData.Fg
-				lastBg = cellData.Bg
-				firstCell = false
-			}
-
-			// Output character
-			if len(cellData.Chars) > 0 {
-				for _, r := range cellData.Chars {
-					result = append(result, runeToUTF8(r)...)
-				}
-			} else {
-				result = append(result, ' ')
-			}
+		} else {
+			result = append(result, ' ')
 		}
 	}
 

@@ -113,6 +113,43 @@ func TestOnPushLine(t *testing.T) {
 	}
 }
 
+func TestOnPushLineWithColors(t *testing.T) {
+	vt := New(3, 40) // Small terminal to trigger scrollback quickly
+	defer vt.Free()
+
+	var pushedLines []string
+	vt.OnPushLine(func(line string) {
+		pushedLines = append(pushedLines, line)
+	})
+
+	// Write colored lines that will scroll off
+	vt.Write([]byte("\x1b[31mRed Line\x1b[0m\n"))
+	vt.Write([]byte("\x1b[32mGreen Line\x1b[0m\n"))
+	vt.Write([]byte("\x1b[1;34mBold Blue\x1b[0m\n"))
+	vt.Write([]byte("Plain Line\n"))
+	vt.Write([]byte("Another\n"))
+
+	// Should have pushed some lines to scrollback
+	if len(pushedLines) < 2 {
+		t.Fatalf("expected at least 2 pushed lines, got %d", len(pushedLines))
+	}
+
+	// Check that the first pushed line (Red Line) contains ANSI codes
+	if !strings.Contains(pushedLines[0], "\x1b[") {
+		t.Errorf("expected ANSI codes in scrollback line, got: %q", pushedLines[0])
+	}
+
+	// Check it contains the text
+	if !strings.Contains(pushedLines[0], "Red") {
+		t.Errorf("expected 'Red' in scrollback line, got: %q", pushedLines[0])
+	}
+
+	// Check reset at end
+	if !strings.HasSuffix(pushedLines[0], "\x1b[0m") {
+		t.Errorf("expected reset at end of line, got: %q", pushedLines[0])
+	}
+}
+
 func TestOnTermProp(t *testing.T) {
 	vt := New(24, 80)
 	defer vt.Free()

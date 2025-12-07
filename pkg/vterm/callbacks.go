@@ -102,22 +102,11 @@ func goScreenPushLine(cols C.int, cells *C.VTermScreenCell, user unsafe.Pointer)
 		return 0
 	}
 
-	// Convert cells to string
-	var result []byte
-	for i := 0; i < int(cols); i++ {
-		cell := (*C.VTermScreenCell)(unsafe.Pointer(uintptr(unsafe.Pointer(cells)) + uintptr(i)*unsafe.Sizeof(*cells)))
-		for j := 0; j < C.VTERM_MAX_CHARS_PER_CELL && cell.chars[j] != 0; j++ {
-			result = append(result, runeToUTF8(rune(cell.chars[j]))...)
-		}
-		if cell.chars[0] == 0 {
-			result = append(result, ' ')
-		}
-	}
-	// Trim trailing spaces
-	for len(result) > 0 && result[len(result)-1] == ' ' {
-		result = result[:len(result)-1]
-	}
+	// Use shared helper to convert cells to ANSI string
+	line := v.cellsToANSI(int(cols), func(i int) *C.VTermScreenCell {
+		return (*C.VTermScreenCell)(unsafe.Pointer(uintptr(unsafe.Pointer(cells)) + uintptr(i)*unsafe.Sizeof(*cells)))
+	})
 
-	v.onPushLine(string(result))
+	v.onPushLine(line)
 	return 0
 }

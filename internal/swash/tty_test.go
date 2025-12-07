@@ -500,11 +500,11 @@ func TestTTYHost_RunTask_Scrollback(t *testing.T) {
 		t.Errorf("expected at least 10 scrollback lines, got %d", len(scrollback))
 	}
 
-	// Journal should have the scrollback lines logged
+	// Journal should have the scrollback lines logged (with ANSI codes now)
 	entries := journal.Entries()
 	var lineCount int
 	for _, e := range entries {
-		if strings.HasPrefix(e.Message, "Line ") {
+		if strings.Contains(e.Message, "Line ") {
 			lineCount++
 		}
 	}
