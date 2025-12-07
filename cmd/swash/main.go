@@ -62,6 +62,7 @@ Usage:
   swash follow <session_id>          Follow output until exit
   swash send <session_id> <input>    Send input to process
   swash kill <session_id>            Kill process
+  swash screen <session_id>          Show TTY session screen
   swash history                      Show session history
   swash host                         (internal) Run as task host
 
@@ -113,6 +114,11 @@ Flags:
 		cmdKill(cmdArgs[0])
 	case "history":
 		cmdHistory()
+	case "screen":
+		if len(cmdArgs) == 0 {
+			fatal("usage: swash screen <session_id>")
+		}
+		cmdScreen(cmdArgs[0])
 	case "host":
 		cmdHost()
 	default:
@@ -289,6 +295,21 @@ func cmdKill(sessionID string) {
 		fatal("killing: %v", err)
 	}
 	fmt.Printf("%s killed\n", sessionID)
+}
+
+func cmdScreen(sessionID string) {
+	client, err := swash.ConnectTTYSession(sessionID)
+	if err != nil {
+		fatal("connecting to session: %v", err)
+	}
+	defer client.Close()
+
+	screen, err := client.GetScreenANSI()
+	if err != nil {
+		fatal("getting screen: %v", err)
+	}
+
+	fmt.Print(screen)
 }
 
 func cmdHistory() {

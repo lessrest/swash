@@ -132,6 +132,93 @@ func (c *sessionClient) Gist() (HostStatus, error) {
 	return status, nil
 }
 
+// TTYClient extends SessionClient with terminal-specific methods.
+// These are only available for sessions started with --tty.
+type TTYClient interface {
+	SessionClient
+
+	// GetScreenText returns the current screen content as plain text.
+	GetScreenText() (string, error)
+
+	// GetScreenANSI returns the screen with ANSI escape codes for colors.
+	GetScreenANSI() (string, error)
+
+	// GetCursor returns the current cursor position (row, col).
+	GetCursor() (int32, int32, error)
+
+	// GetTitle returns the terminal title.
+	GetTitle() (string, error)
+
+	// GetMode returns whether alternate screen mode is active.
+	GetMode() (bool, error)
+
+	// Resize changes the terminal size.
+	Resize(rows, cols int32) error
+}
+
+// ttyClient implements TTYClient via D-Bus.
+type ttyClient struct {
+	*sessionClient
+}
+
+// ConnectTTYSession connects to a running TTY session's D-Bus service.
+func ConnectTTYSession(sessionID string) (TTYClient, error) {
+	client, err := ConnectSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return &ttyClient{sessionClient: client.(*sessionClient)}, nil
+}
+
+func (c *ttyClient) GetScreenText() (string, error) {
+	var text string
+	err := c.obj.Call(DBusNamePrefix+".GetScreenText", 0).Store(&text)
+	if err != nil {
+		return "", fmt.Errorf("calling GetScreenText: %w", err)
+	}
+	return text, nil
+}
+
+func (c *ttyClient) GetScreenANSI() (string, error) {
+	var text string
+	err := c.obj.Call(DBusNamePrefix+".GetScreenANSI", 0).Store(&text)
+	if err != nil {
+		return "", fmt.Errorf("calling GetScreenANSI: %w", err)
+	}
+	return text, nil
+}
+
+func (c *ttyClient) GetCursor() (int32, int32, error) {
+	var row, col int32
+	err := c.obj.Call(DBusNamePrefix+".GetCursor", 0).Store(&row, &col)
+	if err != nil {
+		return 0, 0, fmt.Errorf("calling GetCursor: %w", err)
+	}
+	return row, col, nil
+}
+
+func (c *ttyClient) GetTitle() (string, error) {
+	var title string
+	err := c.obj.Call(DBusNamePrefix+".GetTitle", 0).Store(&title)
+	if err != nil {
+		return "", fmt.Errorf("calling GetTitle: %w", err)
+	}
+	return title, nil
+}
+
+func (c *ttyClient) GetMode() (bool, error) {
+	var altScreen bool
+	err := c.obj.Call(DBusNamePrefix+".GetMode", 0).Store(&altScreen)
+	if err != nil {
+		return false, fmt.Errorf("calling GetMode: %w", err)
+	}
+	return altScreen, nil
+}
+
+func (c *ttyClient) Resize(rows, cols int32) error {
+	return c.obj.Call(DBusNamePrefix+".Resize", 0, rows, cols).Err
+}
+
 // Convenience functions that open a connection, do the operation, and close.
 
 // KillSession sends SIGKILL to the process in a session via D-Bus.
