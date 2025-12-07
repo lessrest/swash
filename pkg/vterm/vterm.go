@@ -307,6 +307,7 @@ func (v *VTerm) cellsToANSI(count int, getCell func(i int) *C.VTermScreenCell) s
 	var lastAttrs CellAttrs
 	var lastFg, lastBg Color
 	firstCell := true
+	emittedANSI := false // Track if we emitted any escape sequences
 
 	// First pass: find line end (last non-space cell)
 	lineEnd := 0
@@ -330,7 +331,11 @@ func (v *VTerm) cellsToANSI(count int, getCell func(i int) *C.VTermScreenCell) s
 
 		// Emit ANSI codes if attributes changed
 		if firstCell || cellData.Attrs != lastAttrs || cellData.Fg != lastFg || cellData.Bg != lastBg {
-			result = append(result, v.ansiForCell(cellData, lastAttrs, lastFg, lastBg, firstCell)...)
+			ansi := v.ansiForCell(cellData, lastAttrs, lastFg, lastBg, firstCell)
+			if len(ansi) > 0 {
+				result = append(result, ansi...)
+				emittedANSI = true
+			}
 			lastAttrs = cellData.Attrs
 			lastFg = cellData.Fg
 			lastBg = cellData.Bg
@@ -347,8 +352,8 @@ func (v *VTerm) cellsToANSI(count int, getCell func(i int) *C.VTermScreenCell) s
 		}
 	}
 
-	// Reset attributes at end
-	if !firstCell {
+	// Reset attributes at end only if we emitted styling
+	if emittedANSI {
 		result = append(result, "\x1b[0m"...)
 	}
 
@@ -358,6 +363,10 @@ func (v *VTerm) cellsToANSI(count int, getCell func(i int) *C.VTermScreenCell) s
 // ansiForCell generates ANSI escape sequences for cell attribute changes.
 func (v *VTerm) ansiForCell(cell Cell, lastAttrs CellAttrs, lastFg, lastBg Color, first bool) []byte {
 	var codes []int
+
+	// Check if cell has any non-default attributes
+	hasAttrs := cell.Attrs.Bold || cell.Attrs.Italic || cell.Attrs.Underline > 0 ||
+		cell.Attrs.Reverse || cell.Attrs.Strike || !cell.Fg.DefaultFg || !cell.Bg.DefaultBg
 
 	// Check if we need a reset first
 	needReset := false
@@ -377,7 +386,8 @@ func (v *VTerm) ansiForCell(cell Cell, lastAttrs CellAttrs, lastFg, lastBg Color
 		}
 	}
 
-	if needReset || first {
+	// Only emit reset if needed, not for first cell with default attrs
+	if needReset || (first && hasAttrs) {
 		codes = append(codes, 0)
 	}
 

@@ -150,6 +150,35 @@ func TestOnPushLineWithColors(t *testing.T) {
 	}
 }
 
+func TestOnPushLinePlainText(t *testing.T) {
+	vt := New(3, 40) // Small terminal to trigger scrollback quickly
+	defer vt.Free()
+
+	var pushedLines []string
+	vt.OnPushLine(func(line string) {
+		pushedLines = append(pushedLines, line)
+	})
+
+	// Write plain lines that will scroll off
+	vt.Write([]byte("Line 1\n"))
+	vt.Write([]byte("Line 2\n"))
+	vt.Write([]byte("Line 3\n"))
+	vt.Write([]byte("Line 4\n"))
+	vt.Write([]byte("Line 5\n"))
+
+	// Should have pushed some lines to scrollback
+	if len(pushedLines) < 2 {
+		t.Fatalf("expected at least 2 pushed lines, got %d", len(pushedLines))
+	}
+
+	// Plain text lines should NOT have ANSI codes
+	for i, line := range pushedLines {
+		if strings.Contains(line, "\x1b[") {
+			t.Errorf("line %d should not have ANSI codes for plain text, got: %q", i, line)
+		}
+	}
+}
+
 func TestOnTermProp(t *testing.T) {
 	vt := New(24, 80)
 	defer vt.Free()
