@@ -89,6 +89,17 @@ func WriteOutput(j Journal, fd int, text string, extraFields map[string]string) 
 	return j.Write(text, fields)
 }
 
+// EmitScreen writes the final screen state to the journal.
+// This preserves the visible screen content when a TTY session exits.
+func EmitScreen(j Journal, sessionID string, screenText string, rows, cols int) error {
+	return j.Write(screenText, map[string]string{
+		FieldEvent:   EventScreen,
+		FieldSession: sessionID,
+		"ROWS":       strconv.Itoa(rows),
+		"COLS":       strconv.Itoa(cols),
+	})
+}
+
 // journalImpl implements Journal using go-systemd/sdjournal.
 type journalImpl struct {
 	j *sdjournal.Journal
@@ -233,6 +244,7 @@ func (ji *journalImpl) parseEntry() (JournalEntry, error) {
 const (
 	EventStarted = "started"
 	EventExited  = "exited"
+	EventScreen  = "screen" // Final screen state for TTY sessions
 )
 
 // Journal field names for swash events

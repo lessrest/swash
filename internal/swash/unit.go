@@ -96,8 +96,8 @@ type Unit struct {
 type TransientSpec struct {
 	Unit        UnitName
 	Slice       SliceName
-	ServiceType string            // "dbus", "simple", etc.
-	BusName     string            // for dbus services
+	ServiceType string // "dbus", "simple", etc.
+	BusName     string // for dbus services
 	WorkingDir  string
 	Description string
 	Environment map[string]string
@@ -108,4 +108,7 @@ type TransientSpec struct {
 	Stdin  *int // nil = default, set = pass this fd
 	Stdout *int // nil = journal, set = pass this fd
 	Stderr *int // nil = journal, set = pass this fd
+
+	// TTY support - when set, configures the unit to use a TTY
+	TTYPath string // e.g., /dev/pts/5
 }
