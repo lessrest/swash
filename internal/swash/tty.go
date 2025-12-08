@@ -157,6 +157,9 @@ type TTYHost struct {
 
 	// For testing: custom PTY opener
 	openPTY func() (PTYPair, error)
+
+	// Attached client (only one allowed for now)
+	attachedOutput *os.File // write end of pipe to send PTY output to client
 }
 
 // TTYHostConfig holds the configuration for creating a TTYHost.
@@ -352,6 +355,94 @@ func (h *TTYHost) GetMode() (bool, error) {
 	return h.alternateScreen, nil
 }
 
+// Attach connects a client to the TTY session.
+// Returns:
+//   - outputFD: read end of pipe receiving PTY output bytes (as dbus.UnixFD for D-Bus compatibility)
+//   - inputFD: write end of pipe for sending input to PTY
+//   - rows, cols: current terminal size
+//   - screenANSI: current screen content with ANSI codes
+//
+// The screen snapshot and stream are synchronized - no bytes are lost between them.
+func (h *TTYHost) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Check if already attached (only one client allowed for now)
+	if h.attachedOutput != nil {
+		return 0, 0, 0, 0, "", fmt.Errorf("session already has an attached client")
+	}
+
+	// Create output pipe (PTY -> client)
+	outputRead, outputWrite, err := os.Pipe()
+	if err != nil {
+		return 0, 0, 0, 0, "", fmt.Errorf("creating output pipe: %w", err)
+	}
+
+	// Create input pipe (client -> PTY)
+	inputRead, inputWrite, err := os.Pipe()
+	if err != nil {
+		outputRead.Close()
+		outputWrite.Close()
+		return 0, 0, 0, 0, "", fmt.Errorf("creating input pipe: %w", err)
+	}
+
+	// Snapshot screen state while holding the lock
+	screenANSI = h.vt.GetScreenANSI()
+	rows = int32(h.rows)
+	cols = int32(h.cols)
+
+	// Register the output pipe - PTY bytes will be tee'd here
+	h.attachedOutput = outputWrite
+
+	// Start goroutine to forward input pipe -> PTY master
+	go h.forwardAttachedInput(inputRead)
+
+	return dbus.UnixFD(outputRead.Fd()), dbus.UnixFD(inputWrite.Fd()), rows, cols, screenANSI, nil
+}
+
+// forwardAttachedInput reads from the input pipe and writes to PTY master.
+// When the input pipe closes (client disconnected), it cleans up the attached state.
+func (h *TTYHost) forwardAttachedInput(input *os.File) {
+	defer func() {
+		input.Close()
+		// Clean up attached state so another client can attach
+		h.mu.Lock()
+		if h.attachedOutput != nil {
+			h.attachedOutput.Close()
+			h.attachedOutput = nil
+		}
+		h.mu.Unlock()
+	}()
+
+	buf := make([]byte, 4096)
+	for {
+		n, err := input.Read(buf)
+		if err != nil {
+			break
+		}
+		if n > 0 {
+			h.mu.Lock()
+			ptyPair := h.ptyPair
+			h.mu.Unlock()
+			if ptyPair != nil {
+				ptyPair.Master().Write(buf[:n])
+			}
+		}
+	}
+}
+
+// Detach disconnects the attached client.
+func (h *TTYHost) Detach() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.attachedOutput != nil {
+		h.attachedOutput.Close()
+		h.attachedOutput = nil
+	}
+	return nil
+}
+
 // RunTask starts the task process and waits for it to complete.
 func (h *TTYHost) RunTask(ctx context.Context) error {
 	doneChan, err := h.startTTYProcess()
@@ -450,7 +541,7 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		exitCodeChan <- exitCode
 	}()
 
-	// Read from PTY master and feed to vterm
+	// Read from PTY master and feed to vterm (and attached clients)
 	go func() {
 		master := ptyPair.Master()
 		buf := make([]byte, 4096)
@@ -463,7 +554,15 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 				break
 			}
 			if n > 0 {
+				// Feed to vterm (vterm has its own lock)
 				h.vt.Write(buf[:n])
+				// Tee to attached client (if any)
+				h.mu.Lock()
+				attached := h.attachedOutput
+				h.mu.Unlock()
+				if attached != nil {
+					attached.Write(buf[:n])
+				}
 			}
 		}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -629,5 +630,258 @@ func TestTTYHost_RunTask_SendInput(t *testing.T) {
 	screen, _ := host.GetScreenText()
 	if !strings.Contains(screen, "Hello from stdin!") {
 		t.Errorf("expected screen to contain echoed input, got:\n%s", screen)
+	}
+}
+
+func TestTTYHost_Attach_Basic(t *testing.T) {
+	systemd, journal := NewTestFakes()
+
+	host := NewTTYHost(TTYHostConfig{
+		SessionID: "ATTACH1",
+		Command:   []string{"bash"},
+		Rows:      5,
+		Cols:      40,
+		Systemd:   systemd,
+		Journal:   journal,
+		OpenPTY:   OpenFakePTY,
+	})
+	defer host.Close()
+
+	// Write some content to establish screen state
+	host.vt.Write([]byte("Hello World"))
+
+	// Attach
+	outputFD, inputFD, rows, cols, screenANSI, err := host.Attach()
+	if err != nil {
+		t.Fatalf("Attach failed: %v", err)
+	}
+	output := os.NewFile(uintptr(outputFD), "attach-output")
+	input := os.NewFile(uintptr(inputFD), "attach-input")
+	defer output.Close()
+	defer input.Close()
+
+	// Verify size
+	if rows != 5 || cols != 40 {
+		t.Errorf("expected size (5,40), got (%d,%d)", rows, cols)
+	}
+
+	// Verify screen snapshot contains content
+	if !strings.Contains(screenANSI, "Hello World") {
+		t.Errorf("expected screen snapshot to contain 'Hello World', got %q", screenANSI)
+	}
+}
+
+func TestTTYHost_Attach_OnlyOneClient(t *testing.T) {
+	systemd, journal := NewTestFakes()
+
+	host := NewTTYHost(TTYHostConfig{
+		SessionID: "ATTACH2",
+		Command:   []string{"bash"},
+		Rows:      5,
+		Cols:      40,
+		Systemd:   systemd,
+		Journal:   journal,
+		OpenPTY:   OpenFakePTY,
+	})
+	defer host.Close()
+
+	// First attach should succeed
+	outputFD1, inputFD1, _, _, _, err := host.Attach()
+	if err != nil {
+		t.Fatalf("First Attach failed: %v", err)
+	}
+	output1 := os.NewFile(uintptr(outputFD1), "output1")
+	input1 := os.NewFile(uintptr(inputFD1), "input1")
+	defer output1.Close()
+	defer input1.Close()
+
+	// Second attach should fail
+	_, _, _, _, _, err = host.Attach()
+	if err == nil {
+		t.Error("expected second Attach to fail")
+	}
+}
+
+func TestTTYHost_Attach_StreamOutput(t *testing.T) {
+	systemd, journal := NewTestFakes()
+
+	ready := make(chan struct{})
+	done := make(chan struct{})
+
+	// Register a command that outputs some text after a signal
+	systemd.RegisterCommand("outputter", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+		close(ready)
+		<-done
+		fmt.Fprint(stdout, "STREAMED_OUTPUT")
+		return 0
+	})
+
+	host := NewTTYHost(TTYHostConfig{
+		SessionID: "ATTACH3",
+		Command:   []string{"outputter"},
+		Rows:      5,
+		Cols:      40,
+		Systemd:   systemd,
+		Journal:   journal,
+		OpenPTY:   OpenFakePTY,
+	})
+	defer host.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the task
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- host.RunTask(ctx)
+	}()
+
+	// Wait for process to be ready
+	<-ready
+
+	// Attach while process is running
+	outputFD, inputFD, _, _, _, err := host.Attach()
+	if err != nil {
+		t.Fatalf("Attach failed: %v", err)
+	}
+	output := os.NewFile(uintptr(outputFD), "output")
+	input := os.NewFile(uintptr(inputFD), "input")
+	defer output.Close()
+	defer input.Close()
+
+	// Tell the process to output
+	close(done)
+
+	// Read from the output pipe - should receive the streamed bytes
+	buf := make([]byte, 1024)
+	output.SetReadDeadline(time.Now().Add(time.Second))
+	n, err := output.Read(buf)
+	if err != nil {
+		t.Fatalf("Failed to read from output pipe: %v", err)
+	}
+
+	if !strings.Contains(string(buf[:n]), "STREAMED_OUTPUT") {
+		t.Errorf("expected output to contain 'STREAMED_OUTPUT', got %q", string(buf[:n]))
+	}
+
+	// Wait for process to exit
+	select {
+	case <-errChan:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for process to exit")
+	}
+}
+
+func TestTTYHost_Attach_ReattachAfterDisconnect(t *testing.T) {
+	systemd, journal := NewTestFakes()
+
+	host := NewTTYHost(TTYHostConfig{
+		SessionID: "ATTACH5",
+		Command:   []string{"bash"},
+		Rows:      5,
+		Cols:      40,
+		Systemd:   systemd,
+		Journal:   journal,
+		OpenPTY:   OpenFakePTY,
+	})
+	defer host.Close()
+
+	// First attach
+	outputFD1, inputFD1, _, _, _, err := host.Attach()
+	if err != nil {
+		t.Fatalf("First Attach failed: %v", err)
+	}
+	output1 := os.NewFile(uintptr(outputFD1), "output1")
+	input1 := os.NewFile(uintptr(inputFD1), "input1")
+
+	// Close the pipes (simulating client disconnect)
+	output1.Close()
+	input1.Close()
+
+	// Give the cleanup goroutine a moment to run
+	time.Sleep(50 * time.Millisecond)
+
+	// Second attach should now succeed
+	outputFD2, inputFD2, _, _, _, err := host.Attach()
+	if err != nil {
+		t.Fatalf("Second Attach after disconnect failed: %v", err)
+	}
+	output2 := os.NewFile(uintptr(outputFD2), "output2")
+	input2 := os.NewFile(uintptr(inputFD2), "input2")
+	defer output2.Close()
+	defer input2.Close()
+}
+
+func TestTTYHost_Attach_SendInput(t *testing.T) {
+	systemd, journal := NewTestFakes()
+
+	ready := make(chan struct{})
+	gotInput := make(chan string, 1)
+
+	// Register a command that reads from stdin
+	systemd.RegisterCommand("reader", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+		close(ready)
+		buf := make([]byte, 1024)
+		n, _ := stdin.Read(buf)
+		if n > 0 {
+			gotInput <- string(buf[:n])
+		}
+		return 0
+	})
+
+	host := NewTTYHost(TTYHostConfig{
+		SessionID: "ATTACH4",
+		Command:   []string{"reader"},
+		Rows:      5,
+		Cols:      40,
+		Systemd:   systemd,
+		Journal:   journal,
+		OpenPTY:   OpenFakePTY,
+	})
+	defer host.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start the task
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- host.RunTask(ctx)
+	}()
+
+	// Wait for process to be ready
+	<-ready
+
+	// Attach
+	outputFD, inputFD, _, _, _, err := host.Attach()
+	if err != nil {
+		t.Fatalf("Attach failed: %v", err)
+	}
+	output := os.NewFile(uintptr(outputFD), "output")
+	input := os.NewFile(uintptr(inputFD), "input")
+	defer output.Close()
+	defer input.Close()
+
+	// Send input through the attached input pipe
+	_, err = input.Write([]byte("ATTACHED_INPUT"))
+	if err != nil {
+		t.Fatalf("Failed to write to input pipe: %v", err)
+	}
+
+	// Verify the process received it
+	select {
+	case received := <-gotInput:
+		if received != "ATTACHED_INPUT" {
+			t.Errorf("expected 'ATTACHED_INPUT', got %q", received)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for process to receive input")
+	}
+
+	// Wait for process to exit
+	select {
+	case <-errChan:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for process to exit")
 	}
 }

@@ -9,6 +9,8 @@
 //	swash follow <session_id>          Follow output until exit
 //	swash send <session_id> <input>    Send input to process
 //	swash kill <session_id>            Kill process
+//	swash screen <session_id>          Show TTY session screen
+//	swash attach <session_id>          Attach to TTY session interactively
 //	swash history                      Show session history
 //	swash host                         (internal) Run as task host
 package main
@@ -24,6 +26,7 @@ import (
 
 	"github.com/mbrock/swash/internal/swash"
 	flag "github.com/spf13/pflag"
+	"golang.org/x/term"
 )
 
 // Global flags
@@ -68,6 +71,7 @@ Usage:
   swash send <session_id> <input>    Send input to process
   swash kill <session_id>            Kill process
   swash screen <session_id>          Show TTY session screen
+  swash attach <session_id>          Attach to TTY session interactively
   swash history                      Show session history
   swash host                         (internal) Run as task host
 
@@ -132,6 +136,11 @@ Flags:
 			fatal("usage: swash screen <session_id>")
 		}
 		cmdScreen(cmdArgs[0])
+	case "attach":
+		if len(cmdArgs) == 0 {
+			fatal("usage: swash attach <session_id>")
+		}
+		cmdAttach(cmdArgs[0])
 	case "host":
 		cmdHost()
 	default:
@@ -390,4 +399,92 @@ func cmdHistory() {
 		cmd := truncate(s.Command, 50)
 		fmt.Printf("%-8s %-8s %-6s %-8s %s\n", s.ID, s.Status, exitStr, age, cmd)
 	}
+}
+
+func cmdAttach(sessionID string) {
+	client, err := swash.ConnectTTYSession(sessionID)
+	if err != nil {
+		fatal("connecting to session: %v", err)
+	}
+	defer client.Close()
+
+	// Call Attach to get fds and screen snapshot
+	outputFD, inputFD, rows, cols, screenANSI, err := client.Attach()
+	if err != nil {
+		fatal("attaching to session: %v", err)
+	}
+
+	// Convert fds to *os.File
+	output := os.NewFile(uintptr(outputFD), "attach-output")
+	input := os.NewFile(uintptr(inputFD), "attach-input")
+	defer output.Close()
+	defer input.Close()
+
+	// Put terminal in raw mode (if we're connected to a terminal)
+	stdinFd := int(os.Stdin.Fd())
+	var oldState *term.State
+	if term.IsTerminal(stdinFd) {
+		oldState, err = term.MakeRaw(stdinFd)
+		if err != nil {
+			fatal("setting raw mode: %v", err)
+		}
+		defer term.Restore(stdinFd, oldState)
+	}
+
+	// Clear screen and print initial state
+	fmt.Print("\x1b[2J\x1b[H") // Clear screen, move to top-left
+	fmt.Print(screenANSI)
+	// Move cursor to show we're attached (bottom of screen)
+	fmt.Printf("\x1b[%d;1H", rows) // Move to last row
+	fmt.Printf("\x1b[7m[attached to %s (%dx%d), Ctrl+] to detach]\x1b[0m", sessionID, cols, rows)
+	fmt.Printf("\x1b[H") // Move back to top
+
+	// Set up signal handling
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	// Channel to signal we should exit
+	done := make(chan struct{})
+
+	// Forward PTY output to stdout
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := output.Read(buf)
+			if err != nil {
+				close(done)
+				return
+			}
+			os.Stdout.Write(buf[:n])
+		}
+	}()
+
+	// Forward stdin to PTY input (with Ctrl+] detection)
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err != nil {
+				return
+			}
+			if n > 0 {
+				if buf[0] == 0x1d { // Ctrl+]
+					output.Close() // This will cause the output reader to exit
+					return
+				}
+				input.Write(buf[:n])
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-sigCh:
+	}
+
+	// Restore terminal and print exit message
+	if oldState != nil {
+		term.Restore(stdinFd, oldState)
+	}
+	fmt.Println("\n[detached]")
 }

@@ -154,6 +154,10 @@ type TTYClient interface {
 
 	// Resize changes the terminal size.
 	Resize(rows, cols int32) error
+
+	// Attach connects to the TTY session for interactive use.
+	// Returns output/input file descriptors, current size, and screen snapshot.
+	Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error)
 }
 
 // ttyClient implements TTYClient via D-Bus.
@@ -217,6 +221,14 @@ func (c *ttyClient) GetMode() (bool, error) {
 
 func (c *ttyClient) Resize(rows, cols int32) error {
 	return c.obj.Call(DBusNamePrefix+".Resize", 0, rows, cols).Err
+}
+
+func (c *ttyClient) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error) {
+	err = c.obj.Call(DBusNamePrefix+".Attach", 0).Store(&outputFD, &inputFD, &rows, &cols, &screenANSI)
+	if err != nil {
+		return 0, 0, 0, 0, "", fmt.Errorf("calling Attach: %w", err)
+	}
+	return outputFD, inputFD, rows, cols, screenANSI, nil
 }
 
 // Convenience functions that open a connection, do the operation, and close.

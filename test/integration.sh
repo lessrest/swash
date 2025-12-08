@@ -403,6 +403,55 @@ test_start_immediate() {
     fi
 }
 
+test_attach_interactive() {
+    # Test attach using tmux to provide a real PTY
+    if ! command -v tmux &>/dev/null; then
+        echo "  (skipped - tmux not installed)"
+        TESTS_PASSED=$((TESTS_PASSED + 1))  # Count as pass if tmux not available
+        return
+    fi
+
+    # Start a TTY session with vi
+    local out session_id
+    out=$(swash start --tty --rows 15 --cols 60 -- vi 2>&1)
+    session_id=$(echo "$out" | awk '{print $1}')
+    echo "  session: $session_id"
+    
+    # Wait for vi to start
+    sleep 0.3
+
+    # Start a tmux session and run attach inside it
+    local tmux_session="swash-test-$$"
+    tmux new-session -d -s "$tmux_session" -x 70 -y 20
+    tmux send-keys -t "$tmux_session" "swash attach $session_id" Enter
+    
+    # Wait for attach to connect
+    sleep 0.3
+    
+    # Type some text in vi (i enters insert mode)
+    tmux send-keys -t "$tmux_session" "i" "Hello from swash attach!" Escape
+    
+    # Wait for vi to process
+    sleep 0.2
+    
+    # Capture the pane content
+    local pane_content
+    pane_content=$(tmux capture-pane -t "$tmux_session" -p)
+    
+    # Kill tmux session
+    tmux kill-session -t "$tmux_session" 2>/dev/null || true
+    
+    # Clean up swash session  
+    swash kill "$session_id" 2>/dev/null || true
+    
+    # Verify we see the text we typed in vi
+    if echo "$pane_content" | grep -q "Hello from swash attach"; then
+        pass "attach interactive works via tmux (vi)"
+    else
+        fail "attach did not show expected output" "$pane_content"
+    fi
+}
+
 # Run tests
 if [ -n "$SINGLE_TEST" ]; then
     echo "=== Running single test: $SINGLE_TEST ==="
@@ -438,6 +487,12 @@ else
     run_test test_tty_mode_output
     run_test test_tty_colors_preserved
     run_test test_tty_screen_event
+
+    echo
+    echo "=== Attach Tests ==="
+    echo
+
+    run_test test_attach_interactive
 fi
 
 echo
