@@ -135,6 +135,18 @@ func (p *RealPTY) CloseSlave() error {
 	return nil
 }
 
+// attachedClient represents a single attached client connection.
+type attachedClient struct {
+	id              string     // unique identifier for this client
+	output          *os.File   // write end of pipe to send PTY output to client
+	input           *os.File   // read end of pipe to receive input from client
+	clientFDs       []*os.File // client-side fds to close after D-Bus sends them
+	rows, cols      int        // client's terminal size
+	needsBorder     bool       // true if client terminal is larger than PTY size
+	borderRows      int        // number of rows available in bordered view
+	borderCols      int        // number of cols available in bordered view
+}
+
 // TTYHost extends Host with terminal emulation capabilities.
 // It uses a PTY instead of pipes and processes output through libvterm.
 type TTYHost struct {
@@ -159,9 +171,9 @@ type TTYHost struct {
 	// For testing: custom PTY opener
 	openPTY func() (PTYPair, error)
 
-	// Attached client (only one allowed for now)
-	attachedOutput    *os.File   // write end of pipe to send PTY output to client
-	attachedClientFDs []*os.File // client-side fds to close after D-Bus sends them
+	// Multi-client attach support
+	attachedClients map[string]*attachedClient // map of client ID to client info
+	nextClientID    int                        // counter for generating unique client IDs
 }
 
 // TTYHostConfig holds the configuration for creating a TTYHost.
@@ -201,15 +213,17 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 	tags[FieldSession] = cfg.SessionID
 
 	h := &TTYHost{
-		sessionID:     cfg.SessionID,
-		command:       cfg.Command,
-		rows:          rows,
-		cols:          cols,
-		tags:          tags,
-		systemd:       cfg.Systemd,
-		journal:       cfg.Journal,
-		maxScrollback: 10000,
-		openPTY:       openPTY,
+		sessionID:       cfg.SessionID,
+		command:         cfg.Command,
+		rows:            rows,
+		cols:            cols,
+		tags:            tags,
+		systemd:         cfg.Systemd,
+		journal:         cfg.Journal,
+		maxScrollback:   10000,
+		openPTY:         openPTY,
+		attachedClients: make(map[string]*attachedClient),
+		nextClientID:    1,
 	}
 
 	// Create vterm instance
@@ -311,12 +325,19 @@ func (h *TTYHost) GetCursor() (int32, int32, error) {
 }
 
 // Resize changes the terminal size.
+// When there are attached clients, resizing is not allowed.
 func (h *TTYHost) Resize(rows, cols int32) error {
 	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Don't allow resize when clients are attached
+	if len(h.attachedClients) > 0 {
+		return fmt.Errorf("cannot resize while clients are attached")
+	}
+
 	h.rows = int(rows)
 	h.cols = int(cols)
 	ptyPair := h.ptyPair
-	h.mu.Unlock()
 
 	h.vt.SetSize(int(rows), int(cols))
 
@@ -357,21 +378,25 @@ func (h *TTYHost) GetMode() (bool, error) {
 	return h.alternateScreen, nil
 }
 
-// Attach connects a client to the TTY session.
+// AttachWithSize connects a client to the TTY session with the client's terminal size.
+// This is the new method that supports multiple clients.
 // Returns:
 //   - outputFD: read end of pipe receiving PTY output bytes (as dbus.UnixFD for D-Bus compatibility)
 //   - inputFD: write end of pipe for sending input to PTY
 //   - rows, cols: current terminal size
-//   - screenANSI: current screen content with ANSI codes
+//   - screenANSI: current screen content with ANSI codes (possibly with border)
 //
-// The screen snapshot and stream are synchronized - no bytes are lost between them.
-func (h *TTYHost) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error) {
+// If clientRows/clientCols are smaller than the PTY size, returns an error.
+// If clientRows/clientCols are larger, renders the screen with a border.
+func (h *TTYHost) AttachWithSize(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// Check if already attached (only one client allowed for now)
-	if h.attachedOutput != nil {
-		return 0, 0, 0, 0, "", fmt.Errorf("session already has an attached client")
+	// Check if client terminal is too small
+	if int(clientRows) < h.rows || int(clientCols) < h.cols {
+		return 0, 0, 0, 0, "", fmt.Errorf(
+			"Terminal too small (need %dx%d, have %dx%d) - resize your terminal or wait for other clients to disconnect",
+			h.cols, h.rows, clientCols, clientRows)
 	}
 
 	// Create output pipe (PTY -> client)
@@ -388,48 +413,164 @@ func (h *TTYHost) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, scr
 		return 0, 0, 0, 0, "", fmt.Errorf("creating input pipe: %w", err)
 	}
 
+	// Generate unique client ID
+	clientID := fmt.Sprintf("client-%d", h.nextClientID)
+	h.nextClientID++
+
+	// Determine if this client needs a border
+	needsBorder := int(clientRows) > h.rows || int(clientCols) > h.cols
+
+	// Create client record
+	client := &attachedClient{
+		id:         clientID,
+		output:     outputWrite,
+		input:      inputRead,
+		rows:       int(clientRows),
+		cols:       int(clientCols),
+		needsBorder: needsBorder,
+	}
+
+	// If this is the first client, set the PTY size to match
+	if len(h.attachedClients) == 0 && h.ptyPair != nil {
+		// First client can resize the PTY
+		h.rows = int(clientRows)
+		h.cols = int(clientCols)
+		h.vt.SetSize(h.rows, h.cols)
+		h.ptyPair.SetSize(uint16(clientRows), uint16(clientCols))
+	}
+
 	// Snapshot screen state while holding the lock
-	screenANSI = h.vt.GetScreenANSI()
-	// Append cursor positioning - ANSI uses 1-based coordinates
-	curRow, curCol := h.vt.GetCursor()
-	screenANSI += fmt.Sprintf("\x1b[%d;%dH", curRow+1, curCol+1)
+	if needsBorder {
+		// Render with border
+		screenANSI = h.renderScreenWithBorder(client)
+	} else {
+		screenANSI = h.vt.GetScreenANSI()
+		// Append cursor positioning - ANSI uses 1-based coordinates
+		curRow, curCol := h.vt.GetCursor()
+		screenANSI += fmt.Sprintf("\x1b[%d;%dH", curRow+1, curCol+1)
+	}
 	rows = int32(h.rows)
 	cols = int32(h.cols)
 
-	// Register the output pipe - PTY bytes will be tee'd here
-	h.attachedOutput = outputWrite
+	// Register the client
+	h.attachedClients[clientID] = client
 
 	// Start goroutine to forward input pipe -> PTY master
-	go h.forwardAttachedInput(inputRead)
+	go h.forwardClientInput(clientID, inputRead)
 
 	// Store the client-side fds so we can close them after D-Bus sends them.
 	// D-Bus dups fds when sending, so we must close our copies for the pipes
 	// to properly detect when the client disconnects.
-	h.attachedClientFDs = []*os.File{outputRead, inputWrite}
+	client.clientFDs = []*os.File{outputRead, inputWrite}
 	go func() {
 		// Brief delay to ensure D-Bus has sent the fds
 		time.Sleep(100 * time.Millisecond)
 		h.mu.Lock()
-		for _, f := range h.attachedClientFDs {
-			f.Close()
+		if c, ok := h.attachedClients[clientID]; ok {
+			for _, f := range c.clientFDs {
+				f.Close()
+			}
+			c.clientFDs = nil
 		}
-		h.attachedClientFDs = nil
 		h.mu.Unlock()
 	}()
 
 	return dbus.UnixFD(outputRead.Fd()), dbus.UnixFD(inputWrite.Fd()), rows, cols, screenANSI, nil
 }
 
-// forwardAttachedInput reads from the input pipe and writes to PTY master.
-// When the input pipe closes (client disconnected), it cleans up the attached state.
-func (h *TTYHost) forwardAttachedInput(input *os.File) {
+// Attach connects a client to the TTY session.
+// This is the legacy method that maintains backward compatibility.
+// It calls AttachWithSize with default terminal size (24x80).
+func (h *TTYHost) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error) {
+	// Use the current PTY size as the client size for backward compatibility
+	h.mu.Lock()
+	clientRows := int32(h.rows)
+	clientCols := int32(h.cols)
+	h.mu.Unlock()
+
+	return h.AttachWithSize(clientRows, clientCols)
+}
+
+// renderScreenWithBorder renders the PTY screen with a border for clients with larger terminals.
+// The border includes session info and uses Unicode box-drawing characters.
+func (h *TTYHost) renderScreenWithBorder(client *attachedClient) string {
+	// Get the screen content
+	screenLines := strings.Split(h.vt.GetScreenANSI(), "\n")
+	
+	// Calculate padding for centering
+	vertPad := (client.rows - h.rows - 2) / 2 // -2 for top and bottom border
+	horzPad := (client.cols - h.cols - 2) / 2 // -2 for left and right border
+	
+	var sb strings.Builder
+	
+	// Clear screen and move to top
+	sb.WriteString("\x1b[2J\x1b[H")
+	
+	// Add vertical padding at top
+	for i := 0; i < vertPad; i++ {
+		sb.WriteString("\n")
+	}
+	
+	// Top border with session info
+	sb.WriteString(strings.Repeat(" ", horzPad))
+	sb.WriteString("┌")
+	sessionInfo := fmt.Sprintf(" Session: %s (%dx%d) ", h.sessionID, h.cols, h.rows)
+	if len(sessionInfo) <= h.cols {
+		sb.WriteString(sessionInfo)
+		sb.WriteString(strings.Repeat("─", h.cols-len(sessionInfo)))
+	} else {
+		sb.WriteString(strings.Repeat("─", h.cols))
+	}
+	sb.WriteString("┐\n")
+	
+	// Content lines with left and right border
+	for i := 0; i < h.rows; i++ {
+		sb.WriteString(strings.Repeat(" ", horzPad))
+		sb.WriteString("│")
+		if i < len(screenLines) {
+			// Strip any trailing whitespace and pad to exact width
+			line := screenLines[i]
+			// Remove ANSI sequences for length calculation
+			visibleLen := len(strings.ReplaceAll(strings.ReplaceAll(line, "\x1b", ""), "\n", ""))
+			if visibleLen > h.cols {
+				sb.WriteString(line[:h.cols])
+			} else {
+				sb.WriteString(line)
+				sb.WriteString(strings.Repeat(" ", h.cols-visibleLen))
+			}
+		} else {
+			sb.WriteString(strings.Repeat(" ", h.cols))
+		}
+		sb.WriteString("│\n")
+	}
+	
+	// Bottom border
+	sb.WriteString(strings.Repeat(" ", horzPad))
+	sb.WriteString("└")
+	sb.WriteString(strings.Repeat("─", h.cols))
+	sb.WriteString("┘\n")
+	
+	// Get cursor position and adjust for border
+	curRow, curCol := h.vt.GetCursor()
+	borderedRow := vertPad + 1 + curRow + 1 // +1 for top border, +1 for 1-based
+	borderedCol := horzPad + 1 + curCol + 1 // +1 for left border, +1 for 1-based
+	sb.WriteString(fmt.Sprintf("\x1b[%d;%dH", borderedRow, borderedCol))
+	
+	return sb.String()
+}
+
+// forwardClientInput reads from a client's input pipe and writes to PTY master.
+// When the input pipe closes (client disconnected), it cleans up the client state.
+func (h *TTYHost) forwardClientInput(clientID string, input *os.File) {
 	defer func() {
 		input.Close()
-		// Clean up attached state so another client can attach
+		// Clean up client state
 		h.mu.Lock()
-		if h.attachedOutput != nil {
-			h.attachedOutput.Close()
-			h.attachedOutput = nil
+		if client, ok := h.attachedClients[clientID]; ok {
+			if client.output != nil {
+				client.output.Close()
+			}
+			delete(h.attachedClients, clientID)
 		}
 		h.mu.Unlock()
 	}()
@@ -451,15 +592,22 @@ func (h *TTYHost) forwardAttachedInput(input *os.File) {
 	}
 }
 
-// Detach disconnects the attached client.
+
+
+// Detach disconnects all attached clients.
 func (h *TTYHost) Detach() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.attachedOutput != nil {
-		h.attachedOutput.Close()
-		h.attachedOutput = nil
+	for _, client := range h.attachedClients {
+		if client.output != nil {
+			client.output.Close()
+		}
+		if client.input != nil {
+			client.input.Close()
+		}
 	}
+	h.attachedClients = make(map[string]*attachedClient)
 	return nil
 }
 
@@ -576,13 +724,16 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 			if n > 0 {
 				// Feed to vterm (vterm has its own lock)
 				h.vt.Write(buf[:n])
-				// Tee to attached client (if any)
+				// Tee to all attached clients
 				h.mu.Lock()
-				attached := h.attachedOutput
-				h.mu.Unlock()
-				if attached != nil {
-					attached.Write(buf[:n])
+				for _, client := range h.attachedClients {
+					if client.output != nil {
+						// TODO: Handle border rendering for clients that need it
+						// For now, just send raw PTY output
+						client.output.Write(buf[:n])
+					}
 				}
+				h.mu.Unlock()
 			}
 		}
 

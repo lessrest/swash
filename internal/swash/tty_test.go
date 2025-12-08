@@ -671,7 +671,7 @@ func TestTTYHost_Attach_Basic(t *testing.T) {
 	}
 }
 
-func TestTTYHost_Attach_OnlyOneClient(t *testing.T) {
+func TestTTYHost_Attach_MultipleClients(t *testing.T) {
 	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
@@ -686,7 +686,7 @@ func TestTTYHost_Attach_OnlyOneClient(t *testing.T) {
 	defer host.Close()
 
 	// First attach should succeed
-	outputFD1, inputFD1, _, _, _, err := host.Attach()
+	outputFD1, inputFD1, _, _, _, err := host.AttachWithSize(5, 40)
 	if err != nil {
 		t.Fatalf("First Attach failed: %v", err)
 	}
@@ -695,10 +695,97 @@ func TestTTYHost_Attach_OnlyOneClient(t *testing.T) {
 	defer output1.Close()
 	defer input1.Close()
 
-	// Second attach should fail
-	_, _, _, _, _, err = host.Attach()
+	// Second attach with same size should succeed
+	outputFD2, inputFD2, _, _, _, err := host.AttachWithSize(5, 40)
+	if err != nil {
+		t.Fatalf("Second Attach failed: %v", err)
+	}
+	output2 := os.NewFile(uintptr(outputFD2), "output2")
+	input2 := os.NewFile(uintptr(inputFD2), "input2")
+	defer output2.Close()
+	defer input2.Close()
+
+	// Verify both clients are tracked
+	host.mu.Lock()
+	numClients := len(host.attachedClients)
+	host.mu.Unlock()
+	if numClients != 2 {
+		t.Errorf("expected 2 attached clients, got %d", numClients)
+	}
+}
+
+func TestTTYHost_Attach_ClientTooSmall(t *testing.T) {
+	systemd, journal := NewTestFakes()
+
+	host := NewTTYHost(TTYHostConfig{
+		SessionID: "ATTACH_SMALL",
+		Command:   []string{"bash"},
+		Rows:      24,
+		Cols:      80,
+		Systemd:   systemd,
+		Journal:   journal,
+		OpenPTY:   OpenFakePTY,
+	})
+	defer host.Close()
+
+	// First attach sets the size
+	outputFD1, inputFD1, _, _, _, err := host.AttachWithSize(24, 80)
+	if err != nil {
+		t.Fatalf("First Attach failed: %v", err)
+	}
+	output1 := os.NewFile(uintptr(outputFD1), "output1")
+	input1 := os.NewFile(uintptr(inputFD1), "input1")
+	defer output1.Close()
+	defer input1.Close()
+
+	// Second attach with smaller terminal should fail
+	_, _, _, _, _, err = host.AttachWithSize(20, 60)
 	if err == nil {
-		t.Error("expected second Attach to fail")
+		t.Error("expected attach with smaller terminal to fail")
+	}
+	if !strings.Contains(err.Error(), "Terminal too small") {
+		t.Errorf("expected 'Terminal too small' error, got: %v", err)
+	}
+}
+
+func TestTTYHost_Attach_LargerClientWithBorder(t *testing.T) {
+	systemd, journal := NewTestFakes()
+
+	host := NewTTYHost(TTYHostConfig{
+		SessionID: "ATTACH_BORDER",
+		Command:   []string{"bash"},
+		Rows:      10,
+		Cols:      40,
+		Systemd:   systemd,
+		Journal:   journal,
+		OpenPTY:   OpenFakePTY,
+	})
+	defer host.Close()
+
+	// Write some content
+	host.vt.Write([]byte("Hello Border"))
+
+	// Attach with larger terminal should succeed and render with border
+	outputFD, inputFD, rows, cols, screenANSI, err := host.AttachWithSize(20, 80)
+	if err != nil {
+		t.Fatalf("Attach with larger terminal failed: %v", err)
+	}
+	output := os.NewFile(uintptr(outputFD), "output")
+	input := os.NewFile(uintptr(inputFD), "input")
+	defer output.Close()
+	defer input.Close()
+
+	// Verify size returned is the PTY size
+	if rows != 10 || cols != 40 {
+		t.Errorf("expected size (10,40), got (%d,%d)", rows, cols)
+	}
+
+	// Verify screen has border characters
+	if !strings.Contains(screenANSI, "┌") || !strings.Contains(screenANSI, "┐") {
+		t.Error("expected screen to contain border characters")
+	}
+	if !strings.Contains(screenANSI, "Session: ATTACH_BORDER") {
+		t.Error("expected screen to contain session info")
 	}
 }
 
