@@ -417,7 +417,13 @@ func TestTTYAttach(t *testing.T) {
 		exec.Command("tmux", "new-session", "-d", "-s", tmuxSession, "-x", "60", "-y", "15").Run()
 		defer exec.Command("tmux", "kill-session", "-t", tmuxSession).Run()
 
-		exec.Command("tmux", "send-keys", "-t", tmuxSession, e.swashBin+" attach "+sessionID, "Enter").Run()
+		// Build command with env vars for mini-systemd mode
+		attachCmd := e.swashBin + " attach " + sessionID
+		if e.mode == "mini" {
+			attachCmd = fmt.Sprintf("DBUS_SESSION_BUS_ADDRESS=unix:path=%s SWASH_JOURNAL_SOCKET=%s %s",
+				e.busSocket, e.journalSocket, attachCmd)
+		}
+		exec.Command("tmux", "send-keys", "-t", tmuxSession, attachCmd, "Enter").Run()
 		time.Sleep(300 * time.Millisecond)
 
 		// Send input
