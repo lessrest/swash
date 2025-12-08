@@ -31,12 +31,13 @@ import (
 
 // Global flags
 var (
-	protocolFlag    string
-	tagFlags        []string
-	ttyFlag         bool
-	rowsFlag        int
-	colsFlag        int
-	detachAfterFlag time.Duration
+	protocolFlag          string
+	tagFlags              []string
+	ttyFlag               bool
+	rowsFlag              int
+	colsFlag              int
+	detachAfterFlag       time.Duration
+	detachAfterOutputFlag int
 )
 
 // Global runtime (initialized for commands that need it)
@@ -57,6 +58,7 @@ func main() {
 	flag.IntVar(&rowsFlag, "rows", 24, "Terminal rows (for --tty mode)")
 	flag.IntVar(&colsFlag, "cols", 80, "Terminal columns (for --tty mode)")
 	flag.DurationVarP(&detachAfterFlag, "detach-after", "d", 3*time.Second, "Detach after duration (0 = immediate)")
+	flag.IntVar(&detachAfterOutputFlag, "detach-after-output", 80*24, "Detach after this many bytes of output (0 = unlimited)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `swash - Interactive process sessions over D-Bus
@@ -98,12 +100,12 @@ Flags:
 		if ttyFlag {
 			fatal("--tty is not supported with 'run'; use 'start --tty' instead")
 		}
-		cmdRun(cmdArgs, detachAfterFlag)
+		cmdRun(cmdArgs, detachAfterFlag, detachAfterOutputFlag)
 	case "start":
 		if len(cmdArgs) == 0 {
 			fatal("usage: swash start <command>")
 		}
-		cmdRun(cmdArgs, 0) // immediate detach
+		cmdRun(cmdArgs, 0, detachAfterOutputFlag) // immediate detach
 	case "stop":
 		if len(cmdArgs) == 0 {
 			fatal("usage: swash stop <session_id>")
@@ -235,7 +237,7 @@ func cmdStatus() {
 	}
 }
 
-func cmdRun(command []string, detachAfter time.Duration) {
+func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 	initRuntime()
 	defer rt.Close()
 
@@ -278,13 +280,18 @@ func cmdRun(command []string, detachAfter time.Duration) {
 	}()
 
 	// Follow with timeout
-	exitCode, result := rt.FollowSession(ctx, sessionID, detachAfter)
+	exitCode, result := rt.FollowSession(ctx, sessionID, detachAfter, outputLimit)
 
 	switch result {
 	case swash.FollowCompleted:
 		os.Exit(exitCode)
 	case swash.FollowTimedOut:
 		fmt.Fprintf(os.Stderr, "swash: still running after %s, detaching\n", detachAfter)
+		fmt.Fprintf(os.Stderr, "swash: session ID: %s\n", sessionID)
+		fmt.Fprintf(os.Stderr, "swash: swash follow %s\n", sessionID)
+		os.Exit(1)
+	case swash.FollowOutputLimit:
+		fmt.Fprintf(os.Stderr, "swash: output exceeded %d bytes, detaching\n", outputLimit)
 		fmt.Fprintf(os.Stderr, "swash: session ID: %s\n", sessionID)
 		fmt.Fprintf(os.Stderr, "swash: swash follow %s\n", sessionID)
 		os.Exit(1)
@@ -332,7 +339,7 @@ func cmdFollow(sessionID string) {
 	initRuntime()
 	defer rt.Close()
 
-	exitCode, result := rt.FollowSession(context.Background(), sessionID, 0)
+	exitCode, result := rt.FollowSession(context.Background(), sessionID, 0, 0)
 	if result == swash.FollowCancelled {
 		os.Exit(130)
 	}
@@ -403,18 +410,18 @@ func cmdHistory() {
 
 // attachState holds the state for an attached session
 type attachState struct {
-	sessionID    string
-	clientID     string
-	remoteRows   int
-	remoteCols   int
-	localRows    int
-	localCols    int
-	output       *os.File
-	input        *os.File
-	client       swash.TTYClient
-	needsBorder  bool
-	borderTop    int // row offset for remote content
-	borderLeft   int // col offset for remote content
+	sessionID   string
+	clientID    string
+	remoteRows  int
+	remoteCols  int
+	localRows   int
+	localCols   int
+	output      *os.File
+	input       *os.File
+	client      swash.TTYClient
+	needsBorder bool
+	borderTop   int // row offset for remote content
+	borderLeft  int // col offset for remote content
 }
 
 // drawBorder draws a box-drawing border around the remote terminal area
@@ -535,15 +542,15 @@ func cmdAttach(sessionID string) {
 
 	// Initialize attach state
 	state := &attachState{
-		sessionID:  sessionID,
-		clientID:   clientID,
-		remoteRows: int(remoteRows),
-		remoteCols: int(remoteCols),
-		localRows:  localRows,
-		localCols:  localCols,
-		output:     output,
-		input:      input,
-		client:     client,
+		sessionID:   sessionID,
+		clientID:    clientID,
+		remoteRows:  int(remoteRows),
+		remoteCols:  int(remoteCols),
+		localRows:   localRows,
+		localCols:   localCols,
+		output:      output,
+		input:       input,
+		client:      client,
 		needsBorder: localRows > int(remoteRows) || localCols > int(remoteCols),
 	}
 
