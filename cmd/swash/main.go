@@ -80,6 +80,10 @@ Usage:
   swash screen <session_id>          Show TTY session screen
   swash attach <session_id>          Attach to TTY session interactively
   swash history                      Show session history
+  swash http                         Run HTTP API server
+  swash http install [port]          Install HTTP server as systemd socket service
+  swash http uninstall               Uninstall HTTP server
+  swash http status                  Show HTTP server status
   swash host                         (internal) Run as task host
 
 Flags:
@@ -151,6 +155,8 @@ Flags:
 		cmdAttach(cmdArgs[0])
 	case "host":
 		cmdHost()
+	case "http":
+		cmdHTTP(cmdArgs)
 	default:
 		fatal("unknown command: %s", cmd)
 	}

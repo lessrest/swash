@@ -26,6 +26,9 @@ type Systemd interface {
 	// GetUnit retrieves a single unit's properties.
 	GetUnit(ctx context.Context, name UnitName) (*Unit, error)
 
+	// StartUnit starts a persistent unit, blocking until complete.
+	StartUnit(ctx context.Context, name UnitName) error
+
 	// StopUnit gracefully stops a unit, blocking until complete.
 	StopUnit(ctx context.Context, name UnitName) error
 
@@ -34,6 +37,15 @@ type Systemd interface {
 
 	// StartTransient creates and starts a transient unit via D-Bus API.
 	StartTransient(ctx context.Context, spec TransientSpec) error
+
+	// Reload tells systemd to reload its configuration (daemon-reload).
+	Reload(ctx context.Context) error
+
+	// EnableUnits enables unit files so they start on boot or socket activation.
+	EnableUnits(ctx context.Context, units []string) error
+
+	// DisableUnits disables unit files.
+	DisableUnits(ctx context.Context, units []string) error
 
 	// SubscribeUnitExit returns a channel that receives when the specified unit exits.
 	// The channel is closed when the subscription ends.
@@ -110,11 +122,6 @@ func (s *systemdConn) GetUnit(ctx context.Context, name UnitName) (*Unit, error)
 		return nil, fmt.Errorf("getting unit properties: %w", err)
 	}
 
-	serviceProps, err := s.conn.GetUnitTypePropertiesContext(ctx, name.String(), "Service")
-	if err != nil {
-		return nil, fmt.Errorf("getting service properties: %w", err)
-	}
-
 	unit := &Unit{
 		Name:  name,
 		State: UnitState(unitProps["ActiveState"].(string)),
@@ -128,16 +135,20 @@ func (s *systemdConn) GetUnit(ctx context.Context, name UnitName) (*Unit, error)
 		unit.Started = time.Unix(int64(ts/1000000), int64((ts%1000000)*1000))
 	}
 
-	if pid, ok := serviceProps["MainPID"].(uint32); ok {
-		unit.MainPID = pid
-	}
+	// Try to get service-specific properties (will fail for non-service units like sockets)
+	serviceProps, err := s.conn.GetUnitTypePropertiesContext(ctx, name.String(), "Service")
+	if err == nil {
+		if pid, ok := serviceProps["MainPID"].(uint32); ok {
+			unit.MainPID = pid
+		}
 
-	if wd, ok := serviceProps["WorkingDirectory"].(string); ok {
-		unit.WorkingDir = wd
-	}
+		if wd, ok := serviceProps["WorkingDirectory"].(string); ok {
+			unit.WorkingDir = wd
+		}
 
-	if es, ok := serviceProps["ExecMainStatus"].(int32); ok {
-		unit.ExitStatus = es
+		if es, ok := serviceProps["ExecMainStatus"].(int32); ok {
+			unit.ExitStatus = es
+		}
 	}
 
 	return unit, nil
@@ -160,6 +171,48 @@ func (s *systemdConn) StopUnit(ctx context.Context, name UnitName) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// StartUnit starts a persistent unit, blocking until complete.
+func (s *systemdConn) StartUnit(ctx context.Context, name UnitName) error {
+	resultChan := make(chan string, 1)
+	_, err := s.conn.StartUnitContext(ctx, name.String(), "replace", resultChan)
+	if err != nil {
+		return fmt.Errorf("starting unit: %w", err)
+	}
+
+	select {
+	case result := <-resultChan:
+		if result != "done" {
+			return fmt.Errorf("start job failed: %s", result)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Reload tells systemd to reload its configuration (daemon-reload).
+func (s *systemdConn) Reload(ctx context.Context) error {
+	return s.conn.ReloadContext(ctx)
+}
+
+// EnableUnits enables unit files so they start on boot or socket activation.
+func (s *systemdConn) EnableUnits(ctx context.Context, units []string) error {
+	_, _, err := s.conn.EnableUnitFilesContext(ctx, units, false, true)
+	if err != nil {
+		return fmt.Errorf("enabling units: %w", err)
+	}
+	return nil
+}
+
+// DisableUnits disables unit files.
+func (s *systemdConn) DisableUnits(ctx context.Context, units []string) error {
+	_, err := s.conn.DisableUnitFilesContext(ctx, units, false)
+	if err != nil {
+		return fmt.Errorf("disabling units: %w", err)
+	}
+	return nil
 }
 
 // KillUnit sends a signal to all processes in a unit.
