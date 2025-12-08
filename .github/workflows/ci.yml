@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CGO_CFLAGS: -I${{ github.workspace }}/cvendor
+
+jobs:
+  build:
+    runs-on: ubuntu-x64-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Install libvterm-dev
+        run: sudo apt-get update && sudo apt-get install -y libvterm-dev
+
+      - name: Build
+        run: make build
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: bin/
+
+  test-unit:
+    runs-on: ubuntu-x64-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Install libvterm-dev
+        run: sudo apt-get update && sudo apt-get install -y libvterm-dev
+
+      - name: Run unit tests
+        run: make test-unit
+
+  test-integration:
+    runs-on: ubuntu-x64-1
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Install libvterm-dev
+        run: sudo apt-get update && sudo apt-get install -y libvterm-dev
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: bin/
+
+      - name: Make binaries executable
+        run: chmod +x bin/*
+
+      - name: Run integration tests
+        run: make test-integration
+
+  lint:
+    runs-on: ubuntu-x64-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Install libvterm-dev
+        run: sudo apt-get update && sudo apt-get install -y libvterm-dev
+
+      - name: Go vet
+        # Note: pkg/vterm has a known false positive about cgo.Handle -> unsafe.Pointer
+        run: go vet ./... 2>&1 | grep -v "possible misuse of unsafe.Pointer" || true
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: Run staticcheck
+        run: staticcheck ./... || true
