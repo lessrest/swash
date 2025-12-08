@@ -45,13 +45,23 @@ to see what happened.
 ## Usage
 
 ```bash
-swash run echo "hello world"    # start a session
+swash run echo "hello world"    # run command, show output, wait for exit
+swash run -d 10s ./slow-script  # wait up to 10s, then detach if still running
+swash start ./background-job    # start and detach immediately
 swash                           # list running sessions
 swash follow ABC123             # stream output until exit
 swash send ABC123 "input"       # send to stdin
 swash kill ABC123               # terminate
 swash history                   # show past sessions from journal
 ```
+
+`swash run` executes a command, streams its output, and waits for it to complete
+(with a default 3-second timeout). If the command finishes in time, swash exits
+with the command's exit code. If the timeout expires, it detaches and prints the
+session ID so you can reconnect with `swash follow`.
+
+`swash start` is equivalent to `swash run -d 0` - it starts the session and
+returns immediately without waiting.
 
 ### TTY Mode
 
@@ -126,8 +136,9 @@ root privileges.
 
 ```bash
 go build ./cmd/swash/
-./test/integration.sh           # runs against mini-systemd
-./test/integration.sh --real    # runs against real systemd
+./test/integration.sh           # runs against real systemd, then mini-systemd
+./test/integration.sh --real    # runs against real systemd only
+./test/integration.sh --mini    # runs against mini-systemd only
 ```
 
 You'll need Go 1.23+, a C compiler (for libvterm via cgo), and the systemd
