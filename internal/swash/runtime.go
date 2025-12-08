@@ -226,13 +226,16 @@ const (
 	FollowTimedOut
 	// FollowCancelled means the context was cancelled (e.g., Ctrl+C).
 	FollowCancelled
+	// FollowOutputLimit means output limit was reached while session was still running.
+	FollowOutputLimit
 )
 
-// FollowSession follows a session's output until it exits or timeout.
-// If timeout is 0, waits indefinitely.
+// FollowSession follows a session's output until it exits, times out, or exceeds the output limit.
+// If timeout is 0, waits indefinitely. If outputLimit is 0, output is unlimited.
 // Returns (exitCode, result). exitCode is only valid when result is FollowCompleted.
-func (r *Runtime) FollowSession(ctx context.Context, sessionID string, timeout time.Duration) (int, FollowResult) {
+func (r *Runtime) FollowSession(ctx context.Context, sessionID string, timeout time.Duration, outputLimit int) (int, FollowResult) {
 	matches := []JournalMatch{MatchSession(sessionID)}
+	outputBytes := 0
 
 	// Create a timeout context if timeout > 0
 	var cancel context.CancelFunc
@@ -254,6 +257,13 @@ func (r *Runtime) FollowSession(ctx context.Context, sessionID string, timeout t
 		// Print output (entries with FD field)
 		if e.Fields["FD"] != "" && e.Message != "" {
 			fmt.Println(e.Message)
+
+			if outputLimit > 0 {
+				outputBytes += len(e.Message) + 1 // +1 for the newline added by Println
+				if outputBytes > outputLimit {
+					return 0, FollowOutputLimit
+				}
+			}
 		}
 	}
 
