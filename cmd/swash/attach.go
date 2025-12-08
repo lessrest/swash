@@ -1,10 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"github.com/mbrock/swash/internal/swash"
@@ -12,106 +12,125 @@ import (
 	"golang.org/x/term"
 )
 
-// attachState holds the state for an attached session
-type attachState struct {
+// GetContentSize returns the terminal size minus border (2 rows, 2 cols).
+// Returns default 80x24 content area if not a terminal.
+func GetContentSize() (rows, cols int) {
+	stdinFd := int(os.Stdin.Fd())
+	if term.IsTerminal(stdinFd) {
+		c, r, err := term.GetSize(stdinFd)
+		if err == nil {
+			rows, cols = r-2, c-2
+			if rows < 1 {
+				rows = 1
+			}
+			if cols < 1 {
+				cols = 1
+			}
+			return rows, cols
+		}
+	}
+	return 22, 78 // default 24x80 minus border
+}
+
+// vtermMsg represents a message to the vterm owner goroutine
+type vtermMsg interface {
+	isVtermMsg()
+}
+
+type vtermWrite struct{ data []byte }
+type vtermResize struct{ rows, cols int }
+type vtermRender struct{ clear bool }
+
+func (vtermWrite) isVtermMsg()  {}
+func (vtermResize) isVtermMsg() {}
+func (vtermRender) isVtermMsg() {}
+
+// terminalRenderer handles all rendering to the real terminal
+type terminalRenderer struct {
 	sessionID  string
-	clientID   string
 	remoteRows int
 	remoteCols int
 	localRows  int
 	localCols  int
-
-	// File handles for PTY communication
-	output *os.File // read end - receives PTY output from host
-	input  *os.File // write end - sends input to host PTY
-
-	client swash.TTYClient
-
-	// Border/centering
-	needsBorder bool
-	borderTop   int // row offset for remote content (0-based)
-	borderLeft  int // col offset for remote content (0-based)
-
-	// Local vterm for rendering
-	vt *vterm.VTerm
-
-	// Rendering synchronization
-	mu       sync.Mutex
-	dirty    bool          // true if screen needs redraw
-	damageCh chan struct{} // signals damage events
+	borderTop  int
+	borderLeft int
 }
 
-// newAttachState creates a new attach state with local vterm
-func newAttachState(sessionID, clientID string, remoteRows, remoteCols, localRows, localCols int) *attachState {
-	s := &attachState{
-		sessionID:   sessionID,
-		clientID:    clientID,
-		remoteRows:  remoteRows,
-		remoteCols:  remoteCols,
-		localRows:   localRows,
-		localCols:   localCols,
-		needsBorder: true, // Always draw border
-		damageCh:    make(chan struct{}, 1),
+func newRenderer(sessionID string, remoteRows, remoteCols, localRows, localCols int) *terminalRenderer {
+	r := &terminalRenderer{
+		sessionID:  sessionID,
+		remoteRows: remoteRows,
+		remoteCols: remoteCols,
+		localRows:  localRows,
+		localCols:  localCols,
 	}
-
-	s.calculateBorderOffsets()
-
-	// Create local vterm with remote dimensions
-	s.vt = vterm.New(remoteRows, remoteCols)
-
-	// Set up damage callback to signal redraws
-	s.vt.OnDamage(func(startRow, endRow, startCol, endCol int) {
-		s.mu.Lock()
-		s.dirty = true
-		s.mu.Unlock()
-		// Non-blocking send to signal damage
-		select {
-		case s.damageCh <- struct{}{}:
-		default:
-		}
-	})
-
-	return s
+	r.calculateOffsets()
+	return r
 }
 
-// calculateBorderOffsets computes the centering offsets
-func (s *attachState) calculateBorderOffsets() {
-	if s.needsBorder {
-		// Center the remote terminal within local terminal
-		// Account for border characters (1 char on each side)
-		s.borderTop = (s.localRows - s.remoteRows - 2) / 2
-		s.borderLeft = (s.localCols - s.remoteCols - 2) / 2
-		if s.borderTop < 0 {
-			s.borderTop = 0
-		}
-		if s.borderLeft < 0 {
-			s.borderLeft = 0
-		}
-	} else {
-		s.borderTop = 0
-		s.borderLeft = 0
+func (r *terminalRenderer) calculateOffsets() {
+	r.borderTop = (r.localRows - r.remoteRows - 2) / 2
+	r.borderLeft = (r.localCols - r.remoteCols - 2) / 2
+	if r.borderTop < 0 {
+		r.borderTop = 0
+	}
+	if r.borderLeft < 0 {
+		r.borderLeft = 0
 	}
 }
 
-// drawBorder draws a box-drawing border (standalone, with sync)
-func (s *attachState) drawBorder() {
+func (r *terminalRenderer) updateSize(localRows, localCols, remoteRows, remoteCols int) {
+	r.localRows = localRows
+	r.localCols = localCols
+	r.remoteRows = remoteRows
+	r.remoteCols = remoteCols
+	r.calculateOffsets()
+}
+
+func (r *terminalRenderer) render(vt *vterm.VTerm, clear bool, cursorVisible bool) {
+	// Begin synchronized update
 	fmt.Print("\x1b[?2026h")
 	fmt.Print("\x1b[?25l")
-	s.drawBorderInner()
-	fmt.Print("\x1b[?25h")
+
+	if clear {
+		fmt.Print("\x1b[2J")
+	}
+
+	// Draw border
+	r.drawBorder()
+
+	// Render vterm content
+	rows, cols := vt.GetSize()
+	contentTop := r.borderTop + 1
+	contentLeft := r.borderLeft + 1
+
+	for row := 0; row < rows; row++ {
+		fmt.Printf("\x1b[%d;%dH", contentTop+row+1, contentLeft+1)
+		r.renderRow(vt, row, cols)
+	}
+
+	// Position cursor
+	curRow, curCol := vt.GetCursor()
+	fmt.Printf("\x1b[%d;%dH", contentTop+curRow+1, contentLeft+curCol+1)
+
+	// Show cursor only if it should be visible
+	if cursorVisible {
+		fmt.Print("\x1b[?25h")
+	}
+
+	// End synchronized update
 	fmt.Print("\x1b[?2026l")
 }
 
-// drawBorderInner draws the border without sync wrapper (for use inside render)
-func (s *attachState) drawBorderInner() {
-	// Build top border with session info
-	info := fmt.Sprintf(" %s [%dx%d] ", s.sessionID, s.remoteCols, s.remoteRows)
+func (r *terminalRenderer) drawBorder() {
+	// Top border with session info
+	info := fmt.Sprintf(" %s [%dx%d] ", r.sessionID, r.remoteCols, r.remoteRows)
 	topBorder := "┌"
-	infoStart := (s.remoteCols - len(info)) / 2
+	infoStart := (r.remoteCols - len(info)) / 2
 	if infoStart < 0 {
 		infoStart = 0
 	}
-	for i := 0; i < s.remoteCols; i++ {
+	for i := 0; i < r.remoteCols; i++ {
 		if i == infoStart {
 			topBorder += info
 			i += len(info) - 1
@@ -120,26 +139,22 @@ func (s *attachState) drawBorderInner() {
 		}
 	}
 	topBorder += "┐"
+	fmt.Printf("\x1b[%d;%dH%s", r.borderTop+1, r.borderLeft+1, topBorder)
 
-	// Position and draw top border (ANSI uses 1-based coordinates)
-	fmt.Printf("\x1b[%d;%dH%s", s.borderTop+1, s.borderLeft+1, topBorder)
-
-	// Draw side borders
-	for row := 0; row < s.remoteRows; row++ {
-		// Left border
-		fmt.Printf("\x1b[%d;%dH│", s.borderTop+row+2, s.borderLeft+1)
-		// Right border
-		fmt.Printf("\x1b[%d;%dH│", s.borderTop+row+2, s.borderLeft+s.remoteCols+2)
+	// Side borders
+	for row := 0; row < r.remoteRows; row++ {
+		fmt.Printf("\x1b[%d;%dH│", r.borderTop+row+2, r.borderLeft+1)
+		fmt.Printf("\x1b[%d;%dH│", r.borderTop+row+2, r.borderLeft+r.remoteCols+2)
 	}
 
-	// Build bottom border with detach hint
+	// Bottom border with hint
 	hint := " Ctrl+\\ to detach "
 	bottomBorder := "└"
-	hintStart := (s.remoteCols - len(hint)) / 2
+	hintStart := (r.remoteCols - len(hint)) / 2
 	if hintStart < 0 {
 		hintStart = 0
 	}
-	for i := 0; i < s.remoteCols; i++ {
+	for i := 0; i < r.remoteCols; i++ {
 		if i == hintStart {
 			bottomBorder += hint
 			i += len(hint) - 1
@@ -148,75 +163,22 @@ func (s *attachState) drawBorderInner() {
 		}
 	}
 	bottomBorder += "┘"
-	fmt.Printf("\x1b[%d;%dH%s", s.borderTop+s.remoteRows+2, s.borderLeft+1, bottomBorder)
+	fmt.Printf("\x1b[%d;%dH%s", r.borderTop+r.remoteRows+2, r.borderLeft+1, bottomBorder)
 }
 
-// render outputs the vterm screen content to stdout at the correct offset
-func (s *attachState) render() {
-	s.renderFull(false)
-}
-
-// renderFull renders the screen, optionally clearing first (for resize)
-func (s *attachState) renderFull(clear bool) {
-	s.mu.Lock()
-	s.dirty = false
-	s.mu.Unlock()
-
-	// Begin synchronized update (terminals that don't support it will ignore)
-	fmt.Print("\x1b[?2026h")
-	// Hide cursor during rendering to avoid flicker
-	fmt.Print("\x1b[?25l")
-
-	if clear {
-		fmt.Print("\x1b[2J")
-	}
-
-	// Always redraw border (it's cheap and ensures consistency)
-	s.drawBorderInner()
-
-	rows, cols := s.vt.GetSize()
-
-	// Calculate content offset (inside border)
-	contentTop := s.borderTop + 1   // skip border row
-	contentLeft := s.borderLeft + 1 // skip border column
-
-	// Render each row at the correct position
-	for row := 0; row < rows; row++ {
-		// Position cursor at start of this row (ANSI is 1-based)
-		fmt.Printf("\x1b[%d;%dH", contentTop+row+1, contentLeft+1)
-
-		// Get the row content with ANSI formatting
-		// We need to render cell by cell to handle attributes properly
-		s.renderRow(row, cols)
-	}
-
-	// Position cursor correctly
-	curRow, curCol := s.vt.GetCursor()
-	fmt.Printf("\x1b[%d;%dH", contentTop+curRow+1, contentLeft+curCol+1)
-
-	// Show cursor again
-	fmt.Print("\x1b[?25h")
-	// End synchronized update
-	fmt.Print("\x1b[?2026l")
-}
-
-// renderRow renders a single row with ANSI attributes
-func (s *attachState) renderRow(row, cols int) {
+func (r *terminalRenderer) renderRow(vt *vterm.VTerm, row, cols int) {
 	var lastAttrs vterm.CellAttrs
 	var lastFg, lastBg vterm.Color
 	firstCell := true
 
 	for col := 0; col < cols; col++ {
-		cell := s.vt.GetCell(row, col)
-
-		// Skip continuation cells for wide characters
+		cell := vt.GetCell(row, col)
 		if cell.Width == 0 {
 			continue
 		}
 
-		// Emit ANSI codes if attributes changed
 		if firstCell || cell.Attrs != lastAttrs || cell.Fg != lastFg || cell.Bg != lastBg {
-			ansi := buildANSI(cell, lastAttrs, lastFg, lastBg, firstCell)
+			ansi := buildANSI(cell, lastAttrs, firstCell)
 			if len(ansi) > 0 {
 				fmt.Print(ansi)
 			}
@@ -226,27 +188,23 @@ func (s *attachState) renderRow(row, cols int) {
 			firstCell = false
 		}
 
-		// Output character
 		if len(cell.Chars) > 0 && cell.Chars[0] != 0 {
-			for _, r := range cell.Chars {
-				fmt.Print(string(r))
+			for _, c := range cell.Chars {
+				fmt.Print(string(c))
 			}
 		} else {
 			fmt.Print(" ")
 		}
 	}
 
-	// Reset attributes at end of row
 	if !firstCell {
 		fmt.Print("\x1b[0m")
 	}
 }
 
-// buildANSI generates ANSI escape sequences for cell attribute changes
-func buildANSI(cell vterm.Cell, lastAttrs vterm.CellAttrs, lastFg, lastBg vterm.Color, first bool) string {
+func buildANSI(cell vterm.Cell, lastAttrs vterm.CellAttrs, first bool) string {
 	var codes []int
 
-	// Check if we need a reset first
 	needReset := false
 	if !first {
 		if lastAttrs.Bold && !cell.Attrs.Bold {
@@ -286,7 +244,6 @@ func buildANSI(cell vterm.Cell, lastAttrs vterm.CellAttrs, lastFg, lastBg vterm.
 		codes = append(codes, 9)
 	}
 
-	// Foreground color
 	if !cell.Fg.DefaultFg {
 		if cell.Fg.Type == vterm.ColorIndexed {
 			if cell.Fg.Index < 8 {
@@ -301,7 +258,6 @@ func buildANSI(cell vterm.Cell, lastAttrs vterm.CellAttrs, lastFg, lastBg vterm.
 		}
 	}
 
-	// Background color
 	if !cell.Bg.DefaultBg {
 		if cell.Bg.Type == vterm.ColorIndexed {
 			if cell.Bg.Index < 8 {
@@ -331,26 +287,87 @@ func buildANSI(cell vterm.Cell, lastAttrs vterm.CellAttrs, lastFg, lastBg vterm.
 	return result
 }
 
-// close releases resources
-func (s *attachState) close() {
-	if s.vt != nil {
-		s.vt.Free()
-		s.vt = nil
-	}
-	if s.output != nil {
-		s.output.Close()
-	}
-	if s.input != nil {
-		s.input.Close()
-	}
-}
+// runVtermOwner runs the goroutine that owns the vterm
+// It processes messages until context is cancelled, then cleans up
+func runVtermOwner(ctx context.Context, msgCh <-chan vtermMsg, renderer *terminalRenderer, rows, cols int, initialScreen []byte) {
+	vt := vterm.New(rows, cols)
+	defer vt.Free()
 
-// updateLocalSize updates the local terminal size and recalculates offsets
-func (s *attachState) updateLocalSize(rows, cols int) {
-	s.localRows = rows
-	s.localCols = cols
-	// needsBorder stays true - we always draw the border
-	s.calculateBorderOffsets()
+	// Track if we have pending damage
+	dirty := false
+	vt.OnDamage(func(startRow, endRow, startCol, endCol int) {
+		dirty = true
+	})
+
+	// Track cursor visibility
+	cursorVisible := true
+	vt.OnTermProp(func(prop vterm.TermProp, val any) {
+		if prop == vterm.PropCursorVisible {
+			if v, ok := val.(bool); ok {
+				cursorVisible = v
+			}
+		}
+	})
+
+	// Process initial screen
+	if len(initialScreen) > 0 {
+		vt.Write(initialScreen)
+	}
+
+	// Initial render
+	renderer.render(vt, true, cursorVisible)
+
+	for {
+		select {
+		case msg, ok := <-msgCh:
+			if !ok {
+				return
+			}
+			switch m := msg.(type) {
+			case vtermWrite:
+				vt.Write(m.data)
+				// Drain any pending writes before rendering (batching)
+				for drained := true; drained; {
+					select {
+					case nextMsg := <-msgCh:
+						if w, ok := nextMsg.(vtermWrite); ok {
+							vt.Write(w.data)
+						} else {
+							// Non-write message, process after render
+							if dirty {
+								renderer.render(vt, false, cursorVisible)
+								dirty = false
+							}
+							// Process the non-write message
+							switch m2 := nextMsg.(type) {
+							case vtermResize:
+								vt.SetSize(m2.rows, m2.cols)
+								renderer.updateSize(renderer.localRows, renderer.localCols, m2.rows, m2.cols)
+								renderer.render(vt, true, cursorVisible)
+							case vtermRender:
+								renderer.render(vt, m2.clear, cursorVisible)
+							}
+							drained = false
+						}
+					default:
+						drained = false
+					}
+				}
+				if dirty {
+					renderer.render(vt, false, cursorVisible)
+					dirty = false
+				}
+			case vtermResize:
+				vt.SetSize(m.rows, m.cols)
+				renderer.updateSize(renderer.localRows, renderer.localCols, m.rows, m.cols)
+				renderer.render(vt, true, cursorVisible)
+			case vtermRender:
+				renderer.render(vt, m.clear, cursorVisible)
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 func cmdAttach(sessionID string) {
@@ -360,7 +377,7 @@ func cmdAttach(sessionID string) {
 	}
 	defer client.Close()
 
-	// Get local terminal size
+	// Get local terminal size and content size (minus border)
 	stdinFd := int(os.Stdin.Fd())
 	var localCols, localRows int
 	if term.IsTerminal(stdinFd) {
@@ -371,36 +388,18 @@ func cmdAttach(sessionID string) {
 	} else {
 		localCols, localRows = 80, 24
 	}
+	requestRows, requestCols := GetContentSize()
 
-	// Request a terminal size that leaves room for our border (2 chars each direction)
-	requestRows := localRows - 2
-	requestCols := localCols - 2
-	if requestRows < 1 {
-		requestRows = 1
-	}
-	if requestCols < 1 {
-		requestCols = 1
-	}
-
-	// Call Attach with the content size (local minus border)
-	outputFD, inputFD, remoteRows, remoteCols, screenANSI, clientID, err := client.Attach(int32(requestRows), int32(requestCols))
+	// Attach to session
+	outputFD, inputFD, remoteRows, remoteCols, screenANSI, _, err := client.Attach(int32(requestRows), int32(requestCols))
 	if err != nil {
 		fatal("attaching to session: %v", err)
 	}
 
-	// Convert fds to *os.File
 	output := os.NewFile(uintptr(outputFD), "attach-output")
 	input := os.NewFile(uintptr(inputFD), "attach-input")
-
-	// Initialize attach state with local vterm
-	state := newAttachState(sessionID, clientID, int(remoteRows), int(remoteCols), localRows, localCols)
-	state.output = output
-	state.input = input
-	state.client = client
-	defer state.close()
-
-	// Feed initial screen snapshot to local vterm
-	state.vt.Write([]byte(screenANSI))
+	defer output.Close()
+	defer input.Close()
 
 	// Put terminal in raw mode
 	var oldState *term.State
@@ -412,51 +411,57 @@ func cmdAttach(sessionID string) {
 		defer term.Restore(stdinFd, oldState)
 	}
 
-	// Switch to alternate screen buffer
-	fmt.Print("\x1b[?1049h") // Enter alternate screen buffer
+	// Enter alternate screen (we exit it explicitly at cleanup, not via defer,
+	// so the exit message prints to the normal screen)
+	fmt.Print("\x1b[?1049h")
 
-	// Draw border and render initial screen (with clear)
-	state.renderFull(true)
+	// Set up context for cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Set up signal handling
+	// Create renderer and vterm message channel
+	renderer := newRenderer(sessionID, int(remoteRows), int(remoteCols), localRows, localCols)
+	vtermCh := make(chan vtermMsg, 64)
+
+	// Start vterm owner goroutine
+	vtermDone := make(chan struct{})
+	go func() {
+		defer close(vtermDone)
+		runVtermOwner(ctx, vtermCh, renderer, int(remoteRows), int(remoteCols), []byte(screenANSI))
+	}()
+
+	// Subscribe to exit signal
+	exitedCh := client.WaitExited()
+
+	// Signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGWINCH)
 
-	// Channels to signal exit
-	done := make(chan struct{})
-	detach := make(chan struct{})
-
-	// Read PTY output and feed to local vterm
+	// Read PTY output
+	outputDone := make(chan struct{})
 	go func() {
+		defer close(outputDone)
 		buf := make([]byte, 4096)
 		for {
 			n, err := output.Read(buf)
 			if err != nil {
-				close(done)
 				return
 			}
 			if n > 0 {
-				// Feed to local vterm (this triggers damage callbacks)
-				state.vt.Write(buf[:n])
+				// Copy data since we're sending async
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				select {
+				case vtermCh <- vtermWrite{data: data}:
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()
 
-	// Render loop - renders when damage occurs
-	go func() {
-		for {
-			select {
-			case <-state.damageCh:
-				state.render()
-			case <-done:
-				return
-			case <-detach:
-				return
-			}
-		}
-	}()
-
-	// Forward stdin to PTY input (with Ctrl+\ detection for detach)
+	// Read stdin and forward to PTY
+	detachCh := make(chan struct{})
 	go func() {
 		buf := make([]byte, 1)
 		for {
@@ -465,8 +470,8 @@ func cmdAttach(sessionID string) {
 				return
 			}
 			if n > 0 {
-				if buf[0] == 0x1c { // Ctrl+\ to detach
-					close(detach)
+				if buf[0] == 0x1c { // Ctrl+\
+					close(detachCh)
 					return
 				}
 				input.Write(buf[:n])
@@ -474,20 +479,27 @@ func cmdAttach(sessionID string) {
 		}
 	}()
 
+	// Track exit reason
+	var exitReason string
+	var exitCode *int32
+
 	// Main event loop
 	for {
 		select {
-		case <-done:
+		case code := <-exitedCh:
+			exitReason = "exited"
+			exitCode = &code
 			goto cleanup
-		case <-detach:
+
+		case <-detachCh:
+			exitReason = "detached"
 			goto cleanup
+
 		case sig := <-sigCh:
 			if sig == syscall.SIGWINCH {
-				// Terminal resized - update local size
 				if term.IsTerminal(stdinFd) {
 					newCols, newRows, err := term.GetSize(stdinFd)
 					if err == nil {
-						// Calculate new content size (local minus border)
 						newContentRows := newRows - 2
 						newContentCols := newCols - 2
 						if newContentRows < 1 {
@@ -497,39 +509,60 @@ func cmdAttach(sessionID string) {
 							newContentCols = 1
 						}
 
-						// Check if we can resize the remote terminal
+						// Try to resize remote if we're the only client
 						count, _, _, err := client.GetAttachedClients()
 						if err == nil && count == 1 {
-							// We're the only client - resize the remote
-							if err := client.Resize(int32(newContentRows), int32(newContentCols)); err == nil {
-								// Update our state to match new size
-								state.remoteRows = newContentRows
-								state.remoteCols = newContentCols
-								// Resize local vterm to match
-								state.vt.SetSize(newContentRows, newContentCols)
+							if client.Resize(int32(newContentRows), int32(newContentCols)) == nil {
+								renderer.updateSize(newRows, newCols, newContentRows, newContentCols)
+								select {
+								case vtermCh <- vtermResize{rows: newContentRows, cols: newContentCols}:
+								case <-ctx.Done():
+								}
+							}
+						} else {
+							// Just update local size for border recalc
+							renderer.updateSize(newRows, newCols, renderer.remoteRows, renderer.remoteCols)
+							select {
+							case vtermCh <- vtermRender{clear: true}:
+							case <-ctx.Done():
 							}
 						}
-
-						state.updateLocalSize(newRows, newCols)
-
-						// Clear and redraw everything atomically
-						state.renderFull(true)
 					}
 				}
 			} else {
-				// SIGINT or SIGTERM
+				exitReason = "interrupted"
 				goto cleanup
 			}
 		}
 	}
 
 cleanup:
-	// Leave alternate screen buffer
+	// Cancel context to stop vterm owner
+	cancel()
+	// Wait for vterm owner to finish and free vterm
+	<-vtermDone
+
+	// Exit alternate screen first, so exit message appears on normal screen
 	fmt.Print("\x1b[?1049l")
 
 	// Restore terminal
 	if oldState != nil {
 		term.Restore(stdinFd, oldState)
 	}
-	fmt.Println("[detached]")
+
+	// Print exit message
+	switch exitReason {
+	case "exited":
+		if exitCode != nil {
+			fmt.Printf("[exited: %d]\n", *exitCode)
+		} else {
+			fmt.Println("[exited]")
+		}
+	case "detached":
+		fmt.Println("[detached]")
+	case "interrupted":
+		fmt.Println("[interrupted]")
+	default:
+		fmt.Println("[disconnected]")
+	}
 }

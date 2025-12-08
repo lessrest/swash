@@ -97,9 +97,10 @@ Flags:
 			fatal("usage: swash run <command>")
 		}
 		if ttyFlag {
-			fatal("--tty is not supported with 'run'; use 'start --tty' instead")
+			cmdRunTTY(cmdArgs)
+		} else {
+			cmdRun(cmdArgs, detachAfterFlag, detachAfterOutputFlag)
 		}
-		cmdRun(cmdArgs, detachAfterFlag, detachAfterOutputFlag)
 	case "start":
 		if len(cmdArgs) == 0 {
 			fatal("usage: swash start <command>")
@@ -298,6 +299,29 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 		fmt.Fprintf(os.Stderr, "swash: cancelled, killed session %s\n", sessionID)
 		os.Exit(130) // Standard exit code for SIGINT
 	}
+}
+
+func cmdRunTTY(command []string) {
+	initRuntime()
+	defer rt.Close()
+
+	hostCommand := findHostCommand()
+
+	rows, cols := GetContentSize()
+	opts := swash.SessionOptions{
+		Protocol: swash.Protocol(protocolFlag),
+		Tags:     parseTags(tagFlags),
+		TTY:      true,
+		Rows:     rows,
+		Cols:     cols,
+	}
+
+	sessionID, err := rt.StartSessionWithOptions(context.Background(), command, hostCommand, opts)
+	if err != nil {
+		fatal("starting session: %v", err)
+	}
+
+	cmdAttach(sessionID)
 }
 
 // parseTags converts ["KEY=VALUE", ...] to map[string]string

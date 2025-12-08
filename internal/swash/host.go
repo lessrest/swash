@@ -136,7 +136,17 @@ func (h *Host) Run() error {
 		}
 	}()
 
-	return h.RunTask(ctx)
+	err = h.RunTask(ctx)
+
+	// Emit exit signal before closing D-Bus connection
+	h.mu.Lock()
+	exitCode := h.exitCode
+	h.mu.Unlock()
+	if exitCode != nil {
+		conn.Emit(dbus.ObjectPath(DBusPath), DBusNamePrefix+".Exited", int32(*exitCode))
+	}
+
+	return err
 }
 
 // RunTask starts the task process and waits for it to complete.

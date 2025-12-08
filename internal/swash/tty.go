@@ -138,9 +138,9 @@ func (p *RealPTY) CloseSlave() error {
 // attachedClient represents a single attached client with its own output pipe and terminal size.
 type attachedClient struct {
 	id         string
-	output     *os.File // write end of pipe to send PTY output to client
-	inputPipe  *os.File // read end of input pipe (for cleanup)
-	rows, cols int      // client's terminal size
+	output     *os.File   // write end of pipe to send PTY output to client
+	inputPipe  *os.File   // read end of input pipe (for cleanup)
+	rows, cols int        // client's terminal size
 	clientFDs  []*os.File // client-side fds to close after D-Bus sends them
 }
 
@@ -737,5 +737,15 @@ func (h *TTYHost) Run() error {
 		}
 	}()
 
-	return h.RunTask(ctx)
+	err = h.RunTask(ctx)
+
+	// Emit exit signal to attached clients before closing D-Bus connection
+	h.mu.Lock()
+	exitCode := h.exitCode
+	h.mu.Unlock()
+	if exitCode != nil {
+		conn.Emit(dbus.ObjectPath(DBusPath), DBusNamePrefix+".Exited", int32(*exitCode))
+	}
+
+	return err
 }

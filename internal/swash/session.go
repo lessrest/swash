@@ -166,6 +166,10 @@ type TTYClient interface {
 
 	// GetAttachedClients returns info about currently attached clients.
 	GetAttachedClients() (count int32, masterRows, masterCols int32, err error)
+
+	// WaitExited waits for the session to exit and returns the exit code.
+	// Returns a channel that receives the exit code when the session exits.
+	WaitExited() <-chan int32
 }
 
 // ttyClient implements TTYClient via D-Bus.
@@ -249,6 +253,45 @@ func (c *ttyClient) GetAttachedClients() (count int32, masterRows, masterCols in
 		return 0, 0, 0, fmt.Errorf("calling GetAttachedClients: %w", err)
 	}
 	return count, masterRows, masterCols, nil
+}
+
+func (c *ttyClient) WaitExited() <-chan int32 {
+	exitCh := make(chan int32, 1)
+
+	// Add match rule to receive the Exited signal
+	c.conn.AddMatchSignal(
+		dbus.WithMatchInterface(DBusNamePrefix),
+		dbus.WithMatchMember("Exited"),
+		dbus.WithMatchObjectPath(dbus.ObjectPath(DBusPath)),
+	)
+
+	sigChan := make(chan *dbus.Signal, 1)
+	c.conn.Signal(sigChan)
+
+	go func() {
+		defer c.conn.RemoveMatchSignal(
+			dbus.WithMatchInterface(DBusNamePrefix),
+			dbus.WithMatchMember("Exited"),
+			dbus.WithMatchObjectPath(dbus.ObjectPath(DBusPath)),
+		)
+		defer c.conn.RemoveSignal(sigChan)
+		for sig := range sigChan {
+			// Check if this is the Exited signal from our session
+			if sig.Path == dbus.ObjectPath(DBusPath) && sig.Name == DBusNamePrefix+".Exited" {
+				if len(sig.Body) > 0 {
+					if exitCode, ok := sig.Body[0].(int32); ok {
+						exitCh <- exitCode
+						return
+					}
+				}
+				// Signal received but couldn't parse exit code
+				exitCh <- -1
+				return
+			}
+		}
+	}()
+
+	return exitCh
 }
 
 // Convenience functions that open a connection, do the operation, and close.
