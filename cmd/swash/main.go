@@ -428,17 +428,13 @@ func cmdKill(sessionID string) {
 }
 
 func cmdScreen(sessionID string) {
-	client, err := swash.ConnectTTYSession(sessionID)
-	if err != nil {
-		fatal("connecting to session: %v", err)
-	}
-	defer client.Close()
+	initRuntime()
+	defer rt.Close()
 
-	screen, err := client.GetScreenANSI()
+	screen, err := rt.GetScreen(sessionID)
 	if err != nil {
-		fatal("getting screen: %v", err)
+		fatal("%v", err)
 	}
-
 	fmt.Print(screen)
 }
 

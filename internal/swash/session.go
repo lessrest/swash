@@ -85,8 +85,9 @@ type sessionClient struct {
 	sessionID string
 }
 
-// ConnectSession connects to a running session's D-Bus service.
-func ConnectSession(sessionID string) (SessionClient, error) {
+// connectSession connects to a running session's D-Bus service.
+// Use Runtime.ConnectSession instead of calling this directly.
+func connectSession(sessionID string) (SessionClient, error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return nil, fmt.Errorf("connecting to session bus: %w", err)
@@ -177,9 +178,10 @@ type ttyClient struct {
 	*sessionClient
 }
 
-// ConnectTTYSession connects to a running TTY session's D-Bus service.
-func ConnectTTYSession(sessionID string) (TTYClient, error) {
-	client, err := ConnectSession(sessionID)
+// connectTTYSession connects to a running TTY session's D-Bus service.
+// Use Runtime.ConnectTTYSession instead of calling this directly.
+func connectTTYSession(sessionID string) (TTYClient, error) {
+	client, err := connectSession(sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -292,28 +294,6 @@ func (c *ttyClient) WaitExited() <-chan int32 {
 	}()
 
 	return exitCh
-}
-
-// Convenience functions that open a connection, do the operation, and close.
-
-// KillSession sends SIGKILL to the process in a session via D-Bus.
-func KillSession(sessionID string) error {
-	client, err := ConnectSession(sessionID)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	return client.Kill()
-}
-
-// SendInput sends input to the process via the swash D-Bus service.
-func SendInput(sessionID string, input string) (int, error) {
-	client, err := ConnectSession(sessionID)
-	if err != nil {
-		return 0, err
-	}
-	defer client.Close()
-	return client.SendInput(input)
 }
 
 // MustJSON marshals v to JSON, panicking on error.

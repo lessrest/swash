@@ -378,12 +378,10 @@ func TestTTYModeOutput(t *testing.T) {
 		// Wait for it to complete
 		e.runSwash("follow", sessionID)
 
-		// Check screen output
+		// Check screen output - should work even after session ended
 		screenOut, _, err := e.runSwash("screen", sessionID)
 		if err != nil {
-			// Session may have ended, that's ok
-			t.Logf("screen command failed (session may have ended): %v", err)
-			return
+			t.Fatalf("screen command failed: %v", err)
 		}
 
 		if !strings.Contains(screenOut, "TTY_TEST_OUTPUT") {

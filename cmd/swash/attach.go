@@ -282,14 +282,14 @@ type attachSession struct {
 	exitCode   *int32
 }
 
-func newAttachSession(sessionID string) (*attachSession, error) {
+func newAttachSession(sessionID string, connectTTY func(string) (swash.TTYClient, error)) (*attachSession, error) {
 	s := &attachSession{
 		sessionID: sessionID,
 		stdinFd:   int(os.Stdin.Fd()),
 	}
 
 	// Connect to session
-	client, err := swash.ConnectTTYSession(sessionID)
+	client, err := connectTTY(sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to session: %w", err)
 	}
@@ -479,7 +479,10 @@ func (s *attachSession) cleanup() {
 }
 
 func cmdAttach(sessionID string) {
-	session, err := newAttachSession(sessionID)
+	initRuntime()
+	defer rt.Close()
+
+	session, err := newAttachSession(sessionID, rt.ConnectTTYSession)
 	if err != nil {
 		fatal("%v", err)
 	}

@@ -13,9 +13,10 @@ import (
 // Use DefaultRuntime for production, or construct with custom
 // implementations for testing.
 type Runtime struct {
-	Systemd        Systemd
-	Journal        Journal
-	ConnectSession func(sessionID string) (SessionClient, error)
+	Systemd           Systemd
+	Journal           Journal
+	ConnectSession    func(sessionID string) (SessionClient, error)
+	ConnectTTYSession func(sessionID string) (TTYClient, error)
 }
 
 // DefaultRuntime creates a Runtime connected to the real systemd and journal.
@@ -32,9 +33,10 @@ func DefaultRuntime(ctx context.Context) (*Runtime, error) {
 	}
 
 	return &Runtime{
-		Systemd:        sd,
-		Journal:        j,
-		ConnectSession: ConnectSession,
+		Systemd:           sd,
+		Journal:           j,
+		ConnectSession:    connectSession,
+		ConnectTTYSession: connectTTYSession,
 	}, nil
 }
 
@@ -85,9 +87,39 @@ func (r *Runtime) ListSessions(ctx context.Context) ([]Session, error) {
 	return sessions, nil
 }
 
-// StartSession starts a new swash session with the given command.
-func (r *Runtime) StartSession(ctx context.Context, command []string, hostCommand []string) (string, error) {
-	return r.StartSessionWithOptions(ctx, command, hostCommand, SessionOptions{})
+// GetScreen returns the screen content for a session.
+// Tries D-Bus first (for running sessions), then falls back to journal (for finished sessions).
+func (r *Runtime) GetScreen(sessionID string) (string, error) {
+	// Try D-Bus for live session
+	if r.ConnectTTYSession != nil {
+		client, err := r.ConnectTTYSession(sessionID)
+		if err == nil {
+			defer client.Close()
+			screen, err := client.GetScreenANSI()
+			if err == nil {
+				return screen, nil
+			}
+			// D-Bus call failed - session probably ended, try journal
+		}
+	}
+
+	// Fall back to journal for saved screen
+	matches := []JournalMatch{
+		{Field: FieldEvent, Value: EventScreen},
+		{Field: FieldSession, Value: sessionID},
+	}
+
+	entries, _, err := r.Journal.Poll(context.Background(), matches, "")
+	if err != nil {
+		return "", fmt.Errorf("querying journal: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return "", fmt.Errorf("no screen found for session %s", sessionID)
+	}
+
+	// Return the most recent screen (last entry)
+	return entries[len(entries)-1].Message, nil
 }
 
 // StartSessionWithOptions starts a new swash session with the given command and options.
