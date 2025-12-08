@@ -1,4 +1,4 @@
-# Makefile for busker/swash
+# Makefile for swash
 #
 # This Makefile sets up CGO_CFLAGS to use vendored systemd headers,
 # eliminating the need to install libsystemd-dev.
@@ -8,7 +8,7 @@ CGO_CFLAGS := -I$(CURDIR)/cvendor
 
 export CGO_CFLAGS
 
-.PHONY: all build test test-unit test-integration clean
+.PHONY: all build test test-unit test-integration install clean
 
 all: build
 
@@ -20,13 +20,16 @@ bin/swash: $(shell find . -name '*.go' -not -path './test/*')
 bin/mini-systemd: $(shell find . -name '*.go' -not -path './test/*')
 	go build -o $@ ./cmd/mini-systemd/
 
+install:
+	go install ./cmd/swash/
+
 test: test-unit test-integration
 
 test-unit:
 	go test ./pkg/... ./internal/...
 
-test-integration:
-	./test/integration.sh
+test-integration: build
+	go test ./test/... -v -timeout 120s
 
 clean:
 	rm -rf bin/

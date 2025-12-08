@@ -145,9 +145,9 @@ make build
 CGO_CFLAGS="-I$(pwd)/cvendor" go build ./cmd/swash/
 
 # Run tests
-./test/integration.sh           # runs against real systemd, then mini-systemd
-./test/integration.sh --real    # runs against real systemd only
-./test/integration.sh --mini    # runs against mini-systemd only
+make test                       # unit + integration tests
+make test-unit                  # just unit tests
+make test-integration           # integration tests (uses mini-systemd)
 ```
 
 You'll need Go 1.23+, a C compiler (for libvterm via cgo). The systemd headers
