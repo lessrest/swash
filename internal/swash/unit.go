@@ -120,4 +120,12 @@ type TransientSpec struct {
 
 	// TTY support - when set, configures the unit to use a TTY
 	TTYPath string // e.g., /dev/pts/5
+
+	// Unit dependencies
+	BindsTo []UnitName // Hard dependencies - unit stops if any of these stop
+	After   []UnitName // Ordering - unit starts after these
+
+	// ExecStopPost commands to run after main process exits.
+	// Each element is a command with arguments (e.g., []string{"/usr/bin/swash", "notify-exit", "ABC123"})
+	ExecStopPost [][]string
 }

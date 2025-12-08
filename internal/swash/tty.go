@@ -557,6 +557,13 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 	ctx := context.Background()
 
+	// Subscribe to exit notifications before starting the task
+	taskUnit := TaskUnit(h.sessionID)
+	exitCh, err := h.systemd.SubscribeUnitExit(ctx, taskUnit)
+	if err != nil {
+		return nil, fmt.Errorf("subscribing to exit notifications: %w", err)
+	}
+
 	// Create PTY pair using the injected opener
 	ptyPair, err := h.openPTY()
 	if err != nil {
@@ -587,8 +594,17 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 	// Pass the PTY slave FD for all three stdio streams
 	slaveFd := ptyPair.SlaveFd()
 
+	// Get self executable for ExecStopPost
+	selfExe, err := os.Executable()
+	if err != nil {
+		ptyPair.Close()
+		return nil, fmt.Errorf("getting executable path: %w", err)
+	}
+
+	hostUnit := HostUnit(h.sessionID)
+
 	spec := TransientSpec{
-		Unit:        TaskUnit(h.sessionID),
+		Unit:        taskUnit,
 		Slice:       SessionSlice(h.sessionID),
 		ServiceType: "exec",
 		WorkingDir:  cwd,
@@ -600,6 +616,13 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		Stdout:      &slaveFd,
 		Stderr:      &slaveFd,
 		TTYPath:     ptyPair.SlavePath(), // e.g., /dev/pts/5 (or empty for fakes)
+		// Unit dependencies: task depends on host
+		BindsTo: []UnitName{hostUnit},
+		After:   []UnitName{hostUnit},
+		// Notify via EmitUnitExit when task exits (args passed directly, not via env)
+		ExecStopPost: [][]string{
+			{selfExe, "notify-exit", h.sessionID, "$EXIT_STATUS", "$SERVICE_RESULT"},
+		},
 	}
 
 	if err := h.systemd.StartTransient(ctx, spec); err != nil {
@@ -617,17 +640,6 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 	h.mu.Unlock()
 
 	doneChan := make(chan struct{})
-	exitCodeChan := make(chan int, 1)
-
-	// Watch for unit exit via D-Bus
-	go func() {
-		exitCode, err := h.systemd.WaitUnitExit(ctx, TaskUnit(h.sessionID))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: failed to wait for unit exit: %v\n", err)
-			os.Exit(1)
-		}
-		exitCodeChan <- exitCode
-	}()
 
 	// Read from PTY master and feed to vterm (and attached clients)
 	go func() {
@@ -656,10 +668,10 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 			}
 		}
 
-		// Get exit code from D-Bus watcher
-		exitCode := <-exitCodeChan
+		// Wait for exit notification via SubscribeUnitExit
+		notification := <-exitCh
 		h.mu.Lock()
-		h.exitCode = &exitCode
+		h.exitCode = &notification.ExitCode
 		h.mu.Unlock()
 
 		// Persist final screen state to journal (with ANSI codes for colors)
@@ -674,7 +686,7 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		}
 
 		// Emit lifecycle event
-		if err := EmitExited(h.journal, h.sessionID, exitCode, h.command); err != nil {
+		if err := EmitExited(h.journal, h.sessionID, notification.ExitCode, h.command); err != nil {
 			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
 		}
 

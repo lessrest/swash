@@ -50,6 +50,12 @@ func main() {
 		return
 	}
 
+	// Handle "notify-exit" subcommand (called by systemd ExecStopPost)
+	if len(os.Args) >= 2 && os.Args[1] == "notify-exit" {
+		cmdNotifyExit()
+		return
+	}
+
 	// Register flags
 	flag.StringVarP(&protocolFlag, "protocol", "p", "shell", "Protocol: shell, sse")
 	flag.StringArrayVarP(&tagFlags, "tag", "t", nil, "Add journal field KEY=VALUE (can be repeated)")
@@ -209,6 +215,39 @@ func findHostCommand() []string {
 func cmdHost() {
 	if err := swash.RunHost(); err != nil {
 		fatal("%v", err)
+	}
+}
+
+// cmdNotifyExit is called by systemd's ExecStopPost to notify the host of task exit.
+// Usage: swash notify-exit <sessionID> <exitStatus> <serviceResult>
+// Arguments are passed directly (systemd expands $EXIT_STATUS and $SERVICE_RESULT).
+func cmdNotifyExit() {
+	if len(os.Args) < 5 {
+		fatal("usage: swash notify-exit <sessionID> <exitStatus> <serviceResult>")
+	}
+	sessionID := os.Args[2]
+	exitStatusStr := os.Args[3]
+	serviceResult := os.Args[4]
+
+	exitStatus := 0
+	if exitStatusStr != "" {
+		fmt.Sscanf(exitStatusStr, "%d", &exitStatus)
+	}
+
+	// Connect to systemd and emit unit exit notification
+	ctx := context.Background()
+	systemd, err := swash.ConnectUserSystemd(ctx)
+	if err != nil {
+		// Don't fatal - systemd may not be available
+		fmt.Fprintf(os.Stderr, "swash notify-exit: connecting to systemd: %v\n", err)
+		os.Exit(1)
+	}
+	defer systemd.Close()
+
+	taskUnit := swash.TaskUnit(sessionID)
+	if err := systemd.EmitUnitExit(ctx, taskUnit, exitStatus, serviceResult); err != nil {
+		fmt.Fprintf(os.Stderr, "swash notify-exit: emitting exit: %v\n", err)
+		os.Exit(1)
 	}
 }
 

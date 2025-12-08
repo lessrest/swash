@@ -9,11 +9,28 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+const testTimeout = 10 * time.Second
+
+// runTest wraps a test function with automatic timeout and goroutine dump on hang.
+func runTest(t *testing.T, f func(t *testing.T, e *testEnv)) {
+	t.Parallel()
+	e := getEnv(t)
+
+	timer := time.AfterFunc(testTimeout, func() {
+		debug.SetTraceback("all")
+		panic(fmt.Sprintf("test %s timed out after %v", t.Name(), testTimeout))
+	})
+	defer timer.Stop()
+
+	f(t, e)
+}
 
 // testEnv holds the test environment configuration
 type testEnv struct {
@@ -148,10 +165,30 @@ func (e *testEnv) setupMiniSystemd() error {
 }
 
 func (e *testEnv) cleanup() {
+	//	time.Sleep(1 * time.Second)
+
+	timeout := 3 * time.Second
+	timer := time.AfterFunc(timeout, func() {
+		debug.SetTraceback("all")
+		panic(fmt.Sprintf("test cleanup timed out after %v", timeout))
+	})
+	defer timer.Stop()
+
 	// Stop the test slice and all children (real systemd mode)
 	if e.mode == "real" && e.rootSlice != "" {
-		exec.Command("systemctl", "--user", "stop", e.rootSlice+".slice").Run()
-		exec.Command("systemctl", "--user", "reset-failed").Run()
+		fmt.Fprintf(os.Stderr, "stopping slice %s\n", e.rootSlice+".slice")
+		out, err := exec.Command("systemctl", "--user", "status", e.rootSlice+".slice").CombinedOutput()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to get status: %v\n%s\n", err, out)
+		}
+		fmt.Fprintf(os.Stderr, " %s\n", out)
+
+		if err := exec.Command("systemctl", "--user", "kill", "--signal=SIGKILL", e.rootSlice+".slice").Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to stop slice: %v", err)
+		}
+		if err := exec.Command("systemctl", "--user", "reset-failed").Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to reset failed: %v", err)
+		}
 	}
 
 	if e.miniSystemdCmd != nil && e.miniSystemdCmd.Process != nil {
@@ -229,8 +266,12 @@ func (e *testEnv) runSwashWithInput(input string, args ...string) (string, strin
 
 // runJournalctl runs journalctl with the appropriate arguments for the mode
 func (e *testEnv) runJournalctl(args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	timeout := 5 * time.Second
+	timer := time.AfterFunc(timeout, func() {
+		debug.SetTraceback("all")
+		panic(fmt.Sprintf("test journalctl timed out after %v", timeout))
+	})
+	defer timer.Stop()
 
 	var cmd *exec.Cmd
 	if e.mode == "mini" {
@@ -241,12 +282,12 @@ func (e *testEnv) runJournalctl(args ...string) (string, error) {
 		}
 		baseArgs := []string{"--file=" + files[0]}
 		baseArgs = append(baseArgs, args...)
-		cmd = exec.CommandContext(ctx, "journalctl", baseArgs...)
+		cmd = exec.Command("journalctl", baseArgs...)
 	} else {
 		// Use --user for real systemd
 		baseArgs := []string{"--user"}
 		baseArgs = append(baseArgs, args...)
-		cmd = exec.CommandContext(ctx, "journalctl", baseArgs...)
+		cmd = exec.Command("journalctl", baseArgs...)
 	}
 
 	out, err := cmd.CombinedOutput()
@@ -255,6 +296,13 @@ func (e *testEnv) runJournalctl(args ...string) (string, error) {
 
 // TestMain handles setup and teardown
 func TestMain(m *testing.M) {
+	timeout := testTimeout + 10*time.Second
+	timer := time.AfterFunc(timeout, func() {
+		debug.SetTraceback("all")
+		panic(fmt.Sprintf("test main timed out after %v", timeout))
+	})
+	defer timer.Stop()
+
 	// Print mode information before running tests
 	mode := os.Getenv("SWASH_TEST_MODE")
 	if mode == "" {
@@ -285,383 +333,370 @@ func TestMain(m *testing.M) {
 // --- Actual Tests ---
 
 func TestSwashStart(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		stdout, _, err := e.runSwash("start", "echo", "hello")
+		if err != nil {
+			t.Fatalf("swash start failed: %v", err)
+		}
 
-	stdout, _, err := e.runSwash("start", "echo", "hello")
-	if err != nil {
-		t.Fatalf("swash start failed: %v", err)
-	}
+		if !strings.Contains(stdout, "started") {
+			t.Errorf("expected 'started' in output, got: %s", stdout)
+		}
 
-	if !strings.Contains(stdout, "started") {
-		t.Errorf("expected 'started' in output, got: %s", stdout)
-	}
-
-	// Extract session ID and kill it
-	parts := strings.Fields(stdout)
-	if len(parts) > 0 {
-		sessionID := parts[0]
-		e.runSwash("kill", sessionID)
-	}
+		// Extract session ID and kill it
+		parts := strings.Fields(stdout)
+		if len(parts) > 0 {
+			sessionID := parts[0]
+			e.runSwash("kill", sessionID)
+		}
+	})
 }
 
 func TestSwashRun(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		stdout, _, err := e.runSwash("run", "echo", "hello world")
+		if err != nil {
+			t.Fatalf("swash run failed: %v", err)
+		}
 
-	stdout, _, err := e.runSwash("run", "echo", "hello world")
-	if err != nil {
-		t.Fatalf("swash run failed: %v", err)
-	}
-
-	if !strings.Contains(stdout, "hello world") {
-		t.Errorf("expected 'hello world' in output, got: %s", stdout)
-	}
+		if !strings.Contains(stdout, "hello world") {
+			t.Errorf("expected 'hello world' in output, got: %s", stdout)
+		}
+	})
 }
 
 func TestSwashRunExitCode(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
-
-	_, _, err := e.runSwash("run", "--", "sh", "-c", "exit 42")
-	if err == nil {
-		t.Fatal("expected error for non-zero exit code")
-	}
-
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		if exitErr.ExitCode() != 42 {
-			t.Errorf("expected exit code 42, got %d", exitErr.ExitCode())
+	runTest(t, func(t *testing.T, e *testEnv) {
+		_, _, err := e.runSwash("run", "--", "sh", "-c", "exit 42")
+		if err == nil {
+			t.Fatal("expected error for non-zero exit code")
 		}
-	} else {
-		t.Errorf("expected ExitError, got %T", err)
-	}
+
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() != 42 {
+				t.Errorf("expected exit code 42, got %d", exitErr.ExitCode())
+			}
+		} else {
+			t.Errorf("expected ExitError, got %T", err)
+		}
+	})
 }
 
 func TestTTYModeOutput(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		// Start a TTY session
+		stdout, _, err := e.runSwash("start", "--tty", "echo", "TTY_TEST_OUTPUT")
+		if err != nil {
+			t.Fatalf("swash start --tty failed: %v", err)
+		}
 
-	// Start a TTY session
-	stdout, _, err := e.runSwash("start", "--tty", "echo", "TTY_TEST_OUTPUT")
-	if err != nil {
-		t.Fatalf("swash start --tty failed: %v", err)
-	}
+		parts := strings.Fields(stdout)
+		if len(parts) == 0 {
+			t.Fatal("no session ID in output")
+		}
+		sessionID := parts[0]
+		defer e.runSwash("kill", sessionID)
 
-	parts := strings.Fields(stdout)
-	if len(parts) == 0 {
-		t.Fatal("no session ID in output")
-	}
-	sessionID := parts[0]
-	defer e.runSwash("kill", sessionID)
+		// Wait for it to complete
+		e.runSwash("follow", sessionID)
 
-	// Wait for it to complete
-	e.runSwash("follow", sessionID)
+		// Check screen output
+		screenOut, _, err := e.runSwash("screen", sessionID)
+		if err != nil {
+			// Session may have ended, that's ok
+			t.Logf("screen command failed (session may have ended): %v", err)
+			return
+		}
 
-	// Check screen output
-	screenOut, _, err := e.runSwash("screen", sessionID)
-	if err != nil {
-		// Session may have ended, that's ok
-		t.Logf("screen command failed (session may have ended): %v", err)
-		return
-	}
-
-	if !strings.Contains(screenOut, "TTY_TEST_OUTPUT") {
-		t.Errorf("expected 'TTY_TEST_OUTPUT' in screen, got: %s", screenOut)
-	}
+		if !strings.Contains(screenOut, "TTY_TEST_OUTPUT") {
+			t.Errorf("expected 'TTY_TEST_OUTPUT' in screen, got: %s", screenOut)
+		}
+	})
 }
 
 func TestTTYAttach(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		// Check if tmux is available
+		if _, err := exec.LookPath("tmux"); err != nil {
+			t.Skip("tmux not available")
+		}
 
-	// Check if tmux is available
-	if _, err := exec.LookPath("tmux"); err != nil {
-		t.Skip("tmux not available")
-	}
+		// Start a TTY session with cat (waits forever)
+		stdout, _, err := e.runSwash("start", "--tty", "--rows", "10", "--cols", "50", "--", "cat")
+		if err != nil {
+			t.Fatalf("swash start --tty failed: %v", err)
+		}
 
-	// Start a TTY session with cat (waits forever)
-	stdout, _, err := e.runSwash("start", "--tty", "--rows", "10", "--cols", "50", "--", "cat")
-	if err != nil {
-		t.Fatalf("swash start --tty failed: %v", err)
-	}
+		parts := strings.Fields(stdout)
+		if len(parts) == 0 {
+			t.Fatal("no session ID in output")
+		}
+		sessionID := parts[0]
+		defer e.runSwash("kill", sessionID)
 
-	parts := strings.Fields(stdout)
-	if len(parts) == 0 {
-		t.Fatal("no session ID in output")
-	}
-	sessionID := parts[0]
-	defer e.runSwash("kill", sessionID)
+		time.Sleep(200 * time.Millisecond)
 
-	time.Sleep(200 * time.Millisecond)
+		// Start tmux session and attach
+		tmuxSession := fmt.Sprintf("swash-test-%d", os.Getpid())
+		exec.Command("tmux", "new-session", "-d", "-s", tmuxSession, "-x", "60", "-y", "15").Run()
+		defer exec.Command("tmux", "kill-session", "-t", tmuxSession).Run()
 
-	// Start tmux session and attach
-	tmuxSession := fmt.Sprintf("swash-test-%d", os.Getpid())
-	exec.Command("tmux", "new-session", "-d", "-s", tmuxSession, "-x", "60", "-y", "15").Run()
-	defer exec.Command("tmux", "kill-session", "-t", tmuxSession).Run()
+		exec.Command("tmux", "send-keys", "-t", tmuxSession, e.swashBin+" attach "+sessionID, "Enter").Run()
+		time.Sleep(300 * time.Millisecond)
 
-	exec.Command("tmux", "send-keys", "-t", tmuxSession, e.swashBin+" attach "+sessionID, "Enter").Run()
-	time.Sleep(300 * time.Millisecond)
+		// Send input
+		exec.Command("tmux", "send-keys", "-t", tmuxSession, "HELLO_ATTACH_TEST", "Enter").Run()
+		time.Sleep(300 * time.Millisecond)
 
-	// Send input
-	exec.Command("tmux", "send-keys", "-t", tmuxSession, "HELLO_ATTACH_TEST", "Enter").Run()
-	time.Sleep(300 * time.Millisecond)
+		// Capture pane
+		captureOut, _ := exec.Command("tmux", "capture-pane", "-t", tmuxSession, "-p").Output()
 
-	// Capture pane
-	captureOut, _ := exec.Command("tmux", "capture-pane", "-t", tmuxSession, "-p").Output()
-
-	if !strings.Contains(string(captureOut), "HELLO_ATTACH_TEST") {
-		t.Errorf("expected 'HELLO_ATTACH_TEST' in tmux pane, got: %s", string(captureOut))
-	}
+		if !strings.Contains(string(captureOut), "HELLO_ATTACH_TEST") {
+			t.Errorf("expected 'HELLO_ATTACH_TEST' in tmux pane, got: %s", string(captureOut))
+		}
+	})
 }
 
 func TestRunTimeoutDetach(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		stdout, stderr, err := e.runSwash("run", "-d", "1s", "sleep", "10")
+		combined := stdout + stderr
 
-	stdout, stderr, err := e.runSwash("run", "-d", "1s", "sleep", "10")
-	combined := stdout + stderr
+		if err == nil {
+			t.Log("command succeeded (may have finished quickly)")
+		}
 
-	if err == nil {
-		t.Log("command succeeded (may have finished quickly)")
-	}
+		if !strings.Contains(combined, "still running") && !strings.Contains(combined, "started") {
+			// It either timed out and detached, or finished - both are ok
+			t.Logf("output: %s", combined)
+		}
 
-	if !strings.Contains(combined, "still running") && !strings.Contains(combined, "started") {
-		// It either timed out and detached, or finished - both are ok
-		t.Logf("output: %s", combined)
-	}
-
-	// Clean up any lingering session
-	if strings.Contains(combined, "session ID:") {
-		// Extract and kill
-		for _, line := range strings.Split(combined, "\n") {
-			if strings.Contains(line, "session ID:") {
-				parts := strings.Fields(line)
-				if len(parts) >= 3 {
-					e.runSwash("kill", parts[2])
+		// Clean up any lingering session
+		if strings.Contains(combined, "session ID:") {
+			// Extract and kill
+			for _, line := range strings.Split(combined, "\n") {
+				if strings.Contains(line, "session ID:") {
+					parts := strings.Fields(line)
+					if len(parts) >= 3 {
+						e.runSwash("kill", parts[2])
+					}
 				}
 			}
 		}
-	}
+	})
 }
 
 func TestStartImmediate(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		start := time.Now()
+		stdout, _, err := e.runSwash("start", "sleep", "10")
+		elapsed := time.Since(start)
 
-	start := time.Now()
-	stdout, _, err := e.runSwash("start", "sleep", "10")
-	elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("swash start failed: %v", err)
+		}
 
-	if err != nil {
-		t.Fatalf("swash start failed: %v", err)
-	}
+		if elapsed > time.Second {
+			t.Errorf("start took %v, expected < 1s", elapsed)
+		}
 
-	if elapsed > time.Second {
-		t.Errorf("start took %v, expected < 1s", elapsed)
-	}
+		if !strings.Contains(stdout, "started") {
+			t.Errorf("expected 'started' in output, got: %s", stdout)
+		}
 
-	if !strings.Contains(stdout, "started") {
-		t.Errorf("expected 'started' in output, got: %s", stdout)
-	}
-
-	// Clean up
-	parts := strings.Fields(stdout)
-	if len(parts) > 0 {
-		e.runSwash("kill", parts[0])
-	}
+		// Clean up
+		parts := strings.Fields(stdout)
+		if len(parts) > 0 {
+			e.runSwash("kill", parts[0])
+		}
+	})
 }
 
 func TestTaskOutputCapture(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		uniqueMarker := fmt.Sprintf("UNIQUE_OUTPUT_%d", time.Now().UnixNano())
 
-	uniqueMarker := fmt.Sprintf("UNIQUE_OUTPUT_%d", time.Now().UnixNano())
+		// Start session and wait for completion
+		stdout, _, err := e.runSwash("start", "echo", uniqueMarker)
+		if err != nil {
+			t.Fatalf("swash start failed: %v", err)
+		}
 
-	// Start session and wait for completion
-	stdout, _, err := e.runSwash("start", "echo", uniqueMarker)
-	if err != nil {
-		t.Fatalf("swash start failed: %v", err)
-	}
+		parts := strings.Fields(stdout)
+		if len(parts) == 0 {
+			t.Fatal("no session ID in output")
+		}
+		sessionID := parts[0]
 
-	parts := strings.Fields(stdout)
-	if len(parts) == 0 {
-		t.Fatal("no session ID in output")
-	}
-	sessionID := parts[0]
+		// Wait for completion
+		e.runSwash("follow", sessionID)
 
-	// Wait for completion
-	e.runSwash("follow", sessionID)
+		// Check journal for output
+		journalOut, err := e.runJournalctl("-o", "cat")
+		if err != nil {
+			t.Logf("journalctl error (may be expected): %v", err)
+		}
 
-	// Check journal for output
-	journalOut, err := e.runJournalctl("-o", "cat")
-	if err != nil {
-		t.Logf("journalctl error (may be expected): %v", err)
-	}
-
-	if !strings.Contains(journalOut, uniqueMarker) {
-		t.Errorf("expected %q in journal, got: %s", uniqueMarker, journalOut)
-	}
+		if !strings.Contains(journalOut, uniqueMarker) {
+			t.Errorf("expected %q in journal, got: %s", uniqueMarker, journalOut)
+		}
+	})
 }
 
 func TestNewlineSplitting(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
-
-	// Create a script that outputs multiple lines
-	script := filepath.Join(e.tmpDir, fmt.Sprintf("multiline_%d.sh", time.Now().UnixNano()))
-	content := `#!/bin/sh
+	runTest(t, func(t *testing.T, e *testEnv) {
+		// Create a script that outputs multiple lines
+		script := filepath.Join(e.tmpDir, fmt.Sprintf("multiline_%d.sh", time.Now().UnixNano()))
+		content := `#!/bin/sh
 echo LINE_ONE_TEST
 echo LINE_TWO_TEST
 echo LINE_THREE_TEST
 `
-	if err := os.WriteFile(script, []byte(content), 0755); err != nil {
-		t.Fatalf("failed to write script: %v", err)
-	}
-
-	stdout, _, err := e.runSwash("start", script)
-	if err != nil {
-		t.Fatalf("swash start failed: %v", err)
-	}
-
-	parts := strings.Fields(stdout)
-	if len(parts) == 0 {
-		t.Fatal("no session ID in output")
-	}
-	sessionID := parts[0]
-
-	// Wait for completion
-	e.runSwash("follow", sessionID)
-
-	// Check journal for all lines
-	journalOut, _ := e.runJournalctl("-o", "cat")
-
-	found := 0
-	for _, line := range []string{"LINE_ONE_TEST", "LINE_TWO_TEST", "LINE_THREE_TEST"} {
-		if strings.Contains(journalOut, line) {
-			found++
+		if err := os.WriteFile(script, []byte(content), 0755); err != nil {
+			t.Fatalf("failed to write script: %v", err)
 		}
-	}
 
-	if found != 3 {
-		t.Errorf("expected 3 lines in journal, found %d. Output: %s", found, journalOut)
-	}
+		stdout, _, err := e.runSwash("start", script)
+		if err != nil {
+			t.Fatalf("swash start failed: %v", err)
+		}
+
+		parts := strings.Fields(stdout)
+		if len(parts) == 0 {
+			t.Fatal("no session ID in output")
+		}
+		sessionID := parts[0]
+
+		// Wait for completion
+		e.runSwash("follow", sessionID)
+
+		// Check journal for all lines
+		journalOut, _ := e.runJournalctl("-o", "cat")
+
+		found := 0
+		for _, line := range []string{"LINE_ONE_TEST", "LINE_TWO_TEST", "LINE_THREE_TEST"} {
+			if strings.Contains(journalOut, line) {
+				found++
+			}
+		}
+
+		if found != 3 {
+			t.Errorf("expected 3 lines in journal, found %d. Output: %s", found, journalOut)
+		}
+	})
 }
 
 func TestTTYColorsPreserved(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		// Create a script that outputs colored text
+		script := filepath.Join(e.tmpDir, fmt.Sprintf("colors_%d.sh", time.Now().UnixNano()))
+		content := "#!/bin/sh\nprintf '\\033[31mRED_TEXT_TEST\\033[0m\\n'\n"
+		if err := os.WriteFile(script, []byte(content), 0755); err != nil {
+			t.Fatalf("failed to write script: %v", err)
+		}
 
-	// Create a script that outputs colored text
-	script := filepath.Join(e.tmpDir, fmt.Sprintf("colors_%d.sh", time.Now().UnixNano()))
-	content := "#!/bin/sh\nprintf '\\033[31mRED_TEXT_TEST\\033[0m\\n'\n"
-	if err := os.WriteFile(script, []byte(content), 0755); err != nil {
-		t.Fatalf("failed to write script: %v", err)
-	}
+		stdout, _, err := e.runSwash("start", "--tty", script)
+		if err != nil {
+			t.Fatalf("swash start --tty failed: %v", err)
+		}
 
-	stdout, _, err := e.runSwash("start", "--tty", script)
-	if err != nil {
-		t.Fatalf("swash start --tty failed: %v", err)
-	}
+		parts := strings.Fields(stdout)
+		if len(parts) == 0 {
+			t.Fatal("no session ID in output")
+		}
+		sessionID := parts[0]
+		defer e.runSwash("kill", sessionID)
 
-	parts := strings.Fields(stdout)
-	if len(parts) == 0 {
-		t.Fatal("no session ID in output")
-	}
-	sessionID := parts[0]
-	defer e.runSwash("kill", sessionID)
+		// Wait for completion
+		e.runSwash("follow", sessionID)
 
-	// Wait for completion
-	e.runSwash("follow", sessionID)
+		// Check journal for colored text
+		journalOut, _ := e.runJournalctl("-o", "cat")
 
-	// Check journal for colored text
-	journalOut, _ := e.runJournalctl("-o", "cat")
-
-	if !strings.Contains(journalOut, "RED_TEXT_TEST") {
-		t.Errorf("expected 'RED_TEXT_TEST' in journal, got: %s", journalOut)
-	}
+		if !strings.Contains(journalOut, "RED_TEXT_TEST") {
+			t.Errorf("expected 'RED_TEXT_TEST' in journal, got: %s", journalOut)
+		}
+	})
 }
 
 func TestTTYScreenEvent(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		stdout, _, err := e.runSwash("start", "--tty", "--rows", "5", "--cols", "40", "echo", "SCREEN_CAPTURE_TEST")
+		if err != nil {
+			t.Fatalf("swash start --tty failed: %v", err)
+		}
 
-	stdout, _, err := e.runSwash("start", "--tty", "--rows", "5", "--cols", "40", "echo", "SCREEN_CAPTURE_TEST")
-	if err != nil {
-		t.Fatalf("swash start --tty failed: %v", err)
-	}
+		parts := strings.Fields(stdout)
+		if len(parts) == 0 {
+			t.Fatal("no session ID in output")
+		}
+		sessionID := parts[0]
+		defer e.runSwash("kill", sessionID)
 
-	parts := strings.Fields(stdout)
-	if len(parts) == 0 {
-		t.Fatal("no session ID in output")
-	}
-	sessionID := parts[0]
-	defer e.runSwash("kill", sessionID)
+		// Wait for completion
+		e.runSwash("follow", sessionID)
 
-	// Wait for completion
-	e.runSwash("follow", sessionID)
+		// Check journal for screen event
+		journalOut, _ := e.runJournalctl("SWASH_EVENT=screen", "-o", "cat")
 
-	// Check journal for screen event
-	journalOut, _ := e.runJournalctl("SWASH_EVENT=screen", "-o", "cat")
-
-	if !strings.Contains(journalOut, "SCREEN_CAPTURE_TEST") {
-		t.Errorf("expected 'SCREEN_CAPTURE_TEST' in screen event, got: %s", journalOut)
-	}
+		if !strings.Contains(journalOut, "SCREEN_CAPTURE_TEST") {
+			t.Errorf("expected 'SCREEN_CAPTURE_TEST' in screen event, got: %s", journalOut)
+		}
+	})
 }
 
 // --- Mini-systemd only tests ---
 
 func TestDBusRegistered(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		if e.mode != "mini" {
+			t.Skip("mini-systemd only test")
+		}
 
-	if e.mode != "mini" {
-		t.Skip("mini-systemd only test")
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+		cmd := exec.CommandContext(ctx, "dbus-send", "--print-reply",
+			"--dest=org.freedesktop.DBus", "/org/freedesktop/DBus",
+			"org.freedesktop.DBus.ListNames")
+		cmd.Env = e.getEnvVars()
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("dbus-send failed: %v\n%s", err, out)
+		}
 
-	cmd := exec.CommandContext(ctx, "dbus-send", "--print-reply",
-		"--dest=org.freedesktop.DBus", "/org/freedesktop/DBus",
-		"org.freedesktop.DBus.ListNames")
-	cmd.Env = e.getEnvVars()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("dbus-send failed: %v\n%s", err, out)
-	}
-
-	if !strings.Contains(string(out), "org.freedesktop.systemd1") {
-		t.Errorf("mini-systemd not registered on D-Bus, got: %s", out)
-	}
+		if !strings.Contains(string(out), "org.freedesktop.systemd1") {
+			t.Errorf("mini-systemd not registered on D-Bus, got: %s", out)
+		}
+	})
 }
 
 func TestJournalWriteViaDbus(t *testing.T) {
-	t.Parallel()
-	e := getEnv(t)
+	runTest(t, func(t *testing.T, e *testEnv) {
+		if e.mode != "mini" {
+			t.Skip("mini-systemd only test")
+		}
 
-	if e.mode != "mini" {
-		t.Skip("mini-systemd only test")
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+		uniqueMsg := fmt.Sprintf("Test message %d", time.Now().UnixNano())
 
-	uniqueMsg := fmt.Sprintf("Test message %d", time.Now().UnixNano())
+		cmd := exec.CommandContext(ctx, "dbus-send", "--print-reply",
+			"--dest=org.freedesktop.systemd1", "/org/freedesktop/systemd1",
+			"sh.swa.MiniSystemd.Journal.Send",
+			"string:"+uniqueMsg,
+			"dict:string:string:TEST_KEY,test_value")
+		cmd.Env = e.getEnvVars()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("dbus-send failed: %v\n%s", err, out)
+		}
 
-	cmd := exec.CommandContext(ctx, "dbus-send", "--print-reply",
-		"--dest=org.freedesktop.systemd1", "/org/freedesktop/systemd1",
-		"sh.swa.MiniSystemd.Journal.Send",
-		"string:"+uniqueMsg,
-		"dict:string:string:TEST_KEY,test_value")
-	cmd.Env = e.getEnvVars()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("dbus-send failed: %v\n%s", err, out)
-	}
+		// Read from journal
+		journalOut, _ := e.runJournalctl("-o", "short")
 
-	// Read from journal
-	journalOut, _ := e.runJournalctl("-o", "short")
-
-	if !strings.Contains(journalOut, uniqueMsg) {
-		t.Errorf("expected %q in journal, got: %s", uniqueMsg, journalOut)
-	}
+		if !strings.Contains(journalOut, uniqueMsg) {
+			t.Errorf("expected %q in journal, got: %s", uniqueMsg, journalOut)
+		}
+	})
 }

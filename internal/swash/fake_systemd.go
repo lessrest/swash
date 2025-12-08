@@ -28,6 +28,9 @@ type FakeSystemd struct {
 	commands  map[string]FakeCommand // command name -> handler
 	processes map[UnitName]*fakeProcess
 	journal   *FakeJournal // Optional: for writing systemd-style exit events
+
+	// Exit notification subscriptions
+	exitSubs map[UnitName][]chan ExitNotification
 }
 
 // NewFakeSystemd creates a new FakeSystemd with empty state.
@@ -36,14 +39,34 @@ func NewFakeSystemd() *FakeSystemd {
 		units:     make(map[UnitName]*Unit),
 		commands:  make(map[string]FakeCommand),
 		processes: make(map[UnitName]*fakeProcess),
+		exitSubs:  make(map[UnitName][]chan ExitNotification),
 	}
 }
 
 // NewTestFakes creates a connected FakeSystemd and FakeJournal for testing.
+// It also registers a handler for the test binary to handle notify-exit subcommand.
 func NewTestFakes() (*FakeSystemd, *FakeJournal) {
 	systemd := NewFakeSystemd()
 	journal := NewFakeJournal()
 	systemd.journal = journal
+
+	// Register handler for the test binary (used by ExecStopPost)
+	// When ExecStopPost runs "{selfExe} notify-exit {sessionID} {exitCode} {result}",
+	// this handler parses the args and calls EmitUnitExit.
+	selfExe, _ := os.Executable()
+	systemd.RegisterCommand(selfExe, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+		// args = ["/path/to/test.binary", "notify-exit", sessionID, exitStatus, serviceResult]
+		if len(args) >= 5 && args[1] == "notify-exit" {
+			sessionID := args[2]
+			exitStatus := 0
+			fmt.Sscanf(args[3], "%d", &exitStatus)
+			serviceResult := args[4]
+			taskUnit := TaskUnit(sessionID)
+			systemd.EmitUnitExit(context.Background(), taskUnit, exitStatus, serviceResult)
+		}
+		return 0
+	})
+
 	return systemd, journal
 }
 
@@ -244,6 +267,16 @@ func (f *FakeSystemd) StartTransient(ctx context.Context, spec TransientSpec) er
 			stderrFile.Close()
 		}
 
+		// Determine service result
+		var serviceResult string
+		if procCtx.Err() != nil {
+			serviceResult = "signal"
+		} else if exitCode == 0 {
+			serviceResult = "success"
+		} else {
+			serviceResult = "exit-code"
+		}
+
 		// Update unit state
 		f.mu.Lock()
 		journal := f.journal
@@ -260,6 +293,33 @@ func (f *FakeSystemd) StartTransient(ctx context.Context, spec TransientSpec) er
 		}
 		delete(f.processes, spec.Unit)
 		f.mu.Unlock()
+
+		// Run ExecStopPost commands (like real systemd does)
+		for _, cmd := range spec.ExecStopPost {
+			if len(cmd) == 0 {
+				continue
+			}
+			// Substitute $EXIT_STATUS and $SERVICE_RESULT in arguments
+			args := make([]string, len(cmd))
+			for i, arg := range cmd {
+				switch arg {
+				case "$EXIT_STATUS":
+					args[i] = fmt.Sprintf("%d", exitCode)
+				case "$SERVICE_RESULT":
+					args[i] = serviceResult
+				default:
+					args[i] = arg
+				}
+			}
+			// Look up handler for this command
+			f.mu.RLock()
+			handler, ok := f.commands[args[0]]
+			f.mu.RUnlock()
+			if ok {
+				// Run it (ignore exit code - ExecStopPost failures don't affect unit)
+				handler(context.Background(), nil, io.Discard, io.Discard, args)
+			}
+		}
 
 		// Write systemd-style exit event to journal (like real systemd does)
 		if journal != nil {
@@ -294,33 +354,6 @@ func (f *FakeSystemd) WaitUnit(ctx context.Context, name UnitName) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// WaitUnitExit waits for a unit to exit and returns its exit code.
-func (f *FakeSystemd) WaitUnitExit(ctx context.Context, name UnitName) (int, error) {
-	f.mu.RLock()
-	proc := f.processes[name]
-	f.mu.RUnlock()
-
-	if proc != nil {
-		// Wait for process to finish
-		select {
-		case <-proc.done:
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		}
-	}
-
-	// Get exit status from unit
-	f.mu.RLock()
-	unit, ok := f.units[name]
-	f.mu.RUnlock()
-
-	if !ok {
-		return 0, fmt.Errorf("unit %s not found", name)
-	}
-
-	return int(unit.ExitStatus), nil
 }
 
 // Close releases resources and kills all running processes.
@@ -383,4 +416,53 @@ func matchesStates(state UnitState, states []UnitState) bool {
 		}
 	}
 	return false
+}
+
+// SubscribeUnitExit returns a channel that receives when the specified unit exits.
+func (f *FakeSystemd) SubscribeUnitExit(ctx context.Context, unit UnitName) (<-chan ExitNotification, error) {
+	ch := make(chan ExitNotification, 1)
+
+	f.mu.Lock()
+	f.exitSubs[unit] = append(f.exitSubs[unit], ch)
+	f.mu.Unlock()
+
+	// Clean up subscription when context is cancelled
+	go func() {
+		<-ctx.Done()
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		subs := f.exitSubs[unit]
+		for i, sub := range subs {
+			if sub == ch {
+				f.exitSubs[unit] = append(subs[:i], subs[i+1:]...)
+				break
+			}
+		}
+		close(ch)
+	}()
+
+	return ch, nil
+}
+
+// EmitUnitExit sends an exit notification for a unit to all subscribers.
+func (f *FakeSystemd) EmitUnitExit(ctx context.Context, unit UnitName, exitCode int, serviceResult string) error {
+	f.mu.Lock()
+	subs := f.exitSubs[unit]
+	f.mu.Unlock()
+
+	notification := ExitNotification{
+		Unit:          unit,
+		ExitCode:      exitCode,
+		ServiceResult: serviceResult,
+	}
+
+	for _, ch := range subs {
+		select {
+		case ch <- notification:
+		default:
+			// Channel full, skip
+		}
+	}
+
+	return nil
 }

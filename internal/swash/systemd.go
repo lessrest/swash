@@ -3,12 +3,20 @@ package swash
 import (
 	"context"
 	"fmt"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/coreos/go-systemd/v22/dbus"
 	godbus "github.com/godbus/dbus/v5"
 )
+
+// ExitNotification contains exit information for a unit.
+type ExitNotification struct {
+	Unit          UnitName
+	ExitCode      int
+	ServiceResult string
+}
 
 // Systemd provides operations on systemd units via D-Bus.
 type Systemd interface {
@@ -27,8 +35,13 @@ type Systemd interface {
 	// StartTransient creates and starts a transient unit via D-Bus API.
 	StartTransient(ctx context.Context, spec TransientSpec) error
 
-	// WaitUnitExit waits for a unit to exit and returns its exit code.
-	WaitUnitExit(ctx context.Context, name UnitName) (int, error)
+	// SubscribeUnitExit returns a channel that receives when the specified unit exits.
+	// The channel is closed when the subscription ends.
+	SubscribeUnitExit(ctx context.Context, unit UnitName) (<-chan ExitNotification, error)
+
+	// EmitUnitExit sends an exit notification for a unit.
+	// This is called by the notify-exit command to signal that a task has exited.
+	EmitUnitExit(ctx context.Context, unit UnitName, exitCode int, serviceResult string) error
 
 	// Close releases the D-Bus connection.
 	Close() error
@@ -37,6 +50,10 @@ type Systemd interface {
 // systemdConn implements Systemd using go-systemd/dbus.
 type systemdConn struct {
 	conn *dbus.Conn
+
+	// For exit signal subscription/emission
+	exitMu   sync.Mutex
+	exitSubs map[UnitName][]chan ExitNotification
 }
 
 // ConnectUserSystemd connects to the user's systemd instance.
@@ -149,81 +166,6 @@ func (s *systemdConn) StopUnit(ctx context.Context, name UnitName) error {
 func (s *systemdConn) KillUnit(ctx context.Context, name UnitName, signal syscall.Signal) error {
 	s.conn.KillUnitWithTarget(ctx, name.String(), dbus.All, int32(signal))
 	return nil
-}
-
-// WaitUnitExit waits for a unit to exit and returns its exit code.
-// Uses D-Bus PropertiesChanged signals to detect when ActiveState becomes inactive/failed.
-// Calls Ref/Unref on the unit to prevent systemd from garbage collecting it before we can read the exit status.
-func (s *systemdConn) WaitUnitExit(ctx context.Context, name UnitName) (int, error) {
-	// Connect to session bus for signal watching
-	sigConn, err := godbus.ConnectSessionBus()
-	if err != nil {
-		return 0, fmt.Errorf("connecting to session bus: %w", err)
-	}
-	defer sigConn.Close()
-
-	unitPath := godbus.ObjectPath("/org/freedesktop/systemd1/unit/" + escapeUnitName(name.String()))
-	unitObj := sigConn.Object("org.freedesktop.systemd1", unitPath)
-
-	// Ref the unit to prevent garbage collection
-	if err := unitObj.Call("org.freedesktop.systemd1.Unit.Ref", 0).Err; err != nil {
-		return 0, fmt.Errorf("ref unit: %w", err)
-	}
-	defer unitObj.Call("org.freedesktop.systemd1.Unit.Unref", 0)
-
-	// Subscribe to PropertiesChanged signals for this unit
-	matchRule := fmt.Sprintf(
-		"type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='%s'",
-		unitPath,
-	)
-	if err := sigConn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, matchRule).Err; err != nil {
-		return 0, fmt.Errorf("adding match rule: %w", err)
-	}
-	defer sigConn.BusObject().Call("org.freedesktop.DBus.RemoveMatch", 0, matchRule)
-
-	// Create signal channel
-	sigChan := make(chan *godbus.Signal, 10)
-	sigConn.Signal(sigChan)
-	defer sigConn.RemoveSignal(sigChan)
-
-	// Check if already exited by querying unit properties
-	unit, err := s.GetUnit(ctx, name)
-	if err != nil {
-		return 0, fmt.Errorf("getting unit: %w", err)
-	}
-	if unit.State == UnitStateInactive || unit.State == UnitStateFailed {
-		return int(unit.ExitStatus), nil
-	}
-
-	// Watch for state changes
-	for {
-		select {
-		case sig := <-sigChan:
-			if sig.Path != unitPath {
-				continue
-			}
-			if sig.Name != "org.freedesktop.DBus.Properties.PropertiesChanged" {
-				continue
-			}
-			// Signal body: (interface_name, changed_properties, invalidated_properties)
-			if len(sig.Body) < 2 {
-				continue
-			}
-			changedProps, ok := sig.Body[1].(map[string]godbus.Variant)
-			if !ok {
-				continue
-			}
-			if stateVar, ok := changedProps["ActiveState"]; ok {
-				if state, ok := stateVar.Value().(string); ok {
-					if state == "inactive" || state == "failed" {
-						return s.getExitStatus(ctx, name)
-					}
-				}
-			}
-		case <-ctx.Done():
-			return 0, ctx.Err()
-		}
-	}
 }
 
 // escapeUnitName escapes a unit name for use in D-Bus object paths.
@@ -342,6 +284,51 @@ func (s *systemdConn) StartTransient(ctx context.Context, spec TransientSpec) er
 		})
 	}
 
+	// Unit dependencies
+	if len(spec.BindsTo) > 0 {
+		units := make([]string, len(spec.BindsTo))
+		for i, u := range spec.BindsTo {
+			units[i] = u.String()
+		}
+		props = append(props, dbus.Property{
+			Name:  "BindsTo",
+			Value: godbus.MakeVariant(units),
+		})
+	}
+
+	if len(spec.After) > 0 {
+		units := make([]string, len(spec.After))
+		for i, u := range spec.After {
+			units[i] = u.String()
+		}
+		props = append(props, dbus.Property{
+			Name:  "After",
+			Value: godbus.MakeVariant(units),
+		})
+	}
+
+	// ExecStopPost - commands to run after main process exits
+	// Format: a(sasb) - array of (path, argv, ignore-failure)
+	if len(spec.ExecStopPost) > 0 {
+		type execCmd struct {
+			Path             string
+			Args             []string
+			UncleanIsFailure bool
+		}
+		cmds := make([]execCmd, len(spec.ExecStopPost))
+		for i, cmd := range spec.ExecStopPost {
+			cmds[i] = execCmd{
+				Path:             cmd[0],
+				Args:             cmd,
+				UncleanIsFailure: false, // Don't fail the unit if ExecStopPost fails
+			}
+		}
+		props = append(props, dbus.Property{
+			Name:  "ExecStopPost",
+			Value: godbus.MakeVariant(cmds),
+		})
+	}
+
 	resultChan := make(chan string, 1)
 	_, err := s.conn.StartTransientUnitContext(
 		ctx,
@@ -369,4 +356,104 @@ func (s *systemdConn) StartTransient(ctx context.Context, spec TransientSpec) er
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// swashExitSignalInterface is the D-Bus interface for exit notifications.
+const swashExitSignalInterface = "sh.swa.Swash.Exit"
+
+// swashExitSignalPath is the D-Bus path for exit notifications.
+const swashExitSignalPath = "/sh/swa/Swash/Exit"
+
+// SubscribeUnitExit returns a channel that receives when the specified unit exits.
+// It subscribes to D-Bus signals emitted by the notify-exit command.
+func (s *systemdConn) SubscribeUnitExit(ctx context.Context, unit UnitName) (<-chan ExitNotification, error) {
+	ch := make(chan ExitNotification, 1)
+
+	// Connect to session bus for signal watching
+	sigConn, err := godbus.ConnectSessionBus()
+	if err != nil {
+		return nil, fmt.Errorf("connecting to session bus: %w", err)
+	}
+
+	// Subscribe to exit signals using the proper AddMatchSignal API
+	if err := sigConn.AddMatchSignal(
+		godbus.WithMatchInterface(swashExitSignalInterface),
+		godbus.WithMatchMember("UnitExited"),
+		godbus.WithMatchObjectPath(godbus.ObjectPath(swashExitSignalPath)),
+	); err != nil {
+		sigConn.Close()
+		return nil, fmt.Errorf("adding match signal: %w", err)
+	}
+
+	sigChan := make(chan *godbus.Signal, 10)
+	sigConn.Signal(sigChan)
+
+	// Watch for signals in background
+	go func() {
+		defer sigConn.Close()
+		defer sigConn.RemoveSignal(sigChan)
+		defer sigConn.RemoveMatchSignal(
+			godbus.WithMatchInterface(swashExitSignalInterface),
+			godbus.WithMatchMember("UnitExited"),
+			godbus.WithMatchObjectPath(godbus.ObjectPath(swashExitSignalPath)),
+		)
+
+		for {
+			select {
+			case sig := <-sigChan:
+				if sig == nil {
+					return
+				}
+				if sig.Name != swashExitSignalInterface+".UnitExited" {
+					continue
+				}
+				// Signal body: (unitName string, exitCode int32, serviceResult string)
+				if len(sig.Body) < 3 {
+					continue
+				}
+				sigUnit, ok1 := sig.Body[0].(string)
+				exitCode, ok2 := sig.Body[1].(int32)
+				serviceResult, ok3 := sig.Body[2].(string)
+				if !ok1 || !ok2 || !ok3 {
+					continue
+				}
+				// Check if this is for our unit
+				if UnitName(sigUnit) == unit {
+					select {
+					case ch <- ExitNotification{
+						Unit:          unit,
+						ExitCode:      int(exitCode),
+						ServiceResult: serviceResult,
+					}:
+					default:
+					}
+					return // Got our notification, done
+				}
+			case <-ctx.Done():
+				close(ch)
+				return
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
+// EmitUnitExit sends an exit notification for a unit via D-Bus signal.
+func (s *systemdConn) EmitUnitExit(ctx context.Context, unit UnitName, exitCode int, serviceResult string) error {
+	// Connect to session bus to emit signal
+	conn, err := godbus.ConnectSessionBus()
+	if err != nil {
+		return fmt.Errorf("connecting to session bus: %w", err)
+	}
+	defer conn.Close()
+
+	// Emit the signal
+	return conn.Emit(
+		godbus.ObjectPath(swashExitSignalPath),
+		swashExitSignalInterface+".UnitExited",
+		unit.String(),
+		int32(exitCode),
+		serviceResult,
+	)
 }

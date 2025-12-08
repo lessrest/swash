@@ -24,6 +24,11 @@ type Unit struct {
 	BusName     string // For Type=dbus services
 	Slice       string // Slice this unit belongs to
 
+	// Unit dependencies
+	BindsTo      []string   // Units this depends on - stops if any of these stop
+	After        []string   // Units this should start after
+	ExecStopPost [][]string // Commands to run after main process exits
+
 	// Runtime state
 	Cmd        *exec.Cmd
 	PID        int
@@ -264,6 +269,26 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 			if fd, ok := prop.Value.Value().(dbus.UnixFD); ok {
 				fdInt := int(fd)
 				stderrFD = &fdInt
+			}
+		case "BindsTo":
+			if units, ok := prop.Value.Value().([]string); ok {
+				unit.BindsTo = units
+			}
+		case "After":
+			if units, ok := prop.Value.Value().([]string); ok {
+				unit.After = units
+			}
+		case "ExecStopPost":
+			// ExecStopPost is a(sasb) - array of (path, argv, ignore-failure)
+			val := prop.Value.Value()
+			if execList, ok := val.([][]interface{}); ok {
+				for _, exec0 := range execList {
+					if len(exec0) >= 2 {
+						if argv, ok := exec0[1].([]string); ok {
+							unit.ExecStopPost = append(unit.ExecStopPost, argv)
+						}
+					}
+				}
 			}
 		}
 	}
@@ -588,28 +613,83 @@ func (m *Manager) waitForExit(unitName string) {
 
 	m.mu.Lock()
 	var activeState string
+	var serviceResult string
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			unit.ExitStatus = exitErr.ExitCode()
 			unit.State = "failed"
 			activeState = "failed"
+			serviceResult = "exit-code"
 			slog.Debug("process exited", "unit", unitName, "exitCode", exitErr.ExitCode(), "state", unit.State)
 		} else {
 			unit.State = "failed"
 			activeState = "failed"
+			serviceResult = "failed"
 			slog.Debug("process failed", "unit", unitName, "error", err, "state", unit.State)
 		}
 	} else {
 		unit.ExitStatus = 0
 		unit.State = "exited"
 		activeState = "inactive"
+		serviceResult = "success"
 		slog.Debug("process exited", "unit", unitName, "exitCode", 0, "state", unit.State)
 	}
+
+	// Copy ExecStopPost before unlocking
+	execStopPost := unit.ExecStopPost
+	exitStatus := unit.ExitStatus
 	m.mu.Unlock()
+
+	// Run ExecStopPost commands with specifier substitution (like real systemd)
+	exitStatusStr := fmt.Sprintf("%d", exitStatus)
+	for _, cmd := range execStopPost {
+		if len(cmd) == 0 {
+			continue
+		}
+		// Substitute $EXIT_STATUS and $SERVICE_RESULT in arguments
+		args := make([]string, len(cmd))
+		for i, arg := range cmd {
+			arg = strings.ReplaceAll(arg, "$EXIT_STATUS", exitStatusStr)
+			arg = strings.ReplaceAll(arg, "$SERVICE_RESULT", serviceResult)
+			args[i] = arg
+		}
+		slog.Debug("running ExecStopPost", "unit", unitName, "cmd", args)
+		execCmd := exec.Command(args[0], args[1:]...)
+		execCmd.Env = os.Environ()
+		if err := execCmd.Run(); err != nil {
+			slog.Debug("ExecStopPost failed", "unit", unitName, "cmd", args, "error", err)
+		}
+	}
 
 	slog.Debug("emitting PropertiesChanged", "unit", unitName, "activeState", activeState)
 	// Emit PropertiesChanged signal so watchers know the unit exited
 	m.emitPropertiesChanged(unitName, map[string]dbus.Variant{
 		"ActiveState": dbus.MakeVariant(activeState),
 	})
+
+	// Handle BindsTo: stop units that depend on this one
+	m.stopDependentUnits(unitName)
+}
+
+// stopDependentUnits stops all units that have BindsTo pointing to the given unit
+func (m *Manager) stopDependentUnits(stoppedUnit string) {
+	m.mu.RLock()
+	var dependents []string
+	for name, unit := range m.units {
+		if unit.State == "running" {
+			for _, dep := range unit.BindsTo {
+				if dep == stoppedUnit {
+					dependents = append(dependents, name)
+					break
+				}
+			}
+		}
+	}
+	m.mu.RUnlock()
+
+	// Stop each dependent unit
+	for _, name := range dependents {
+		slog.Debug("stopping dependent unit due to BindsTo", "unit", name, "dependsOn", stoppedUnit)
+		m.StopUnit(name, "replace")
+	}
 }

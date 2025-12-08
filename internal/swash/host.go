@@ -177,6 +177,13 @@ func (h *Host) RunTask(ctx context.Context) error {
 func (srv *Host) startTaskProcess() (chan struct{}, error) {
 	ctx := context.Background()
 
+	// Subscribe to exit notifications before starting the task
+	taskUnit := TaskUnit(srv.sessionID)
+	exitCh, err := srv.systemd.SubscribeUnitExit(ctx, taskUnit)
+	if err != nil {
+		return nil, fmt.Errorf("subscribing to exit notifications: %w", err)
+	}
+
 	// Create pipes for stdio
 	stdinRead, stdinWrite, err := os.Pipe()
 	if err != nil {
@@ -215,8 +222,16 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 	stdoutFd := int(stdoutWrite.Fd())
 	stderrFd := int(stderrWrite.Fd())
 
+	// Get self executable for ExecStopPost
+	selfExe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("getting executable path: %w", err)
+	}
+
+	hostUnit := HostUnit(srv.sessionID)
+
 	spec := TransientSpec{
-		Unit:        TaskUnit(srv.sessionID),
+		Unit:        taskUnit,
 		Slice:       SessionSlice(srv.sessionID),
 		ServiceType: "exec",
 		WorkingDir:  cwd,
@@ -227,6 +242,13 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		Stdin:       &stdinFd,
 		Stdout:      &stdoutFd,
 		Stderr:      &stderrFd,
+		// Unit dependencies: task depends on host
+		BindsTo: []UnitName{hostUnit},
+		After:   []UnitName{hostUnit},
+		// Notify via EmitUnitExit when task exits (args passed directly, not via env)
+		ExecStopPost: [][]string{
+			{selfExe, "notify-exit", srv.sessionID, "$EXIT_STATUS", "$SERVICE_RESULT"},
+		},
 	}
 
 	if err := srv.systemd.StartTransient(ctx, spec); err != nil {
@@ -270,24 +292,20 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		stderrRead.Close()
 	}()
 
-	// Watch for unit exit via D-Bus
+	// Wait for exit notification from SubscribeUnitExit
 	go func() {
-		// Wait for systemd unit to exit
-		exitCode, err := srv.systemd.WaitUnitExit(ctx, TaskUnit(srv.sessionID))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: failed to wait for unit exit: %v\n", err)
-			os.Exit(1)
-		}
+		// Wait for exit notification
+		notification := <-exitCh
 
 		// Wait for pipes to ensure all output is captured
 		wg.Wait()
 
 		srv.mu.Lock()
-		srv.exitCode = &exitCode
+		srv.exitCode = &notification.ExitCode
 		srv.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := EmitExited(srv.journal, srv.sessionID, exitCode, srv.command); err != nil {
+		if err := EmitExited(srv.journal, srv.sessionID, notification.ExitCode, srv.command); err != nil {
 			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
 		}
 
