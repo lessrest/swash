@@ -297,7 +297,7 @@ func (v *VTerm) GetScreenANSI() string {
 		lines = append(lines, line)
 	}
 
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\r\n")
 }
 
 // cellsToANSI converts a line of cells to an ANSI-formatted string.

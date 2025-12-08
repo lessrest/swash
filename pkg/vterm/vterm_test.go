@@ -287,7 +287,7 @@ func TestGetScreenANSI(t *testing.T) {
 	}
 
 	// Should end with reset
-	if !strings.HasSuffix(strings.TrimRight(ansi, "\n"), "\x1b[0m") {
+	if !strings.HasSuffix(strings.TrimRight(ansi, "\r\n"), "\x1b[0m") {
 		t.Error("GetScreenANSI() should end with reset sequence")
 	}
 }

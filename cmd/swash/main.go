@@ -409,7 +409,7 @@ func cmdAttach(sessionID string) {
 	defer client.Close()
 
 	// Call Attach to get fds and screen snapshot
-	outputFD, inputFD, rows, cols, screenANSI, err := client.Attach()
+	outputFD, inputFD, _, _, screenANSI, err := client.Attach()
 	if err != nil {
 		fatal("attaching to session: %v", err)
 	}
@@ -431,20 +431,18 @@ func cmdAttach(sessionID string) {
 		defer term.Restore(stdinFd, oldState)
 	}
 
-	// Clear screen and print initial state
+	// Switch to alternate screen buffer (like vim does) and show remote screen
+	fmt.Print("\x1b[?1049h")   // Enter alternate screen buffer
 	fmt.Print("\x1b[2J\x1b[H") // Clear screen, move to top-left
 	fmt.Print(screenANSI)
-	// Move cursor to show we're attached (bottom of screen)
-	fmt.Printf("\x1b[%d;1H", rows) // Move to last row
-	fmt.Printf("\x1b[7m[attached to %s (%dx%d), Ctrl+] to detach]\x1b[0m", sessionID, cols, rows)
-	fmt.Printf("\x1b[H") // Move back to top
 
 	// Set up signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	// Channel to signal we should exit
+	// Channels to signal exit
 	done := make(chan struct{})
+	detach := make(chan struct{})
 
 	// Forward PTY output to stdout
 	go func() {
@@ -459,7 +457,7 @@ func cmdAttach(sessionID string) {
 		}
 	}()
 
-	// Forward stdin to PTY input (with Ctrl+] detection)
+	// Forward stdin to PTY input (with Ctrl+\ detection for detach)
 	go func() {
 		buf := make([]byte, 1)
 		for {
@@ -468,8 +466,8 @@ func cmdAttach(sessionID string) {
 				return
 			}
 			if n > 0 {
-				if buf[0] == 0x1d { // Ctrl+]
-					output.Close() // This will cause the output reader to exit
+				if buf[0] == 0x1c { // Ctrl+\ to detach
+					close(detach)
 					return
 				}
 				input.Write(buf[:n])
@@ -479,12 +477,16 @@ func cmdAttach(sessionID string) {
 
 	select {
 	case <-done:
+	case <-detach:
 	case <-sigCh:
 	}
+
+	// Leave alternate screen buffer (restores original screen content)
+	fmt.Print("\x1b[?1049l")
 
 	// Restore terminal and print exit message
 	if oldState != nil {
 		term.Restore(stdinFd, oldState)
 	}
-	fmt.Println("\n[detached]")
+	fmt.Println("[detached]")
 }

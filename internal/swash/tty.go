@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/godbus/dbus/v5"
@@ -159,7 +160,8 @@ type TTYHost struct {
 	openPTY func() (PTYPair, error)
 
 	// Attached client (only one allowed for now)
-	attachedOutput *os.File // write end of pipe to send PTY output to client
+	attachedOutput    *os.File   // write end of pipe to send PTY output to client
+	attachedClientFDs []*os.File // client-side fds to close after D-Bus sends them
 }
 
 // TTYHostConfig holds the configuration for creating a TTYHost.
@@ -388,6 +390,9 @@ func (h *TTYHost) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, scr
 
 	// Snapshot screen state while holding the lock
 	screenANSI = h.vt.GetScreenANSI()
+	// Append cursor positioning - ANSI uses 1-based coordinates
+	curRow, curCol := h.vt.GetCursor()
+	screenANSI += fmt.Sprintf("\x1b[%d;%dH", curRow+1, curCol+1)
 	rows = int32(h.rows)
 	cols = int32(h.cols)
 
@@ -396,6 +401,21 @@ func (h *TTYHost) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, scr
 
 	// Start goroutine to forward input pipe -> PTY master
 	go h.forwardAttachedInput(inputRead)
+
+	// Store the client-side fds so we can close them after D-Bus sends them.
+	// D-Bus dups fds when sending, so we must close our copies for the pipes
+	// to properly detect when the client disconnects.
+	h.attachedClientFDs = []*os.File{outputRead, inputWrite}
+	go func() {
+		// Brief delay to ensure D-Bus has sent the fds
+		time.Sleep(100 * time.Millisecond)
+		h.mu.Lock()
+		for _, f := range h.attachedClientFDs {
+			f.Close()
+		}
+		h.attachedClientFDs = nil
+		h.mu.Unlock()
+	}()
 
 	return dbus.UnixFD(outputRead.Fd()), dbus.UnixFD(inputWrite.Fd()), rows, cols, screenANSI, nil
 }
