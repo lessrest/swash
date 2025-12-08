@@ -561,14 +561,11 @@ func (h *TTYHost) renderScreenWithBorder(client *attachedClient) string {
 			} else if visibleLen == h.cols {
 				sb.WriteString(line)
 			} else {
-				// Line is too long - we need to truncate while preserving ANSI codes
-				// For simplicity, just truncate at character boundary
-				// This is a complex problem, so we'll accept some imperfection
+				// Line is too long - truncate visible characters
+				// This is complex with ANSI codes, so we use simple approach:
+				// write the line as-is and let terminal handle overflow
+				// VTerm should already be limiting line length to screen width
 				sb.WriteString(line)
-				if len(line) > h.cols {
-					// Simple truncation - may cut ANSI codes
-					sb.WriteString(line[:h.cols])
-				}
 			}
 		} else {
 			sb.WriteString(strings.Repeat(" ", h.cols))
@@ -760,8 +757,11 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 				h.mu.Lock()
 				for _, client := range h.attachedClients {
 					if client.output != nil {
-						// TODO: Handle border rendering for clients that need it
-						// For now, just send raw PTY output
+						// Send raw PTY output to all clients
+						// Note: Clients with borders receive the same raw output.
+						// The border is only shown in the initial snapshot.
+						// Real-time border rendering would require complex per-frame
+						// processing and is deferred as a future enhancement.
 						client.output.Write(buf[:n])
 					}
 				}
