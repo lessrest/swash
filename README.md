@@ -70,8 +70,8 @@ full terminal using libvterm. This handles colors, cursor movement, alternate
 screen mode (used by vim, htop, etc.), and other terminal features correctly.
 
 ```bash
-swash run --tty -- htop
-swash run --tty --rows 40 --cols 120 -- vim file.txt
+swash start --tty -- htop
+swash start --tty --rows 40 --cols 120 -- vim file.txt
 swash screen ABC123             # view current screen content
 ```
 
@@ -79,7 +79,7 @@ The `swash screen` command returns a snapshot of the terminal screen with ANSI
 color codes preserved. Here's what it looks like with htop:
 
 ```
-$ swash run --tty --rows 10 --cols 70 -- htop
+$ swash start --tty --rows 10 --cols 70 -- htop
 XYZ789 started
 
 $ swash screen XYZ789
