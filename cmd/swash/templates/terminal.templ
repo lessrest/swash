@@ -1,0 +1,171 @@
+package templates
+
+import "fmt"
+
+templ TerminalPage(sessionID string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>swash - { sessionID[:8] }...</title>
+			<link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css"/>
+			<style>
+				@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono&display=swap');
+				* { box-sizing: border-box; margin: 0; padding: 0; }
+				body {
+					background: #0f0f0f;
+					min-height: 100vh;
+					display: flex;
+					flex-direction: column;
+				}
+				header {
+					background: #1a1a1a;
+					border-bottom: 1px solid #333;
+					padding: 0.5rem 1rem;
+					display: flex;
+					justify-content: space-between;
+					align-items: center;
+					font-family: system-ui, -apple-system, sans-serif;
+				}
+				header a {
+					color: #4dabf7;
+					text-decoration: none;
+					font-size: 0.9rem;
+				}
+				header a:hover { text-decoration: underline; }
+				header .session-id {
+					color: #888;
+					font-family: monospace;
+					font-size: 0.85rem;
+				}
+				#terminal-container {
+					flex: 1;
+					padding: 0.5rem;
+					display: flex;
+					align-items: center;
+					justify-content: center;
+				}
+				#terminal {
+					border: 1px solid #333;
+					border-radius: 4px;
+					padding: 0.5rem;
+					background: #000;
+					width: 100%;
+					height: 100%;
+					max-width: calc(100vw - 1rem);
+					max-height: calc(100vh - 4rem);
+				}
+				.xterm { height: 100%; }
+				#status {
+					position: fixed;
+					bottom: 1rem;
+					right: 1rem;
+					background: rgba(0,0,0,0.8);
+					color: #888;
+					padding: 0.5rem 1rem;
+					border-radius: 4px;
+					font-family: system-ui;
+					font-size: 0.8rem;
+					opacity: 0;
+					transition: opacity 0.3s;
+				}
+				#status.visible { opacity: 1; }
+				#status.connected { color: #51cf66; }
+				#status.disconnected { color: #ff6b6b; }
+			</style>
+		</head>
+		<body>
+			<header>
+				<a href="/sessions">← Back to Sessions</a>
+				<span class="session-id">{ sessionID[:8] }...</span>
+				<a href={ templ.SafeURL(fmt.Sprintf("/sessions/%s", sessionID)) }>Details</a>
+			</header>
+			<div id="terminal-container">
+				<div id="terminal"></div>
+			</div>
+			<div id="status"></div>
+			<script src="https://unpkg.com/xterm@5.3.0/lib/xterm.js"></script>
+			<script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+			<script src="https://unpkg.com/xterm-addon-webgl@0.16.0/lib/xterm-addon-webgl.js"></script>
+			<script>
+				const sessionID = { fmt.Sprintf("%q", sessionID) };
+				const statusEl = document.getElementById('status');
+
+				function showStatus(text, className) {
+					statusEl.textContent = text;
+					statusEl.className = 'visible ' + className;
+					setTimeout(() => statusEl.className = '', 2000);
+				}
+
+				const term = new Terminal({
+					cursorBlink: true,
+					fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+					fontSize: 14,
+					theme: {
+						background: '#000000',
+						foreground: '#e0e0e0',
+						cursor: '#4dabf7',
+						selection: 'rgba(77, 171, 247, 0.3)'
+					}
+				});
+
+				const fitAddon = new FitAddon.FitAddon();
+				term.loadAddon(fitAddon);
+				term.open(document.getElementById('terminal'));
+
+				try {
+					const webglAddon = new WebglAddon.WebglAddon();
+					webglAddon.onContextLoss(() => webglAddon.dispose());
+					term.loadAddon(webglAddon);
+				} catch (e) {
+					console.warn('WebGL addon failed to load:', e);
+				}
+
+				fitAddon.fit();
+
+				const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+				const ws = new WebSocket(protocol + '//' + location.host + '/sessions/' + sessionID + '/attach');
+
+				ws.onopen = () => {
+					showStatus('Connected', 'connected');
+					sendResize();
+				};
+
+				ws.onmessage = (e) => term.write(e.data);
+
+				ws.onclose = () => {
+					showStatus('Disconnected', 'disconnected');
+					term.write('\r\n\x1b[90m[session disconnected]\x1b[0m\r\n');
+				};
+
+				ws.onerror = () => {
+					showStatus('Connection error', 'disconnected');
+				};
+
+				term.onData((data) => {
+					if (ws.readyState === WebSocket.OPEN) {
+						ws.send(data);
+					}
+				});
+
+				function sendResize() {
+					fitAddon.fit();
+					if (ws.readyState === WebSocket.OPEN) {
+						ws.send(JSON.stringify({
+							type: 'resize',
+							rows: term.rows,
+							cols: term.cols
+						}));
+					}
+				}
+
+				window.addEventListener('resize', () => {
+					requestAnimationFrame(sendResize);
+				});
+
+				term.focus();
+			</script>
+		</body>
+	</html>
+}

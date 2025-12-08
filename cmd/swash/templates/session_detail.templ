@@ -1,0 +1,76 @@
+package templates
+
+import (
+	"fmt"
+
+	"github.com/mbrock/swash/internal/swash"
+)
+
+templ SessionDetailPage(session *swash.Session) {
+	@Layout(fmt.Sprintf("swash - %s", session.ID[:8])) {
+		<nav><a href="/sessions">← All Sessions</a></nav>
+		<h1>Session { session.ID[:8] }...</h1>
+		<div class="card">
+			<dl>
+				<dt>ID</dt>
+				<dd><code>{ session.ID }</code></dd>
+				<dt>Command</dt>
+				<dd><code>{ session.Command }</code></dd>
+				<dt>Status</dt>
+				<dd>
+					<span class={ "status", templ.KV("status-running", session.Status == "running"), templ.KV("status-exited", session.Status != "running") }>
+						{ session.Status }
+					</span>
+				</dd>
+				<dt>PID</dt>
+				<dd>{ fmt.Sprintf("%d", session.PID) }</dd>
+				<dt>Started</dt>
+				<dd>{ session.Started }</dd>
+				<dt>Unit</dt>
+				<dd><code>{ session.Unit }</code></dd>
+			</dl>
+		</div>
+		<div class="btn-group" style="margin-bottom: 1rem;">
+			<a href={ templ.SafeURL(fmt.Sprintf("/terminal/%s", session.ID)) }><button class="primary">Open Terminal</button></a>
+			<a href={ templ.SafeURL(fmt.Sprintf("/sessions/%s/output", session.ID)) }><button>Stream Output</button></a>
+			<a href={ templ.SafeURL(fmt.Sprintf("/sessions/%s/screen", session.ID)) }><button>View Screen</button></a>
+		</div>
+		<div class="card">
+			<h2 style="margin-bottom: 1rem; font-size: 1rem;">Send Input</h2>
+			<form
+				hx-post={ fmt.Sprintf("/sessions/%s/input", session.ID) }
+				hx-swap="none"
+				style="display: flex; gap: 0.5rem;"
+			>
+				<input type="text" name="data" placeholder="Type input to send..." style="flex: 1;"/>
+				<button type="submit">Send</button>
+			</form>
+		</div>
+		<div class="card">
+			<h2 style="margin-bottom: 1rem; font-size: 1rem;">Session Actions</h2>
+			<div class="btn-group">
+				<button
+					hx-post={ fmt.Sprintf("/sessions/%s/kill", session.ID) }
+					hx-confirm="Are you sure you want to kill this session?"
+					hx-target="body"
+					hx-swap="innerHTML"
+					class="danger"
+				>
+					Kill Session
+				</button>
+			</div>
+		</div>
+		<div class="card">
+			<h2 style="margin-bottom: 1rem; font-size: 1rem;">Live Output</h2>
+			<div
+				hx-ext="sse"
+				sse-connect={ fmt.Sprintf("/sessions/%s/output", session.ID) }
+				sse-swap="message"
+				hx-swap="beforeend"
+				style="background: #000; padding: 1rem; border-radius: 4px; font-family: monospace; font-size: 0.85rem; max-height: 300px; overflow-y: auto; white-space: pre-wrap;"
+			>
+				<span class="htmx-indicator loading">Connecting...</span>
+			</div>
+		</div>
+	}
+}
