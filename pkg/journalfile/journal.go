@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -161,6 +162,12 @@ func (jf *File) syncHeader() error {
 func (jf *File) AppendEntry(fields map[string]string) error {
 	jf.mu.Lock()
 	defer jf.mu.Unlock()
+
+	// File lock for cross-process synchronization
+	if err := syscall.Flock(int(jf.f.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("flock: %w", err)
+	}
+	defer syscall.Flock(int(jf.f.Fd()), syscall.LOCK_UN)
 
 	now := time.Now()
 	realtime := uint64(now.UnixMicro())

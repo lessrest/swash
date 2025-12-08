@@ -356,7 +356,13 @@ func (s *systemdConn) StartTransient(ctx context.Context, spec TransientSpec) er
 
 	select {
 	case result := <-resultChan:
-		if result != "done" {
+		// "done" means started successfully
+		// "failed" can mean either:
+		//   1. Actually failed to start (binary not found, etc.)
+		//   2. Started and exited quickly with non-zero exit code
+		// We treat both as success here - the caller should use WaitUnitExit
+		// to determine if the process ran and get its exit code.
+		if result != "done" && result != "failed" {
 			return fmt.Errorf("start job failed: %s", result)
 		}
 		return nil

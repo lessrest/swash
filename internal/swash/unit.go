@@ -2,9 +2,18 @@ package swash
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
+
+// rootSlicePrefix returns the slice prefix from env or default "swash"
+func rootSlicePrefix() string {
+	if prefix := os.Getenv("SWASH_ROOT_SLICE"); prefix != "" {
+		return prefix
+	}
+	return "swash"
+}
 
 // UnitType distinguishes swash unit kinds.
 type UnitType int
@@ -55,7 +64,7 @@ type SliceName string
 
 // SessionSlice returns the slice name for a session.
 func SessionSlice(sessionID string) SliceName {
-	return SliceName(fmt.Sprintf("swash-%s.slice", sessionID))
+	return SliceName(fmt.Sprintf("%s-%s.slice", rootSlicePrefix(), sessionID))
 }
 
 // SessionID extracts the session ID from a slice name.

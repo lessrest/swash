@@ -2,9 +2,9 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -61,9 +61,9 @@ type UnitObject struct {
 // Get implements org.freedesktop.DBus.Properties.Get
 func (u *UnitObject) Get(iface, prop string) (dbus.Variant, *dbus.Error) {
 	u.manager.mu.RLock()
-	unit, ok := u.manager.units[u.name]
-	u.manager.mu.RUnlock()
+	defer u.manager.mu.RUnlock()
 
+	unit, ok := u.manager.units[u.name]
 	if !ok {
 		return dbus.Variant{}, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
 	}
@@ -103,9 +103,9 @@ func (u *UnitObject) Get(iface, prop string) (dbus.Variant, *dbus.Error) {
 // GetAll implements org.freedesktop.DBus.Properties.GetAll
 func (u *UnitObject) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
 	u.manager.mu.RLock()
-	unit, ok := u.manager.units[u.name]
-	u.manager.mu.RUnlock()
+	defer u.manager.mu.RUnlock()
 
+	unit, ok := u.manager.units[u.name]
 	if !ok {
 		return nil, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
 	}
@@ -464,9 +464,9 @@ func (m *Manager) GetUnit(name string) (dbus.ObjectPath, *dbus.Error) {
 // GetUnitProperties returns properties for a unit
 func (m *Manager) GetUnitProperties(name string) (map[string]dbus.Variant, *dbus.Error) {
 	m.mu.RLock()
-	unit, ok := m.units[name]
-	m.mu.RUnlock()
+	defer m.mu.RUnlock()
 
+	unit, ok := m.units[name]
 	if !ok {
 		return nil, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
 	}
@@ -487,13 +487,14 @@ func (m *Manager) GetUnitProperties(name string) (map[string]dbus.Variant, *dbus
 // GetServiceProperties returns service-specific properties
 func (m *Manager) GetServiceProperties(name string) (map[string]dbus.Variant, *dbus.Error) {
 	m.mu.RLock()
-	unit, ok := m.units[name]
-	m.mu.RUnlock()
+	defer m.mu.RUnlock()
 
+	unit, ok := m.units[name]
 	if !ok {
 		return nil, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
 	}
 
+	slog.Debug("GetServiceProperties", "unit", name, "state", unit.State, "exitStatus", unit.ExitStatus)
 	return map[string]dbus.Variant{
 		"MainPID":          dbus.MakeVariant(uint32(unit.PID)),
 		"WorkingDirectory": dbus.MakeVariant(unit.WorkingDir),
@@ -592,35 +593,23 @@ func (m *Manager) waitForExit(unitName string) {
 			unit.ExitStatus = exitErr.ExitCode()
 			unit.State = "failed"
 			activeState = "failed"
+			slog.Debug("process exited", "unit", unitName, "exitCode", exitErr.ExitCode(), "state", unit.State)
 		} else {
 			unit.State = "failed"
 			activeState = "failed"
+			slog.Debug("process failed", "unit", unitName, "error", err, "state", unit.State)
 		}
 	} else {
 		unit.ExitStatus = 0
 		unit.State = "exited"
 		activeState = "inactive"
+		slog.Debug("process exited", "unit", unitName, "exitCode", 0, "state", unit.State)
 	}
 	m.mu.Unlock()
 
+	slog.Debug("emitting PropertiesChanged", "unit", unitName, "activeState", activeState)
 	// Emit PropertiesChanged signal so watchers know the unit exited
 	m.emitPropertiesChanged(unitName, map[string]dbus.Variant{
 		"ActiveState": dbus.MakeVariant(activeState),
 	})
-}
-
-// reapChildren handles SIGCHLD to prevent zombies
-func (m *Manager) reapChildren() {
-	sigChan := make(chan os.Signal, 10)
-	signal.Notify(sigChan, syscall.SIGCHLD)
-
-	for range sigChan {
-		for {
-			var status syscall.WaitStatus
-			pid, err := syscall.Wait4(-1, &status, syscall.WNOHANG, nil)
-			if pid <= 0 || err != nil {
-				break
-			}
-		}
-	}
 }

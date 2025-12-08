@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -24,6 +25,13 @@ func main() {
 	machineIDFlag := flag.String("machine-id", "", "Override machine ID (32 hex chars)")
 	bootIDFlag := flag.String("boot-id", "", "Override boot ID (32 hex chars)")
 	flag.Parse()
+
+	// Configure slog level from environment
+	logLevel := slog.LevelInfo
+	if os.Getenv("MINISYSTEMD_DEBUG") != "" {
+		logLevel = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
 
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
@@ -119,9 +127,6 @@ func main() {
 	}
 
 	fmt.Printf("mini-systemd running on %s\n", busName)
-
-	// Handle SIGCHLD to reap children
-	go mgr.reapChildren()
 
 	// Wait for termination
 	sigChan := make(chan os.Signal, 1)
