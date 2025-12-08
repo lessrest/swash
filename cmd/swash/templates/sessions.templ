@@ -54,7 +54,7 @@ templ SessionsTable(sessions []swash.Session) {
 			}
 			for _, s := range sessions {
 				<tr id={ fmt.Sprintf("session-%s", s.ID) }>
-					<td><a href={ templ.SafeURL(fmt.Sprintf("/sessions/%s", s.ID)) }>{ s.ID[:8] }...</a></td>
+					<td><a href={ templ.SafeURL(fmt.Sprintf("/sessions/%s", s.ID)) }>{ s.ID }</a></td>
 					<td><code>{ s.Command }</code></td>
 					<td class="time">{ formatTime(s.Started) }</td>
 					<td>

@@ -7,9 +7,9 @@ import (
 )
 
 templ SessionDetailPage(session *swash.Session) {
-	@Layout(fmt.Sprintf("swash - %s", session.ID[:8])) {
+	@Layout(fmt.Sprintf("swash - %s", session.ID)) {
 		<nav><a href="/sessions">← All Sessions</a></nav>
-		<h1>Session { session.ID[:8] }...</h1>
+		<h1>Session { session.ID }</h1>
 		<div class="card">
 			<dl>
 				<dt>ID</dt>

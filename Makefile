@@ -8,11 +8,14 @@ CGO_CFLAGS := -I$(CURDIR)/cvendor
 
 export CGO_CFLAGS
 
-.PHONY: all build test test-unit test-integration install clean
+.PHONY: all build test test-unit test-integration install clean generate
 
 all: build
 
-build: bin/swash bin/mini-systemd
+generate:
+	go generate ./cmd/swash/templates/
+
+build: generate bin/swash bin/mini-systemd
 
 bin/swash: $(shell find . -name '*.go' -not -path './test/*')
 	go build -o $@ ./cmd/swash/
