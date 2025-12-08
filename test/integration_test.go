@@ -18,18 +18,36 @@ import (
 
 const testTimeout = 10 * time.Second
 
+// withTimeout runs f with a timeout, panicking with a goroutine dump if it exceeds the limit.
+func withTimeout(name string, timeout time.Duration, f func()) {
+	timer := time.AfterFunc(timeout, func() {
+		debug.SetTraceback("all")
+		panic(fmt.Sprintf("%s timed out after %v", name, timeout))
+	})
+	defer timer.Stop()
+	f()
+}
+
+// runCmd runs a command with the given timeout, logging what it runs.
+func runCmd(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	fmt.Fprintf(os.Stderr, "$ %s %s\n", name, strings.Join(args, " "))
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if err != nil {
+		if len(out) > 0 {
+			fmt.Fprintf(os.Stderr, "%s", out)
+		}
+		fmt.Fprintf(os.Stderr, " -> error: %v\n", err)
+	}
+	return out, err
+}
+
 // runTest wraps a test function with automatic timeout and goroutine dump on hang.
 func runTest(t *testing.T, f func(t *testing.T, e *testEnv)) {
 	t.Parallel()
 	e := getEnv(t)
-
-	timer := time.AfterFunc(testTimeout, func() {
-		debug.SetTraceback("all")
-		panic(fmt.Sprintf("test %s timed out after %v", t.Name(), testTimeout))
-	})
-	defer timer.Stop()
-
-	f(t, e)
+	withTimeout(t.Name(), testTimeout, func() { f(t, e) })
 }
 
 // testEnv holds the test environment configuration
@@ -165,43 +183,25 @@ func (e *testEnv) setupMiniSystemd() error {
 }
 
 func (e *testEnv) cleanup() {
-	//	time.Sleep(1 * time.Second)
+	withTimeout("cleanup", 5*time.Second, func() {
+		// Stop the test slice and all children (real systemd mode)
+		if e.mode == "real" && e.rootSlice != "" {
+			runCmd(3*time.Second, "systemctl", "--user", "kill", e.rootSlice+".slice")
+			runCmd(3*time.Second, "systemctl", "--user", "reset-failed")
+		}
 
-	timeout := 3 * time.Second
-	timer := time.AfterFunc(timeout, func() {
-		debug.SetTraceback("all")
-		panic(fmt.Sprintf("test cleanup timed out after %v", timeout))
+		if e.miniSystemdCmd != nil && e.miniSystemdCmd.Process != nil {
+			e.miniSystemdCmd.Process.Kill()
+			e.miniSystemdCmd.Wait()
+		}
+		if e.dbusCmd != nil && e.dbusCmd.Process != nil {
+			e.dbusCmd.Process.Kill()
+			e.dbusCmd.Wait()
+		}
+		if e.tmpDir != "" {
+			os.RemoveAll(e.tmpDir)
+		}
 	})
-	defer timer.Stop()
-
-	// Stop the test slice and all children (real systemd mode)
-	if e.mode == "real" && e.rootSlice != "" {
-		fmt.Fprintf(os.Stderr, "stopping slice %s\n", e.rootSlice+".slice")
-		out, err := exec.Command("systemctl", "--user", "status", e.rootSlice+".slice").CombinedOutput()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "failed to get status: %v\n%s\n", err, out)
-		}
-		fmt.Fprintf(os.Stderr, " %s\n", out)
-
-		if err := exec.Command("systemctl", "--user", "kill", "--signal=SIGKILL", e.rootSlice+".slice").Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to stop slice: %v", err)
-		}
-		if err := exec.Command("systemctl", "--user", "reset-failed").Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to reset failed: %v", err)
-		}
-	}
-
-	if e.miniSystemdCmd != nil && e.miniSystemdCmd.Process != nil {
-		e.miniSystemdCmd.Process.Kill()
-		e.miniSystemdCmd.Wait()
-	}
-	if e.dbusCmd != nil && e.dbusCmd.Process != nil {
-		e.dbusCmd.Process.Kill()
-		e.dbusCmd.Wait()
-	}
-	if e.tmpDir != "" {
-		os.RemoveAll(e.tmpDir)
-	}
 }
 
 func getProjectRoot() string {
@@ -266,43 +266,22 @@ func (e *testEnv) runSwashWithInput(input string, args ...string) (string, strin
 
 // runJournalctl runs journalctl with the appropriate arguments for the mode
 func (e *testEnv) runJournalctl(args ...string) (string, error) {
-	timeout := 5 * time.Second
-	timer := time.AfterFunc(timeout, func() {
-		debug.SetTraceback("all")
-		panic(fmt.Sprintf("test journalctl timed out after %v", timeout))
-	})
-	defer timer.Stop()
-
-	var cmd *exec.Cmd
+	var baseArgs []string
 	if e.mode == "mini" {
-		// Use --file for mini-systemd journal
 		files, _ := filepath.Glob(filepath.Join(e.journalDir, "*.journal"))
 		if len(files) == 0 {
 			return "", fmt.Errorf("no journal files found in %s", e.journalDir)
 		}
-		baseArgs := []string{"--file=" + files[0]}
-		baseArgs = append(baseArgs, args...)
-		cmd = exec.Command("journalctl", baseArgs...)
+		baseArgs = []string{"--file=" + files[0]}
 	} else {
-		// Use --user for real systemd
-		baseArgs := []string{"--user"}
-		baseArgs = append(baseArgs, args...)
-		cmd = exec.Command("journalctl", baseArgs...)
+		baseArgs = []string{"--user"}
 	}
-
-	out, err := cmd.CombinedOutput()
+	out, err := runCmd(5*time.Second, "journalctl", append(baseArgs, args...)...)
 	return string(out), err
 }
 
 // TestMain handles setup and teardown
 func TestMain(m *testing.M) {
-	timeout := testTimeout + 10*time.Second
-	timer := time.AfterFunc(timeout, func() {
-		debug.SetTraceback("all")
-		panic(fmt.Sprintf("test main timed out after %v", timeout))
-	})
-	defer timer.Stop()
-
 	// Print mode information before running tests
 	mode := os.Getenv("SWASH_TEST_MODE")
 	if mode == "" {
@@ -322,7 +301,6 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	// Cleanup
 	if env != nil {
 		env.cleanup()
 	}
