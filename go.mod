@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/a-h/templ v0.3.960 // indirect
 	golang.org/x/net v0.47.0 // indirect
 	golang.org/x/sys v0.38.0 // indirect
 )

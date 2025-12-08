@@ -1,0 +1,86 @@
+package templates
+
+import (
+	"fmt"
+	"time"
+
+	"github.com/mbrock/swash/internal/swash"
+)
+
+func parseStarted(s string) time.Time {
+	t, _ := time.Parse("Mon 2006-01-02 15:04:05 MST", s)
+	return t
+}
+
+func formatTime(s string) string {
+	started := parseStarted(s)
+	if time.Since(started) > 24*time.Hour {
+		return started.Format("Jan 2 15:04")
+	}
+	return started.Format("15:04:05")
+}
+
+templ SessionsPage(sessions []swash.Session) {
+	@Layout("swash - sessions") {
+		<h1>Sessions</h1>
+		<nav class="btn-group">
+			<a href="/sessions/new"><button class="primary">+ New Session</button></a>
+			<a href="/history"><button>View History</button></a>
+		</nav>
+		<div id="sessions-list" hx-get="/sessions" hx-trigger="every 5s" hx-select="#sessions-table" hx-swap="outerHTML">
+			@SessionsTable(sessions)
+		</div>
+	}
+}
+
+templ SessionsTable(sessions []swash.Session) {
+	<table id="sessions-table">
+		<thead>
+			<tr>
+				<th>ID</th>
+				<th>Command</th>
+				<th>Started</th>
+				<th>Status</th>
+				<th>Actions</th>
+			</tr>
+		</thead>
+		<tbody>
+			if len(sessions) == 0 {
+				<tr>
+					<td colspan="5" style="text-align: center; padding: 2rem; color: var(--text-muted);">
+						No active sessions. <a href="/sessions/new">Start one?</a>
+					</td>
+				</tr>
+			}
+			for _, s := range sessions {
+				<tr id={ fmt.Sprintf("session-%s", s.ID) }>
+					<td><a href={ templ.SafeURL(fmt.Sprintf("/sessions/%s", s.ID)) }>{ s.ID[:8] }...</a></td>
+					<td><code>{ s.Command }</code></td>
+					<td class="time">{ formatTime(s.Started) }</td>
+					<td>
+						<span class={ "status", templ.KV("status-running", s.Status == "running"), templ.KV("status-exited", s.Status != "running") }>
+							{ s.Status }
+						</span>
+					</td>
+					<td class="btn-group">
+						<a href={ templ.SafeURL(fmt.Sprintf("/terminal/%s", s.ID)) }><button>Terminal</button></a>
+						<a href={ templ.SafeURL(fmt.Sprintf("/sessions/%s/screen", s.ID)) }><button>Screen</button></a>
+						<button
+							hx-post={ fmt.Sprintf("/sessions/%s/kill", s.ID) }
+							hx-confirm="Kill this session?"
+							hx-target={ fmt.Sprintf("#session-%s", s.ID) }
+							hx-swap="outerHTML"
+							class="danger"
+						>
+							Kill
+						</button>
+					</td>
+				</tr>
+			}
+		</tbody>
+	</table>
+}
+
+templ SessionKilled() {
+	<tr style="display: none;"></tr>
+}

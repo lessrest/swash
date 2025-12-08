@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mbrock/swash/cmd/swash/templates"
 	"github.com/mbrock/swash/internal/swash"
 	"golang.org/x/net/websocket"
 )
@@ -217,27 +218,7 @@ func getListener() (net.Listener, error) {
 
 func handleNewSessionForm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>New Session</title>
-<style>
-  body { font-family: system-ui; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
-  label { display: block; margin-top: 1rem; font-weight: bold; }
-  input[type=text] { width: 100%; padding: 0.5rem; margin-top: 0.25rem; }
-  input[type=checkbox] { margin-right: 0.5rem; }
-  button { margin-top: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
-  nav { margin-bottom: 1rem; }
-  a { color: #07c; }
-</style>
-</head><body>
-<nav><a href="/sessions">← Sessions</a></nav>
-<h1>New Session</h1>
-<form method="POST" action="/sessions">
-  <label>Command</label>
-  <input type="text" name="command" placeholder="e.g. htop" required>
-  <label><input type="checkbox" name="tty" value="true"> TTY mode</label>
-  <button type="submit">Start</button>
-</form>
-</body></html>`)
+	templates.NewSessionPage().Render(r.Context(), w)
 }
 
 func handleStartSession(w http.ResponseWriter, r *http.Request) {
@@ -329,40 +310,7 @@ func handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 	if wantsHTML(r) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprint(w, `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>swash sessions</title>
-<style>
-  body { font-family: system-ui; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #ddd; }
-  a { color: #07c; }
-  .actions { display: flex; gap: 0.5rem; }
-  .time { color: #666; font-size: 0.9em; }
-</style>
-</head><body>
-<h1>Sessions</h1>
-<p><a href="/history">View history</a> · <a href="/sessions/new">+ New Session</a></p>
-<table>
-<tr><th>ID</th><th>Command</th><th>Started</th><th>Status</th><th>Actions</th></tr>`)
-		for _, s := range sessions {
-			started := parseStarted(s.Started)
-			timeStr := started.Format("15:04:05")
-			if time.Since(started) > 24*time.Hour {
-				timeStr = started.Format("Jan 2 15:04")
-			}
-			fmt.Fprintf(w, `<tr>
-<td><a href="/sessions/%s">%s</a></td>
-<td>%s</td>
-<td class="time">%s</td>
-<td>%s</td>
-<td class="actions">
-  <a href="/sessions/%s/output">output</a>
-  <a href="/sessions/%s/screen">screen</a>
-  <a href="/terminal/%s">terminal</a>
-</td>
-</tr>`, s.ID, s.ID, s.Command, timeStr, s.Status, s.ID, s.ID, s.ID)
-		}
-		fmt.Fprint(w, `</table></body></html>`)
+		templates.SessionsPage(sessions).Render(r.Context(), w)
 		return
 	}
 
@@ -380,47 +328,7 @@ func handleGetSession(w http.ResponseWriter, r *http.Request) {
 
 	if wantsHTML(r) {
 		w.Header().Set("Content-Type", "text/html")
-		fmt.Fprintf(w, `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>swash - %s</title>
-<style>
-  body { font-family: system-ui; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
-  dl { display: grid; grid-template-columns: auto 1fr; gap: 0.5rem; }
-  dt { font-weight: bold; }
-  a { color: #07c; }
-  .actions { margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap; }
-  .actions form { display: inline; }
-  input, button { padding: 0.5rem; }
-  button { cursor: pointer; }
-  nav { margin-bottom: 1rem; }
-</style>
-</head><body>
-<nav><a href="/sessions">← All Sessions</a></nav>
-<h1>Session %s</h1>
-<dl>
-  <dt>Command</dt><dd>%s</dd>
-  <dt>Status</dt><dd>%s</dd>
-  <dt>PID</dt><dd>%d</dd>
-  <dt>Started</dt><dd>%s</dd>
-  <dt>Unit</dt><dd>%s</dd>
-</dl>
-<div class="actions">
-  <a href="/terminal/%s">Open Terminal</a>
-  <a href="/sessions/%s/output">Stream Output</a>
-  <a href="/sessions/%s/screen">View Screen</a>
-</div>
-<div class="actions">
-  <form method="POST" action="/sessions/%s/input">
-    <input name="data" placeholder="Send input...">
-    <button type="submit">Send</button>
-  </form>
-  <form method="POST" action="/sessions/%s/kill" onsubmit="return confirm('Kill this session?')">
-    <button type="submit">Kill</button>
-  </form>
-</div>
-</body></html>`,
-			session.ID, session.ID, session.Command, session.Status,
-			session.PID, session.Started, session.Unit,
-			session.ID, session.ID, session.ID, session.ID, session.ID)
+		templates.SessionDetailPage(session).Render(r.Context(), w)
 		return
 	}
 
@@ -455,6 +363,13 @@ func handleKillSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	if err := rt.KillSession(sessionID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Check if this is an htmx request
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("Content-Type", "text/html")
+		templates.SessionKilled().Render(r.Context(), w)
 		return
 	}
 
@@ -518,6 +433,13 @@ func handleHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	if wantsHTML(r) {
+		w.Header().Set("Content-Type", "text/html")
+		templates.HistoryPage(sessions).Render(r.Context(), w)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(sessions)
 }
@@ -558,7 +480,7 @@ func handleSessionOutput(w http.ResponseWriter, r *http.Request) {
 func handleTerminalPage(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprintf(w, terminalPageHTML, sessionID, sessionID)
+	templates.TerminalPage(sessionID).Render(r.Context(), w)
 }
 
 func handleAttach(ws *websocket.Conn) {
@@ -627,67 +549,3 @@ func handleAttach(ws *websocket.Conn) {
 		input.Write([]byte(msg))
 	}
 }
-
-const terminalPageHTML = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>swash - %s</title>
-  <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css">
-  <style>
-    @import url('https://fonts.googleapis.com/css2?family=Input+Mono&display=swap');
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: #111;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1rem;
-    }
-    #terminal {
-      border: 1px solid #333;
-      border-radius: 4px;
-      padding: 0.5rem;
-      background: #000;
-      max-width: calc(100vw - 2rem);
-      max-height: calc(100vh - 2rem);
-    }
-    .xterm { height: 100%%; }
-  </style>
-</head>
-<body>
-  <div id="terminal"></div>
-  <script src="https://unpkg.com/xterm@5.3.0/lib/xterm.js"></script>
-  <script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
-  <script src="https://unpkg.com/xterm-addon-webgl@0.16.0/lib/xterm-addon-webgl.js"></script>
-  <script>
-    const term = new Terminal({
-      cursorBlink: true,
-      fontFamily: '"Input Mono", monospace',
-      fontSize: 14
-    });
-    const fitAddon = new FitAddon.FitAddon();
-    const webglAddon = new WebglAddon.WebglAddon();
-    term.loadAddon(fitAddon);
-    term.open(document.getElementById('terminal'));
-    term.loadAddon(webglAddon);
-    fitAddon.fit();
-
-    const ws = new WebSocket('ws://' + location.host + '/sessions/%s/attach');
-    ws.onmessage = (e) => term.write(e.data);
-    ws.onclose = () => term.write('\r\n[disconnected]');
-    term.onData((data) => ws.send(data));
-
-    function sendResize() {
-      fitAddon.fit();
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({type: 'resize', rows: term.rows, cols: term.cols}));
-      }
-    }
-    ws.onopen = sendResize;
-    window.addEventListener('resize', sendResize);
-  </script>
-</body>
-</html>`
