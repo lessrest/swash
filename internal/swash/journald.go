@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -11,6 +12,18 @@ import (
 	"github.com/coreos/go-systemd/v22/journal"
 	"github.com/coreos/go-systemd/v22/sdjournal"
 )
+
+func init() {
+	// Allow runtime configuration of journal socket path via environment variable.
+	// This is used by integration tests with mini-systemd.
+	if socket := os.Getenv("SWASH_JOURNAL_SOCKET"); socket != "" {
+		journal.SetSocketPath(socket)
+	}
+	// Also check for journal directory for reading.
+	if dir := os.Getenv("SWASH_JOURNAL_DIR"); dir != "" {
+		JournalDir = dir
+	}
+}
 
 // JournalEntry represents a single journal entry.
 type JournalEntry struct {

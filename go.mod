@@ -11,3 +11,5 @@ require (
 )
 
 require golang.org/x/sys v0.38.0 // indirect
+
+replace github.com/coreos/go-systemd/v22 => github.com/mbrock/go-systemd/v22 v22.6.1-swash

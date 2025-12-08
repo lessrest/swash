@@ -88,21 +88,24 @@ if $USE_REAL_SYSTEMD; then
     export PATH="$TMPDIR:$PATH"
     
     # For real systemd, we read from the user's journal
-    JOURNAL_DIR=""
     JOURNAL_CMD="journalctl --user"
 else
     # Use mini-systemd with isolated D-Bus and journal
     JOURNAL_DIR="$TMPDIR/journal"
     JOURNAL_SOCKET="$TMPDIR/journal.socket"
     mkdir -p "$JOURNAL_DIR"
+    echo "Journal directory: $JOURNAL_DIR"
+    echo "Journal socket: $JOURNAL_SOCKET"
     
-    go build -o "$TMPDIR/swash" \
-        -ldflags "-X github.com/coreos/go-systemd/v22/journal.journalSocket=$JOURNAL_SOCKET -X github.com/mbrock/swash/internal/swash.JournalDir=$JOURNAL_DIR" \
-        ./cmd/swash/
-    
+    # Build swash normally (no ldflags needed - uses env vars now)
+    go build -o "$TMPDIR/swash" ./cmd/swash/
     go build -o "$TMPDIR/mini-systemd" ./cmd/mini-systemd/
     
     export PATH="$TMPDIR:$PATH"
+    
+    # Set env vars for journal configuration
+    export SWASH_JOURNAL_SOCKET="$JOURNAL_SOCKET"
+    export SWASH_JOURNAL_DIR="$JOURNAL_DIR"
     
     # Start dbus-daemon
     export DBUS_SESSION_BUS_ADDRESS="unix:path=$TMPDIR/bus.sock"
