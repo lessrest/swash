@@ -27,6 +27,7 @@ type FakeSystemd struct {
 	units     map[UnitName]*Unit
 	commands  map[string]FakeCommand // command name -> handler
 	processes map[UnitName]*fakeProcess
+	journal   *FakeJournal // Optional: for writing systemd-style exit events
 }
 
 // NewFakeSystemd creates a new FakeSystemd with empty state.
@@ -36,6 +37,14 @@ func NewFakeSystemd() *FakeSystemd {
 		commands:  make(map[string]FakeCommand),
 		processes: make(map[UnitName]*fakeProcess),
 	}
+}
+
+// NewTestFakes creates a connected FakeSystemd and FakeJournal for testing.
+func NewTestFakes() (*FakeSystemd, *FakeJournal) {
+	systemd := NewFakeSystemd()
+	journal := NewFakeJournal()
+	systemd.journal = journal
+	return systemd, journal
 }
 
 // RegisterCommand registers a fake command implementation.
@@ -237,8 +246,7 @@ func (f *FakeSystemd) StartTransient(ctx context.Context, spec TransientSpec) er
 
 		// Update unit state
 		f.mu.Lock()
-		defer f.mu.Unlock()
-
+		journal := f.journal
 		if unit, ok := f.units[spec.Unit]; ok {
 			unit.ExitStatus = int32(exitCode)
 			if procCtx.Err() != nil {
@@ -251,6 +259,19 @@ func (f *FakeSystemd) StartTransient(ctx context.Context, spec TransientSpec) er
 			}
 		}
 		delete(f.processes, spec.Unit)
+		f.mu.Unlock()
+
+		// Write systemd-style exit event to journal (like real systemd does)
+		if journal != nil {
+			journal.AddEntry(JournalEntry{
+				Message: fmt.Sprintf("%s: Main process exited, code=exited, status=%d", spec.Unit, exitCode),
+				Fields: map[string]string{
+					"USER_UNIT":   spec.Unit.String(),
+					"EXIT_STATUS": fmt.Sprintf("%d", exitCode),
+					"EXIT_CODE":   "exited",
+				},
+			})
+		}
 	}()
 
 	return nil
@@ -273,6 +294,33 @@ func (f *FakeSystemd) WaitUnit(ctx context.Context, name UnitName) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+// WaitUnitExit waits for a unit to exit and returns its exit code.
+func (f *FakeSystemd) WaitUnitExit(ctx context.Context, name UnitName) (int, error) {
+	f.mu.RLock()
+	proc := f.processes[name]
+	f.mu.RUnlock()
+
+	if proc != nil {
+		// Wait for process to finish
+		select {
+		case <-proc.done:
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+
+	// Get exit status from unit
+	f.mu.RLock()
+	unit, ok := f.units[name]
+	f.mu.RUnlock()
+
+	if !ok {
+		return 0, fmt.Errorf("unit %s not found", name)
+	}
+
+	return int(unit.ExitStatus), nil
 }
 
 // Close releases resources and kills all running processes.

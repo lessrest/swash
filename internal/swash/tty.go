@@ -188,12 +188,19 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 		openPTY = OpenRealPTY
 	}
 
+	// Merge session ID into tags so output lines can be filtered
+	tags := make(map[string]string)
+	for k, v := range cfg.Tags {
+		tags[k] = v
+	}
+	tags[FieldSession] = cfg.SessionID
+
 	h := &TTYHost{
 		sessionID:     cfg.SessionID,
 		command:       cfg.Command,
 		rows:          rows,
 		cols:          cols,
-		tags:          cfg.Tags,
+		tags:          tags,
 		systemd:       cfg.Systemd,
 		journal:       cfg.Journal,
 		maxScrollback: 10000,
@@ -409,7 +416,7 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		Description: strings.Join(h.command, " "),
 		Environment: env,
 		Command:     h.command,
-		Collect:     true,
+		Collect:     false, // Keep unit around long enough to query exit status
 		Stdin:       &slaveFd,
 		Stdout:      &slaveFd,
 		Stderr:      &slaveFd,
@@ -431,6 +438,17 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 	h.mu.Unlock()
 
 	doneChan := make(chan struct{})
+	exitCodeChan := make(chan int, 1)
+
+	// Watch for unit exit via D-Bus
+	go func() {
+		exitCode, err := h.systemd.WaitUnitExit(ctx, TaskUnit(h.sessionID))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: failed to wait for unit exit: %v\n", err)
+			os.Exit(1)
+		}
+		exitCodeChan <- exitCode
+	}()
 
 	// Read from PTY master and feed to vterm
 	go func() {
@@ -449,15 +467,11 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 			}
 		}
 
-		// Get exit status from unit
-		var exitCode int
-		unit, err := h.systemd.GetUnit(ctx, TaskUnit(h.sessionID))
-		if err == nil {
-			exitCode = int(unit.ExitStatus)
-			h.mu.Lock()
-			h.exitCode = &exitCode
-			h.mu.Unlock()
-		}
+		// Get exit code from D-Bus watcher
+		exitCode := <-exitCodeChan
+		h.mu.Lock()
+		h.exitCode = &exitCode
+		h.mu.Unlock()
 
 		// Persist final screen state to journal (with ANSI codes for colors)
 		if h.vt != nil && h.journal != nil {
@@ -466,13 +480,13 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 			rows, cols := h.rows, h.cols
 			h.mu.Unlock()
 			if err := EmitScreen(h.journal, h.sessionID, screenANSI, rows, cols); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to emit screen: %v\n", err)
+				fmt.Fprintf(os.Stderr, "error: failed to emit screen: %v\n", err)
 			}
 		}
 
 		// Emit lifecycle event
 		if err := EmitExited(h.journal, h.sessionID, exitCode, h.command); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to emit exited event: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
 		}
 
 		h.mu.Lock()

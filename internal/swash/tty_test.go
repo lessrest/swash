@@ -10,8 +10,7 @@ import (
 )
 
 func TestTTYHost_NewTTYHost(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
@@ -40,8 +39,7 @@ func TestTTYHost_NewTTYHost(t *testing.T) {
 }
 
 func TestTTYHost_SessionID(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "ABC123",
@@ -63,8 +61,7 @@ func TestTTYHost_SessionID(t *testing.T) {
 }
 
 func TestTTYHost_DefaultSize(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	// Test with zero values - should default to 24x80
 	host := NewTTYHost(TTYHostConfig{
@@ -91,8 +88,7 @@ func TestTTYHost_DefaultSize(t *testing.T) {
 }
 
 func TestTTYHost_GetScreenText(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
@@ -118,8 +114,7 @@ func TestTTYHost_GetScreenText(t *testing.T) {
 }
 
 func TestTTYHost_GetScreenANSI(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
@@ -149,8 +144,7 @@ func TestTTYHost_GetScreenANSI(t *testing.T) {
 }
 
 func TestTTYHost_GetCursor(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
@@ -184,8 +178,7 @@ func TestTTYHost_GetCursor(t *testing.T) {
 }
 
 func TestTTYHost_Resize(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
@@ -221,8 +214,7 @@ func TestTTYHost_Resize(t *testing.T) {
 }
 
 func TestTTYHost_GetTitle(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
@@ -256,8 +248,7 @@ func TestTTYHost_GetTitle(t *testing.T) {
 }
 
 func TestTTYHost_GetMode(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
@@ -302,8 +293,7 @@ func TestTTYHost_GetMode(t *testing.T) {
 }
 
 func TestTTYHost_GetScrollback(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
@@ -333,8 +323,7 @@ func TestTTYHost_GetScrollback(t *testing.T) {
 }
 
 func TestTTYHost_SendInput_NoProcess(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
@@ -354,8 +343,7 @@ func TestTTYHost_SendInput_NoProcess(t *testing.T) {
 }
 
 func TestTTYHost_RunTask_WithFakePTY(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	// Register a simple echo command
 	systemd.RegisterCommand("echo", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
@@ -426,8 +414,7 @@ func TestTTYHost_RunTask_WithFakePTY(t *testing.T) {
 }
 
 func TestTTYHost_RunTask_ColoredOutput(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	// Register a command that outputs ANSI colors
 	systemd.RegisterCommand("colortest", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
@@ -466,8 +453,7 @@ func TestTTYHost_RunTask_ColoredOutput(t *testing.T) {
 }
 
 func TestTTYHost_RunTask_Scrollback(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	// Register a command that outputs many lines
 	systemd.RegisterCommand("manylines", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
@@ -514,8 +500,7 @@ func TestTTYHost_RunTask_Scrollback(t *testing.T) {
 }
 
 func TestTTYHost_RunTask_Cancel(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	started := make(chan struct{})
 
@@ -571,8 +556,7 @@ func TestTTYHost_RunTask_Cancel(t *testing.T) {
 }
 
 func TestTTYHost_RunTask_SendInput(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	ready := make(chan struct{})
 	gotInput := make(chan string, 1)

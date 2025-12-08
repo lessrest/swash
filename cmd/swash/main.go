@@ -17,7 +17,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mbrock/swash/internal/swash"
@@ -26,11 +28,12 @@ import (
 
 // Global flags
 var (
-	protocolFlag string
-	tagFlags     []string
-	ttyFlag      bool
-	rowsFlag     int
-	colsFlag     int
+	protocolFlag    string
+	tagFlags        []string
+	ttyFlag         bool
+	rowsFlag        int
+	colsFlag        int
+	detachAfterFlag time.Duration
 )
 
 // Global runtime (initialized for commands that need it)
@@ -50,13 +53,15 @@ func main() {
 	flag.BoolVar(&ttyFlag, "tty", false, "Use PTY mode with terminal emulation")
 	flag.IntVar(&rowsFlag, "rows", 24, "Terminal rows (for --tty mode)")
 	flag.IntVar(&colsFlag, "cols", 80, "Terminal columns (for --tty mode)")
+	flag.DurationVarP(&detachAfterFlag, "detach-after", "d", 3*time.Second, "Detach after duration (0 = immediate)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `swash - Interactive process sessions over D-Bus
 
 Usage:
   swash                              Show running sessions
-  swash run [flags] -- <command>     Run command in new session
+  swash run [flags] -- <command>     Run command, wait for completion or detach
+  swash start [flags] -- <command>   Start command in background (same as run -d0)
   swash stop <session_id>            Stop session
   swash poll <session_id>            Get recent output
   swash follow <session_id>          Follow output until exit
@@ -86,7 +91,12 @@ Flags:
 		if len(cmdArgs) == 0 {
 			fatal("usage: swash run <command>")
 		}
-		cmdRun(cmdArgs)
+		cmdRun(cmdArgs, detachAfterFlag)
+	case "start":
+		if len(cmdArgs) == 0 {
+			fatal("usage: swash start <command>")
+		}
+		cmdRun(cmdArgs, 0) // immediate detach
 	case "stop":
 		if len(cmdArgs) == 0 {
 			fatal("usage: swash stop <session_id>")
@@ -213,7 +223,7 @@ func cmdStatus() {
 	}
 }
 
-func cmdRun(command []string) {
+func cmdRun(command []string, detachAfter time.Duration) {
 	initRuntime()
 	defer rt.Close()
 
@@ -232,7 +242,44 @@ func cmdRun(command []string) {
 	if err != nil {
 		fatal("starting session: %v", err)
 	}
-	fmt.Printf("%s started\n", sessionID)
+
+	// Immediate detach mode (detachAfter == 0)
+	if detachAfter == 0 {
+		fmt.Printf("%s started\n", sessionID)
+		return
+	}
+
+	// Set up signal handling to kill the process on Ctrl+C
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigCh
+		// User pressed Ctrl+C - kill the background process
+		if err := rt.KillSession(sessionID); err != nil {
+			fmt.Fprintf(os.Stderr, "swash: failed to kill session: %v\n", err)
+		}
+		cancel()
+	}()
+
+	// Follow with timeout
+	exitCode, result := rt.FollowSession(ctx, sessionID, detachAfter)
+
+	switch result {
+	case swash.FollowCompleted:
+		os.Exit(exitCode)
+	case swash.FollowTimedOut:
+		fmt.Fprintf(os.Stderr, "swash: still running after %s, detaching\n", detachAfter)
+		fmt.Fprintf(os.Stderr, "swash: session ID: %s\n", sessionID)
+		fmt.Fprintf(os.Stderr, "swash: swash follow %s\n", sessionID)
+		os.Exit(1)
+	case swash.FollowCancelled:
+		fmt.Fprintf(os.Stderr, "swash: cancelled, killed session %s\n", sessionID)
+		os.Exit(130) // Standard exit code for SIGINT
+	}
 }
 
 // parseTags converts ["KEY=VALUE", ...] to map[string]string
@@ -273,9 +320,11 @@ func cmdFollow(sessionID string) {
 	initRuntime()
 	defer rt.Close()
 
-	if err := rt.FollowSession(context.Background(), sessionID); err != nil {
-		fatal("following: %v", err)
+	exitCode, result := rt.FollowSession(context.Background(), sessionID, 0)
+	if result == swash.FollowCancelled {
+		os.Exit(130)
 	}
+	os.Exit(exitCode)
 }
 
 func cmdSend(sessionID, input string) {

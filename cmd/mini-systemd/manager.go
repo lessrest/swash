@@ -52,6 +52,105 @@ type Manager struct {
 	jobID   uint32
 }
 
+// UnitObject wraps a Unit for D-Bus export with Properties interface.
+type UnitObject struct {
+	manager *Manager
+	name    string
+}
+
+// Get implements org.freedesktop.DBus.Properties.Get
+func (u *UnitObject) Get(iface, prop string) (dbus.Variant, *dbus.Error) {
+	u.manager.mu.RLock()
+	unit, ok := u.manager.units[u.name]
+	u.manager.mu.RUnlock()
+
+	if !ok {
+		return dbus.Variant{}, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
+	}
+
+	switch iface {
+	case "org.freedesktop.systemd1.Unit":
+		switch prop {
+		case "Id":
+			return dbus.MakeVariant(u.name), nil
+		case "Description":
+			return dbus.MakeVariant(unit.Description), nil
+		case "ActiveState":
+			state := "active"
+			if unit.State == "exited" {
+				state = "inactive"
+			} else if unit.State == "failed" {
+				state = "failed"
+			}
+			return dbus.MakeVariant(state), nil
+		case "ActiveEnterTimestamp":
+			return dbus.MakeVariant(uint64(unit.StartedAt.UnixMicro())), nil
+		}
+	case "org.freedesktop.systemd1.Service":
+		switch prop {
+		case "MainPID":
+			return dbus.MakeVariant(uint32(unit.PID)), nil
+		case "WorkingDirectory":
+			return dbus.MakeVariant(unit.WorkingDir), nil
+		case "ExecMainStatus":
+			return dbus.MakeVariant(int32(unit.ExitStatus)), nil
+		}
+	}
+
+	return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", []interface{}{prop})
+}
+
+// GetAll implements org.freedesktop.DBus.Properties.GetAll
+func (u *UnitObject) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
+	u.manager.mu.RLock()
+	unit, ok := u.manager.units[u.name]
+	u.manager.mu.RUnlock()
+
+	if !ok {
+		return nil, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
+	}
+
+	switch iface {
+	case "org.freedesktop.systemd1.Unit":
+		state := "active"
+		if unit.State == "exited" {
+			state = "inactive"
+		} else if unit.State == "failed" {
+			state = "failed"
+		}
+		return map[string]dbus.Variant{
+			"Id":                   dbus.MakeVariant(u.name),
+			"Description":          dbus.MakeVariant(unit.Description),
+			"ActiveState":          dbus.MakeVariant(state),
+			"ActiveEnterTimestamp": dbus.MakeVariant(uint64(unit.StartedAt.UnixMicro())),
+		}, nil
+	case "org.freedesktop.systemd1.Service":
+		return map[string]dbus.Variant{
+			"MainPID":          dbus.MakeVariant(uint32(unit.PID)),
+			"WorkingDirectory": dbus.MakeVariant(unit.WorkingDir),
+			"ExecMainStatus":   dbus.MakeVariant(int32(unit.ExitStatus)),
+		}, nil
+	}
+
+	return nil, dbus.NewError("org.freedesktop.DBus.Error.UnknownInterface", []interface{}{iface})
+}
+
+// Set implements org.freedesktop.DBus.Properties.Set (not supported)
+func (u *UnitObject) Set(iface, prop string, val dbus.Variant) *dbus.Error {
+	return dbus.NewError("org.freedesktop.DBus.Error.PropertyReadOnly", nil)
+}
+
+// Ref increments the reference count to prevent garbage collection.
+// In mini-systemd we don't actually GC units, so this is a no-op.
+func (u *UnitObject) Ref() *dbus.Error {
+	return nil
+}
+
+// Unref decrements the reference count.
+func (u *UnitObject) Unref() *dbus.Error {
+	return nil
+}
+
 // NewManager creates a new process manager
 func NewManager(conn *dbus.Conn, journal *JournalService) *Manager {
 	return &Manager{
@@ -63,12 +162,31 @@ func NewManager(conn *dbus.Conn, journal *JournalService) *Manager {
 
 // emitJobRemoved sends the JobRemoved signal that go-systemd waits for
 func (m *Manager) emitJobRemoved(jobID uint32, jobPath dbus.ObjectPath, unitName string, result string) {
-	signal := &dbus.Signal{
-		Path: "/org/freedesktop/systemd1",
-		Name: "org.freedesktop.systemd1.Manager.JobRemoved",
-		Body: []interface{}{jobID, jobPath, unitName, result},
+	m.conn.Emit("/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager.JobRemoved",
+		jobID, jobPath, unitName, result)
+}
+
+// emitPropertiesChanged sends the PropertiesChanged signal for a unit
+func (m *Manager) emitPropertiesChanged(unitName string, changedProps map[string]dbus.Variant) {
+	unitPath := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/systemd1/unit/%s", escapeUnitNameForPath(unitName)))
+	m.conn.Emit(unitPath, "org.freedesktop.DBus.Properties.PropertiesChanged",
+		"org.freedesktop.systemd1.Unit", changedProps, []string{})
+}
+
+// escapeUnitNameForPath escapes a unit name for use in D-Bus object paths
+func escapeUnitNameForPath(name string) string {
+	var result []byte
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			result = append(result, c)
+		} else {
+			result = append(result, '_')
+			result = append(result, "0123456789abcdef"[c>>4])
+			result = append(result, "0123456789abcdef"[c&0xf])
+		}
 	}
-	m.conn.Emit(signal.Path, signal.Name, signal.Body...)
+	return string(result)
 }
 
 // Property matches systemd's D-Bus property type (sv)
@@ -212,6 +330,12 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 	unit.StartedAt = time.Now()
 
 	m.units[name] = unit
+
+	// Export the unit object on D-Bus for Properties and Unit interfaces
+	unitPath := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/systemd1/unit/%s", escapeUnitNameForPath(name)))
+	unitObj := &UnitObject{manager: m, name: name}
+	m.conn.Export(unitObj, unitPath, "org.freedesktop.DBus.Properties")
+	m.conn.Export(unitObj, unitPath, "org.freedesktop.systemd1.Unit")
 
 	// Capture output in background (only for pipes we created)
 	if stdoutPipe != nil {
@@ -462,19 +586,27 @@ func (m *Manager) waitForExit(unitName string) {
 	err := unit.Cmd.Wait()
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	var activeState string
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			unit.ExitStatus = exitErr.ExitCode()
 			unit.State = "failed"
+			activeState = "failed"
 		} else {
 			unit.State = "failed"
+			activeState = "failed"
 		}
 	} else {
 		unit.ExitStatus = 0
 		unit.State = "exited"
+		activeState = "inactive"
 	}
+	m.mu.Unlock()
+
+	// Emit PropertiesChanged signal so watchers know the unit exited
+	m.emitPropertiesChanged(unitName, map[string]dbus.Variant{
+		"ActiveState": dbus.MakeVariant(activeState),
+	})
 }
 
 // reapChildren handles SIGCHLD to prevent zombies

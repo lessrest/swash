@@ -43,11 +43,18 @@ type HostConfig struct {
 
 // NewHost creates a new Host with the given configuration.
 func NewHost(cfg HostConfig) *Host {
+	// Merge session ID into tags so output lines can be filtered
+	tags := make(map[string]string)
+	for k, v := range cfg.Tags {
+		tags[k] = v
+	}
+	tags[FieldSession] = cfg.SessionID
+
 	return &Host{
 		sessionID: cfg.SessionID,
 		command:   cfg.Command,
 		protocol:  cfg.Protocol,
-		tags:      cfg.Tags,
+		tags:      tags,
 		systemd:   cfg.Systemd,
 		journal:   cfg.Journal,
 	}
@@ -206,7 +213,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		Description: strings.Join(srv.command, " "),
 		Environment: env,
 		Command:     srv.command,
-		Collect:     true,
+		Collect:     false, // Keep unit around long enough to query exit status
 		Stdin:       &stdinFd,
 		Stdout:      &stdoutFd,
 		Stderr:      &stderrFd,
@@ -253,24 +260,25 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		stderrRead.Close()
 	}()
 
-	// Wait for pipes to close (unit exited) and get exit status
+	// Watch for unit exit via D-Bus
 	go func() {
+		// Wait for systemd unit to exit
+		exitCode, err := srv.systemd.WaitUnitExit(ctx, TaskUnit(srv.sessionID))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: failed to wait for unit exit: %v\n", err)
+			os.Exit(1)
+		}
+
+		// Wait for pipes to ensure all output is captured
 		wg.Wait()
 
-		// Get exit status from unit
-		var exitCode int
-		ctx := context.Background()
-		unit, err := srv.systemd.GetUnit(ctx, TaskUnit(srv.sessionID))
-		if err == nil {
-			exitCode = int(unit.ExitStatus)
-			srv.mu.Lock()
-			srv.exitCode = &exitCode
-			srv.mu.Unlock()
-		}
+		srv.mu.Lock()
+		srv.exitCode = &exitCode
+		srv.mu.Unlock()
 
 		// Emit lifecycle event
 		if err := EmitExited(srv.journal, srv.sessionID, exitCode, srv.command); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to emit exited event: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
 		}
 
 		srv.mu.Lock()

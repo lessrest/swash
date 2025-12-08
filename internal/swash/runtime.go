@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Runtime holds the dependencies for swash operations.
@@ -215,15 +216,39 @@ func (r *Runtime) PollSessionOutput(sessionID, cursor string) ([]Event, string, 
 	return events, newCursor, nil
 }
 
-// FollowSession follows a session's output until it exits.
-// Prints output to stdout and returns when the session emits an exited event.
-func (r *Runtime) FollowSession(ctx context.Context, sessionID string) error {
+// FollowResult indicates how FollowSession completed.
+type FollowResult int
+
+const (
+	// FollowCompleted means the session exited within the timeout.
+	FollowCompleted FollowResult = iota
+	// FollowTimedOut means the timeout expired while session was still running.
+	FollowTimedOut
+	// FollowCancelled means the context was cancelled (e.g., Ctrl+C).
+	FollowCancelled
+)
+
+// FollowSession follows a session's output until it exits or timeout.
+// If timeout is 0, waits indefinitely.
+// Returns (exitCode, result). exitCode is only valid when result is FollowCompleted.
+func (r *Runtime) FollowSession(ctx context.Context, sessionID string, timeout time.Duration) (int, FollowResult) {
 	matches := []JournalMatch{MatchSession(sessionID)}
+
+	// Create a timeout context if timeout > 0
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 
 	for e := range r.Journal.Follow(ctx, matches) {
 		// Check for exit event
 		if e.Fields[FieldEvent] == EventExited {
-			return nil // Done, session exited
+			exitCode := 0
+			if codeStr := e.Fields[FieldExitCode]; codeStr != "" {
+				exitCode, _ = strconv.Atoi(codeStr)
+			}
+			return exitCode, FollowCompleted
 		}
 
 		// Print output (entries with FD field)
@@ -232,7 +257,11 @@ func (r *Runtime) FollowSession(ctx context.Context, sessionID string) error {
 		}
 	}
 
-	return ctx.Err() // Only reach here if context was cancelled
+	// Context was cancelled - distinguish timeout from explicit cancel
+	if ctx.Err() == context.DeadlineExceeded {
+		return 0, FollowTimedOut
+	}
+	return 0, FollowCancelled
 }
 
 // ListHistory returns recently exited sessions by querying lifecycle events.

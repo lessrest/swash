@@ -1,25 +1,28 @@
 #!/bin/bash
-# Integration tests for swash with mini-systemd
+# Integration tests for swash
 #
 # Usage:
-#   ./test/integration.sh                    # Run all tests with mini-systemd
-#   ./test/integration.sh --real             # Run with real systemd (no mini-systemd)
-#   ./test/integration.sh --timeout 1        # Set follow timeout (default: 5)
-#   ./test/integration.sh test_tty_mode_output  # Run single test
-#   ./test/integration.sh --real --timeout 1 test_tty_mode_output
+#   ./test/integration.sh                    # Run with real systemd, then mini-systemd
+#   ./test/integration.sh --real             # Run with real systemd only
+#   ./test/integration.sh --mini             # Run with mini-systemd only
+#   ./test/integration.sh test_tty_mode_output  # Run single test (both modes)
 
 set -e
 
 cd "$(dirname "$0")/.."
 
 # Parse arguments
-USE_REAL_SYSTEMD=false
+MODE="both"  # both, real, mini
 SINGLE_TEST=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --real)
-            USE_REAL_SYSTEMD=true
+            MODE="real"
+            shift
+            ;;
+        --mini)
+            MODE="mini"
             shift
             ;;
         test_*)
@@ -32,6 +35,39 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# If mode is "both", recursively run with --real then --mini
+if [ "$MODE" = "both" ]; then
+    echo "========================================"
+    echo "  Running with REAL systemd"
+    echo "========================================"
+    echo
+    if [ -n "$SINGLE_TEST" ]; then
+        "$0" --real "$SINGLE_TEST"
+    else
+        "$0" --real
+    fi
+    
+    echo
+    echo "========================================"
+    echo "  Running with mini-systemd"
+    echo "========================================"
+    echo
+    if [ -n "$SINGLE_TEST" ]; then
+        "$0" --mini "$SINGLE_TEST"
+    else
+        "$0" --mini
+    fi
+    
+    echo
+    echo "========================================"
+    echo "  All tests passed in both modes!"
+    echo "========================================"
+    exit 0
+fi
+
+USE_REAL_SYSTEMD=false
+[ "$MODE" = "real" ] && USE_REAL_SYSTEMD=true
 
 # Setup temp directory and cleanup trap
 TMPDIR=$(mktemp -d)
@@ -149,20 +185,22 @@ test_journal_write() {
 }
 
 test_swash_run() {
+    # Test that swash run works (with immediate detach to get session ID)
     local out
-    out=$(swash run echo "hello from test" 2>&1)
+    out=$(swash start echo "hello from test" 2>&1)
     if echo "$out" | grep -q "started"; then
         local session_id
         session_id=$(echo "$out" | awk '{print $1}')
-        pass "swash run started session $session_id"
+        pass "swash start started session $session_id"
     else
-        fail "swash run did not report 'started'" "$out"
+        fail "swash start did not report 'started'" "$out"
     fi
 }
 
 test_task_output_capture() {
+    # Use start to get session ID, then follow to wait
     local out session_id
-    out=$(swash run echo "UNIQUE_OUTPUT_12345" 2>&1)
+    out=$(swash start echo "UNIQUE_OUTPUT_12345" 2>&1)
     session_id=$(echo "$out" | awk '{print $1}')
     echo "  session: $session_id"
 
@@ -191,7 +229,7 @@ SCRIPT
     chmod +x "$script"
 
     local out session_id
-    out=$(swash run "$script" 2>&1)
+    out=$(swash start "$script" 2>&1)
     session_id=$(echo "$out" | awk '{print $1}')
     echo "  session: $session_id"
     timeout 2 swash follow "$session_id" >/dev/null 2>&1 || true
@@ -214,9 +252,9 @@ SCRIPT
 }
 
 test_tty_mode_output() {
-    # Test that TTY mode captures output
+    # Test that TTY mode captures output (use start to get session ID)
     local out session_id
-    out=$(swash run --tty echo "TTY_OUTPUT_TEST" 2>&1)
+    out=$(swash start --tty echo "TTY_OUTPUT_TEST" 2>&1)
     if echo "$out" | grep -q "started"; then
         session_id=$(echo "$out" | awk '{print $1}')
         echo "  session: $session_id"
@@ -247,7 +285,7 @@ SCRIPT
     chmod +x "$script"
 
     local out session_id
-    out=$(swash run --tty "$script" 2>&1)
+    out=$(swash start --tty "$script" 2>&1)
     session_id=$(echo "$out" | awk '{print $1}')
     echo "  session: $session_id"
     if ! timeout 2 swash follow "$session_id" 2>&1; then
@@ -274,7 +312,7 @@ SCRIPT
 test_tty_screen_event() {
     # Test that screen state is captured on exit
     local out session_id
-    out=$(swash run --tty --rows 5 --cols 40 echo "SCREEN_CAPTURE_TEST" 2>&1)
+    out=$(swash start --tty --rows 5 --cols 40 echo "SCREEN_CAPTURE_TEST" 2>&1)
     session_id=$(echo "$out" | awk '{print $1}')
     echo "  session: $session_id"
     if ! timeout 2 swash follow "$session_id" 2>&1; then
@@ -289,6 +327,79 @@ test_tty_screen_event() {
         pass "TTY screen state captured on exit"
     else
         fail "screen event not found or missing content" "$journal_out"
+    fi
+}
+
+test_run_inline_output() {
+    # Test that 'swash run' shows output inline for quick commands
+    local out exit_code
+    out=$(swash run echo "INLINE_TEST_OUTPUT" 2>&1)
+    exit_code=$?
+
+    if echo "$out" | grep -q "INLINE_TEST_OUTPUT"; then
+        if [ $exit_code -eq 0 ]; then
+            pass "run shows inline output and exits with command exit code"
+        else
+            fail "run exited with $exit_code instead of 0" "$out"
+        fi
+    else
+        fail "run did not show inline output" "$out"
+    fi
+}
+
+test_run_exit_code() {
+    # Test that 'swash run' returns the command's exit code
+    local exit_code
+    swash run -- sh -c "exit 42" >/dev/null 2>&1 || exit_code=$?
+    
+    if [ "$exit_code" -eq 42 ]; then
+        pass "run returns command exit code"
+    else
+        fail "run returned $exit_code instead of 42"
+    fi
+}
+
+test_run_timeout_detach() {
+    # Test that 'swash run' detaches after timeout
+    local out exit_code
+    out=$(swash run -d 1s sleep 10 2>&1) || exit_code=$?
+
+    if [ $exit_code -ne 0 ] && echo "$out" | grep -q "still running"; then
+        if echo "$out" | grep -q "session ID:"; then
+            # Clean up the sleeping process
+            local session_id
+            session_id=$(echo "$out" | grep "session ID:" | awk '{print $3}')
+            swash kill "$session_id" >/dev/null 2>&1 || true
+            pass "run detaches after timeout with helpful message"
+        else
+            fail "run timeout message missing session ID" "$out"
+        fi
+    else
+        fail "run did not timeout/detach correctly (exit=$exit_code)" "$out"
+    fi
+}
+
+test_start_immediate() {
+    # Test that 'swash start' returns immediately without output
+    local start_time end_time elapsed out
+    start_time=$(date +%s.%N)
+    out=$(swash start sleep 10 2>&1)
+    end_time=$(date +%s.%N)
+    elapsed=$(echo "$end_time - $start_time" | bc)
+    
+    # Should complete in under 1 second (definitely not 10)
+    if echo "$elapsed < 1" | bc -l | grep -q 1; then
+        if echo "$out" | grep -q "started"; then
+            # Clean up
+            local session_id
+            session_id=$(echo "$out" | awk '{print $1}')
+            swash kill "$session_id" >/dev/null 2>&1 || true
+            pass "start returns immediately"
+        else
+            fail "start did not report started" "$out"
+        fi
+    else
+        fail "start took ${elapsed}s (should be <1s)" "$out"
     fi
 }
 
@@ -310,6 +421,15 @@ else
     run_test test_swash_run
     run_test test_task_output_capture
     run_test test_newline_splitting
+
+    echo
+    echo "=== Run/Start Tests ==="
+    echo
+
+    run_test test_run_inline_output
+    run_test test_run_exit_code
+    run_test test_run_timeout_detach
+    run_test test_start_immediate
 
     echo
     echo "=== TTY Mode Tests ==="

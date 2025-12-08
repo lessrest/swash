@@ -12,9 +12,7 @@ import (
 func runTestTask(t *testing.T, cmd FakeCommand, protocol Protocol) (*FakeJournal, *FakeSystemd) {
 	t.Helper()
 
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
-
+	systemd, journal := NewTestFakes()
 	systemd.RegisterCommand("test-cmd", cmd)
 
 	host := NewHost(HostConfig{
@@ -164,8 +162,7 @@ func TestHost_LifecycleEvents(t *testing.T) {
 }
 
 func TestHost_SendInput(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	// Command that reads from stdin and echoes to stdout
 	inputReceived := make(chan string, 1)
@@ -232,8 +229,7 @@ func TestHost_SendInput(t *testing.T) {
 }
 
 func TestHost_SendInput_NoProcess(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	host := NewHost(HostConfig{
 		SessionID: "TEST01",
@@ -251,8 +247,7 @@ func TestHost_SendInput_NoProcess(t *testing.T) {
 }
 
 func TestHost_Kill(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	// Command that blocks until context is cancelled
 	host, done := startTestTask(t, systemd, journal, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
@@ -284,8 +279,7 @@ func TestHost_Kill(t *testing.T) {
 }
 
 func TestHost_Gist(t *testing.T) {
-	systemd := NewFakeSystemd()
-	journal := NewFakeJournal()
+	systemd, journal := NewTestFakes()
 
 	// Command that blocks until context is cancelled
 	blocked := make(chan struct{})

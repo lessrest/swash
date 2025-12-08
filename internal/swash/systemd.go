@@ -27,6 +27,9 @@ type Systemd interface {
 	// StartTransient creates and starts a transient unit via D-Bus API.
 	StartTransient(ctx context.Context, spec TransientSpec) error
 
+	// WaitUnitExit waits for a unit to exit and returns its exit code.
+	WaitUnitExit(ctx context.Context, name UnitName) (int, error)
+
 	// Close releases the D-Bus connection.
 	Close() error
 }
@@ -146,6 +149,110 @@ func (s *systemdConn) StopUnit(ctx context.Context, name UnitName) error {
 func (s *systemdConn) KillUnit(ctx context.Context, name UnitName, signal syscall.Signal) error {
 	s.conn.KillUnitWithTarget(ctx, name.String(), dbus.All, int32(signal))
 	return nil
+}
+
+// WaitUnitExit waits for a unit to exit and returns its exit code.
+// Uses D-Bus PropertiesChanged signals to detect when ActiveState becomes inactive/failed.
+// Calls Ref/Unref on the unit to prevent systemd from garbage collecting it before we can read the exit status.
+func (s *systemdConn) WaitUnitExit(ctx context.Context, name UnitName) (int, error) {
+	// Connect to session bus for signal watching
+	sigConn, err := godbus.ConnectSessionBus()
+	if err != nil {
+		return 0, fmt.Errorf("connecting to session bus: %w", err)
+	}
+	defer sigConn.Close()
+
+	unitPath := godbus.ObjectPath("/org/freedesktop/systemd1/unit/" + escapeUnitName(name.String()))
+	unitObj := sigConn.Object("org.freedesktop.systemd1", unitPath)
+
+	// Ref the unit to prevent garbage collection
+	if err := unitObj.Call("org.freedesktop.systemd1.Unit.Ref", 0).Err; err != nil {
+		return 0, fmt.Errorf("ref unit: %w", err)
+	}
+	defer unitObj.Call("org.freedesktop.systemd1.Unit.Unref", 0)
+
+	// Subscribe to PropertiesChanged signals for this unit
+	matchRule := fmt.Sprintf(
+		"type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='%s'",
+		unitPath,
+	)
+	if err := sigConn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, matchRule).Err; err != nil {
+		return 0, fmt.Errorf("adding match rule: %w", err)
+	}
+	defer sigConn.BusObject().Call("org.freedesktop.DBus.RemoveMatch", 0, matchRule)
+
+	// Create signal channel
+	sigChan := make(chan *godbus.Signal, 10)
+	sigConn.Signal(sigChan)
+	defer sigConn.RemoveSignal(sigChan)
+
+	// Check if already exited by querying unit properties
+	unit, err := s.GetUnit(ctx, name)
+	if err != nil {
+		return 0, fmt.Errorf("getting unit: %w", err)
+	}
+	if unit.State == UnitStateInactive || unit.State == UnitStateFailed {
+		return int(unit.ExitStatus), nil
+	}
+
+	// Watch for state changes
+	for {
+		select {
+		case sig := <-sigChan:
+			if sig.Path != unitPath {
+				continue
+			}
+			if sig.Name != "org.freedesktop.DBus.Properties.PropertiesChanged" {
+				continue
+			}
+			// Signal body: (interface_name, changed_properties, invalidated_properties)
+			if len(sig.Body) < 2 {
+				continue
+			}
+			changedProps, ok := sig.Body[1].(map[string]godbus.Variant)
+			if !ok {
+				continue
+			}
+			if stateVar, ok := changedProps["ActiveState"]; ok {
+				if state, ok := stateVar.Value().(string); ok {
+					if state == "inactive" || state == "failed" {
+						return s.getExitStatus(ctx, name)
+					}
+				}
+			}
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+}
+
+// escapeUnitName escapes a unit name for use in D-Bus object paths.
+// Systemd escapes non-alphanumeric characters as _XX where XX is the hex code.
+func escapeUnitName(name string) string {
+	var result []byte
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			result = append(result, c)
+		} else {
+			result = append(result, '_')
+			result = append(result, "0123456789abcdef"[c>>4])
+			result = append(result, "0123456789abcdef"[c&0xf])
+		}
+	}
+	return string(result)
+}
+
+// getExitStatus queries ExecMainStatus from the unit's service properties.
+func (s *systemdConn) getExitStatus(ctx context.Context, name UnitName) (int, error) {
+	props, err := s.conn.GetUnitTypePropertiesContext(ctx, name.String(), "Service")
+	if err != nil {
+		return 0, fmt.Errorf("getting service properties: %w", err)
+	}
+	if exitStatus, ok := props["ExecMainStatus"].(int32); ok {
+		return int(exitStatus), nil
+	}
+	return 0, fmt.Errorf("ExecMainStatus not found")
 }
 
 // StartTransient creates and starts a transient unit via D-Bus API.
