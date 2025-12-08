@@ -158,6 +158,10 @@ type TTYClient interface {
 	// Attach connects to the TTY session for interactive use.
 	// Returns output/input file descriptors, current size, and screen snapshot.
 	Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error)
+
+	// AttachWithSize connects to the TTY session with the client's terminal size.
+	// Returns output/input file descriptors, current size, and screen snapshot.
+	AttachWithSize(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error)
 }
 
 // ttyClient implements TTYClient via D-Bus.
@@ -227,6 +231,14 @@ func (c *ttyClient) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, s
 	err = c.obj.Call(DBusNamePrefix+".Attach", 0).Store(&outputFD, &inputFD, &rows, &cols, &screenANSI)
 	if err != nil {
 		return 0, 0, 0, 0, "", fmt.Errorf("calling Attach: %w", err)
+	}
+	return outputFD, inputFD, rows, cols, screenANSI, nil
+}
+
+func (c *ttyClient) AttachWithSize(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error) {
+	err = c.obj.Call(DBusNamePrefix+".AttachWithSize", 0, clientRows, clientCols).Store(&outputFD, &inputFD, &rows, &cols, &screenANSI)
+	if err != nil {
+		return 0, 0, 0, 0, "", fmt.Errorf("calling AttachWithSize: %w", err)
 	}
 	return outputFD, inputFD, rows, cols, screenANSI, nil
 }

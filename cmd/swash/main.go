@@ -408,8 +408,19 @@ func cmdAttach(sessionID string) {
 	}
 	defer client.Close()
 
-	// Call Attach to get fds and screen snapshot
-	outputFD, inputFD, _, _, screenANSI, err := client.Attach()
+	// Get terminal size
+	stdinFd := int(os.Stdin.Fd())
+	var clientRows, clientCols int32 = 24, 80 // defaults
+	if term.IsTerminal(stdinFd) {
+		width, height, err := term.GetSize(stdinFd)
+		if err == nil {
+			clientRows = int32(height)
+			clientCols = int32(width)
+		}
+	}
+
+	// Call AttachWithSize to get fds and screen snapshot
+	outputFD, inputFD, _, _, screenANSI, err := client.AttachWithSize(clientRows, clientCols)
 	if err != nil {
 		fatal("attaching to session: %v", err)
 	}
@@ -421,7 +432,6 @@ func cmdAttach(sessionID string) {
 	defer input.Close()
 
 	// Put terminal in raw mode (if we're connected to a terminal)
-	stdinFd := int(os.Stdin.Fd())
 	var oldState *term.State
 	if term.IsTerminal(stdinFd) {
 		oldState, err = term.MakeRaw(stdinFd)
