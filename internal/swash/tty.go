@@ -491,11 +491,33 @@ func (h *TTYHost) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, scr
 	return h.AttachWithSize(clientRows, clientCols)
 }
 
+// stripANSI removes ANSI escape sequences from a string for calculating visible length.
+func stripANSI(s string) string {
+	var result strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			// Skip until we find the end of the escape sequence (a letter)
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') {
+				inEscape = false
+			}
+			continue
+		}
+		result.WriteRune(r)
+	}
+	return result.String()
+}
+
 // renderScreenWithBorder renders the PTY screen with a border for clients with larger terminals.
 // The border includes session info and uses Unicode box-drawing characters.
 func (h *TTYHost) renderScreenWithBorder(client *attachedClient) string {
 	// Get the screen content
-	screenLines := strings.Split(h.vt.GetScreenANSI(), "\n")
+	screenANSI := h.vt.GetScreenANSI()
+	screenLines := strings.Split(screenANSI, "\n")
 	
 	// Calculate padding for centering
 	vertPad := (client.rows - h.rows - 2) / 2 // -2 for top and bottom border
@@ -528,15 +550,25 @@ func (h *TTYHost) renderScreenWithBorder(client *attachedClient) string {
 		sb.WriteString(strings.Repeat(" ", horzPad))
 		sb.WriteString("│")
 		if i < len(screenLines) {
-			// Strip any trailing whitespace and pad to exact width
 			line := screenLines[i]
-			// Remove ANSI sequences for length calculation
-			visibleLen := len(strings.ReplaceAll(strings.ReplaceAll(line, "\x1b", ""), "\n", ""))
-			if visibleLen > h.cols {
-				sb.WriteString(line[:h.cols])
-			} else {
+			// Calculate visible length (without ANSI codes)
+			visibleLen := len(stripANSI(line))
+			
+			// Pad or truncate as needed
+			if visibleLen < h.cols {
 				sb.WriteString(line)
 				sb.WriteString(strings.Repeat(" ", h.cols-visibleLen))
+			} else if visibleLen == h.cols {
+				sb.WriteString(line)
+			} else {
+				// Line is too long - we need to truncate while preserving ANSI codes
+				// For simplicity, just truncate at character boundary
+				// This is a complex problem, so we'll accept some imperfection
+				sb.WriteString(line)
+				if len(line) > h.cols {
+					// Simple truncation - may cut ANSI codes
+					sb.WriteString(line[:h.cols])
+				}
 			}
 		} else {
 			sb.WriteString(strings.Repeat(" ", h.cols))
