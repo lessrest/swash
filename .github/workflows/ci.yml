@@ -20,9 +20,6 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Install libvterm-dev
-        run: sudo apt-get update && sudo apt-get install -y libvterm-dev
-
       - name: Build
         run: make build
 
@@ -42,9 +39,6 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Install libvterm-dev
-        run: sudo apt-get update && sudo apt-get install -y libvterm-dev
-
       - name: Run unit tests
         run: make test-unit
 
@@ -58,9 +52,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-
-      - name: Install libvterm-dev
-        run: sudo apt-get update && sudo apt-get install -y libvterm-dev
 
       - name: Download binaries
         uses: actions/download-artifact@v4
@@ -83,9 +74,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-
-      - name: Install libvterm-dev
-        run: sudo apt-get update && sudo apt-get install -y libvterm-dev
 
       - name: Go vet
         # Note: pkg/vterm has a known false positive about cgo.Handle -> unsafe.Pointer
