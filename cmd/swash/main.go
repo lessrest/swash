@@ -91,6 +91,9 @@ Flags:
 		if len(cmdArgs) == 0 {
 			fatal("usage: swash run <command>")
 		}
+		if ttyFlag {
+			fatal("--tty is not supported with 'run'; use 'start --tty' instead")
+		}
 		cmdRun(cmdArgs, detachAfterFlag)
 	case "start":
 		if len(cmdArgs) == 0 {
