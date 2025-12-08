@@ -135,14 +135,24 @@ root privileges.
 ## Building
 
 ```bash
-go build ./cmd/swash/
+# Option 1: Use the build wrapper (sets CGO_CFLAGS automatically)
+./build.sh ./cmd/swash/...
+
+# Option 2: Use make
+make build
+
+# Option 3: Set CGO_CFLAGS manually
+CGO_CFLAGS="-I$(pwd)/cvendor" go build ./cmd/swash/
+
+# Run tests
 ./test/integration.sh           # runs against real systemd, then mini-systemd
 ./test/integration.sh --real    # runs against real systemd only
 ./test/integration.sh --mini    # runs against mini-systemd only
 ```
 
-You'll need Go 1.23+, a C compiler (for libvterm via cgo), and the systemd
-headers vendored in `cvendor/`.
+You'll need Go 1.23+, a C compiler (for libvterm via cgo). The systemd headers
+are vendored in `cvendor/`, so you don't need libsystemd-dev installed - just
+make sure to use `./build.sh` or `make` to set the include path correctly.
 
 ## Journal Integration
 
