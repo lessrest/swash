@@ -300,6 +300,21 @@ func (v *VTerm) GetScreenANSI() string {
 	return strings.Join(lines, "\r\n")
 }
 
+// RenderRowANSI returns a single row with ANSI escape sequences for colors/attributes.
+func (v *VTerm) RenderRowANSI(row int) string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	_, cols := v.getSizeUnsafe()
+	pos := C.VTermPos{row: C.int(row)}
+	return v.cellsToANSI(cols, func(col int) *C.VTermScreenCell {
+		pos.col = C.int(col)
+		var cell C.VTermScreenCell
+		C.vterm_screen_get_cell(v.screen, pos, &cell)
+		return &cell
+	})
+}
+
 // cellsToANSI converts a line of cells to an ANSI-formatted string.
 // getCell returns the cell at position i (0 to count-1).
 func (v *VTerm) cellsToANSI(count int, getCell func(i int) *C.VTermScreenCell) string {
