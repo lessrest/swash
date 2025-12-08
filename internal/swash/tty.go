@@ -135,6 +135,15 @@ func (p *RealPTY) CloseSlave() error {
 	return nil
 }
 
+// attachedClient represents a single attached client with its own output pipe and terminal size.
+type attachedClient struct {
+	id         string
+	output     *os.File // write end of pipe to send PTY output to client
+	inputPipe  *os.File // read end of input pipe (for cleanup)
+	rows, cols int      // client's terminal size
+	clientFDs  []*os.File // client-side fds to close after D-Bus sends them
+}
+
 // TTYHost extends Host with terminal emulation capabilities.
 // It uses a PTY instead of pipes and processes output through libvterm.
 type TTYHost struct {
@@ -159,9 +168,9 @@ type TTYHost struct {
 	// For testing: custom PTY opener
 	openPTY func() (PTYPair, error)
 
-	// Attached client (only one allowed for now)
-	attachedOutput    *os.File   // write end of pipe to send PTY output to client
-	attachedClientFDs []*os.File // client-side fds to close after D-Bus sends them
+	// Multi-client attach support
+	attachedClients map[string]*attachedClient // clientID -> client
+	nextClientID    int                        // counter for generating unique client IDs
 }
 
 // TTYHostConfig holds the configuration for creating a TTYHost.
@@ -201,15 +210,16 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 	tags[FieldSession] = cfg.SessionID
 
 	h := &TTYHost{
-		sessionID:     cfg.SessionID,
-		command:       cfg.Command,
-		rows:          rows,
-		cols:          cols,
-		tags:          tags,
-		systemd:       cfg.Systemd,
-		journal:       cfg.Journal,
-		maxScrollback: 10000,
-		openPTY:       openPTY,
+		sessionID:       cfg.SessionID,
+		command:         cfg.Command,
+		rows:            rows,
+		cols:            cols,
+		tags:            tags,
+		systemd:         cfg.Systemd,
+		journal:         cfg.Journal,
+		maxScrollback:   10000,
+		openPTY:         openPTY,
+		attachedClients: make(map[string]*attachedClient),
 	}
 
 	// Create vterm instance
@@ -358,26 +368,56 @@ func (h *TTYHost) GetMode() (bool, error) {
 }
 
 // Attach connects a client to the TTY session.
+// Parameters:
+//   - clientRows, clientCols: the client's terminal size
+//
 // Returns:
 //   - outputFD: read end of pipe receiving PTY output bytes (as dbus.UnixFD for D-Bus compatibility)
 //   - inputFD: write end of pipe for sending input to PTY
-//   - rows, cols: current terminal size
+//   - rows, cols: current terminal size (may be smaller than client's if other clients attached)
 //   - screenANSI: current screen content with ANSI codes
+//   - clientID: unique ID for this client (used for Detach)
+//
+// Multi-client behavior:
+//   - First client: terminal resizes to match their size
+//   - Subsequent clients: must have terminal >= current size, otherwise rejected
+//   - When all clients disconnect, next attach can resize again
 //
 // The screen snapshot and stream are synchronized - no bytes are lost between them.
-func (h *TTYHost) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error) {
+func (h *TTYHost) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, clientID string, err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// Check if already attached (only one client allowed for now)
-	if h.attachedOutput != nil {
-		return 0, 0, 0, 0, "", fmt.Errorf("session already has an attached client")
+	// Default client size if not specified
+	if clientRows <= 0 {
+		clientRows = 24
+	}
+	if clientCols <= 0 {
+		clientCols = 80
+	}
+
+	// Multi-client size handling
+	if len(h.attachedClients) == 0 {
+		// First client: resize terminal to match their size
+		h.rows = int(clientRows)
+		h.cols = int(clientCols)
+		h.vt.SetSize(h.rows, h.cols)
+		if h.ptyPair != nil {
+			h.ptyPair.SetSize(uint16(h.rows), uint16(h.cols))
+		}
+	} else {
+		// Subsequent clients: must have terminal >= current size
+		if int(clientRows) < h.rows || int(clientCols) < h.cols {
+			return 0, 0, 0, 0, "", "", fmt.Errorf(
+				"terminal too small (need %dx%d, have %dx%d) - resize your terminal or wait for other clients to disconnect",
+				h.cols, h.rows, clientCols, clientRows)
+		}
 	}
 
 	// Create output pipe (PTY -> client)
 	outputRead, outputWrite, err := os.Pipe()
 	if err != nil {
-		return 0, 0, 0, 0, "", fmt.Errorf("creating output pipe: %w", err)
+		return 0, 0, 0, 0, "", "", fmt.Errorf("creating output pipe: %w", err)
 	}
 
 	// Create input pipe (client -> PTY)
@@ -385,8 +425,12 @@ func (h *TTYHost) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, scr
 	if err != nil {
 		outputRead.Close()
 		outputWrite.Close()
-		return 0, 0, 0, 0, "", fmt.Errorf("creating input pipe: %w", err)
+		return 0, 0, 0, 0, "", "", fmt.Errorf("creating input pipe: %w", err)
 	}
+
+	// Generate unique client ID
+	h.nextClientID++
+	clientID = fmt.Sprintf("c%d", h.nextClientID)
 
 	// Snapshot screen state while holding the lock
 	screenANSI = h.vt.GetScreenANSI()
@@ -396,40 +440,48 @@ func (h *TTYHost) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, scr
 	rows = int32(h.rows)
 	cols = int32(h.cols)
 
-	// Register the output pipe - PTY bytes will be tee'd here
-	h.attachedOutput = outputWrite
+	// Create client record
+	client := &attachedClient{
+		id:        clientID,
+		output:    outputWrite,
+		inputPipe: inputRead,
+		rows:      int(clientRows),
+		cols:      int(clientCols),
+		clientFDs: []*os.File{outputRead, inputWrite},
+	}
+	h.attachedClients[clientID] = client
 
 	// Start goroutine to forward input pipe -> PTY master
-	go h.forwardAttachedInput(inputRead)
+	go h.forwardAttachedInput(clientID, inputRead)
 
-	// Store the client-side fds so we can close them after D-Bus sends them.
-	// D-Bus dups fds when sending, so we must close our copies for the pipes
-	// to properly detect when the client disconnects.
-	h.attachedClientFDs = []*os.File{outputRead, inputWrite}
+	// Close our copies of client fds after D-Bus sends them
 	go func() {
-		// Brief delay to ensure D-Bus has sent the fds
 		time.Sleep(100 * time.Millisecond)
 		h.mu.Lock()
-		for _, f := range h.attachedClientFDs {
-			f.Close()
+		if c, ok := h.attachedClients[clientID]; ok && c.clientFDs != nil {
+			for _, f := range c.clientFDs {
+				f.Close()
+			}
+			c.clientFDs = nil
 		}
-		h.attachedClientFDs = nil
 		h.mu.Unlock()
 	}()
 
-	return dbus.UnixFD(outputRead.Fd()), dbus.UnixFD(inputWrite.Fd()), rows, cols, screenANSI, nil
+	return dbus.UnixFD(outputRead.Fd()), dbus.UnixFD(inputWrite.Fd()), rows, cols, screenANSI, clientID, nil
 }
 
 // forwardAttachedInput reads from the input pipe and writes to PTY master.
-// When the input pipe closes (client disconnected), it cleans up the attached state.
-func (h *TTYHost) forwardAttachedInput(input *os.File) {
+// When the input pipe closes (client disconnected), it cleans up that specific client.
+func (h *TTYHost) forwardAttachedInput(clientID string, input *os.File) {
 	defer func() {
 		input.Close()
-		// Clean up attached state so another client can attach
+		// Clean up this specific client
 		h.mu.Lock()
-		if h.attachedOutput != nil {
-			h.attachedOutput.Close()
-			h.attachedOutput = nil
+		if client, ok := h.attachedClients[clientID]; ok {
+			if client.output != nil {
+				client.output.Close()
+			}
+			delete(h.attachedClients, clientID)
 		}
 		h.mu.Unlock()
 	}()
@@ -451,16 +503,32 @@ func (h *TTYHost) forwardAttachedInput(input *os.File) {
 	}
 }
 
-// Detach disconnects the attached client.
-func (h *TTYHost) Detach() error {
+// Detach disconnects a specific client by ID.
+func (h *TTYHost) Detach(clientID string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.attachedOutput != nil {
-		h.attachedOutput.Close()
-		h.attachedOutput = nil
+	client, ok := h.attachedClients[clientID]
+	if !ok {
+		return fmt.Errorf("client %s not attached", clientID)
 	}
+
+	if client.output != nil {
+		client.output.Close()
+	}
+	if client.inputPipe != nil {
+		client.inputPipe.Close()
+	}
+	delete(h.attachedClients, clientID)
 	return nil
+}
+
+// GetAttachedClients returns info about currently attached clients.
+func (h *TTYHost) GetAttachedClients() (count int32, masterRows, masterCols int32, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return int32(len(h.attachedClients)), int32(h.rows), int32(h.cols), nil
 }
 
 // RunTask starts the task process and waits for it to complete.
@@ -576,13 +644,15 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 			if n > 0 {
 				// Feed to vterm (vterm has its own lock)
 				h.vt.Write(buf[:n])
-				// Tee to attached client (if any)
+				// Broadcast to all attached clients
 				h.mu.Lock()
-				attached := h.attachedOutput
-				h.mu.Unlock()
-				if attached != nil {
-					attached.Write(buf[:n])
+				for _, client := range h.attachedClients {
+					if client.output != nil {
+						// Write to each client; ignore errors (client may have disconnected)
+						client.output.Write(buf[:n])
+					}
 				}
+				h.mu.Unlock()
 			}
 		}
 

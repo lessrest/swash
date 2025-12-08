@@ -156,8 +156,16 @@ type TTYClient interface {
 	Resize(rows, cols int32) error
 
 	// Attach connects to the TTY session for interactive use.
-	// Returns output/input file descriptors, current size, and screen snapshot.
-	Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error)
+	// clientRows/clientCols specify the attaching client's terminal size.
+	// Returns output/input file descriptors, current size, screen snapshot, and client ID.
+	// If other clients are attached and clientRows/clientCols are too small, returns an error.
+	Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, clientID string, err error)
+
+	// Detach disconnects a specific client by ID.
+	Detach(clientID string) error
+
+	// GetAttachedClients returns info about currently attached clients.
+	GetAttachedClients() (count int32, masterRows, masterCols int32, err error)
 }
 
 // ttyClient implements TTYClient via D-Bus.
@@ -223,12 +231,24 @@ func (c *ttyClient) Resize(rows, cols int32) error {
 	return c.obj.Call(DBusNamePrefix+".Resize", 0, rows, cols).Err
 }
 
-func (c *ttyClient) Attach() (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, err error) {
-	err = c.obj.Call(DBusNamePrefix+".Attach", 0).Store(&outputFD, &inputFD, &rows, &cols, &screenANSI)
+func (c *ttyClient) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, clientID string, err error) {
+	err = c.obj.Call(DBusNamePrefix+".Attach", 0, clientRows, clientCols).Store(&outputFD, &inputFD, &rows, &cols, &screenANSI, &clientID)
 	if err != nil {
-		return 0, 0, 0, 0, "", fmt.Errorf("calling Attach: %w", err)
+		return 0, 0, 0, 0, "", "", fmt.Errorf("calling Attach: %w", err)
 	}
-	return outputFD, inputFD, rows, cols, screenANSI, nil
+	return outputFD, inputFD, rows, cols, screenANSI, clientID, nil
+}
+
+func (c *ttyClient) Detach(clientID string) error {
+	return c.obj.Call(DBusNamePrefix+".Detach", 0, clientID).Err
+}
+
+func (c *ttyClient) GetAttachedClients() (count int32, masterRows, masterCols int32, err error) {
+	err = c.obj.Call(DBusNamePrefix+".GetAttachedClients", 0).Store(&count, &masterRows, &masterCols)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("calling GetAttachedClients: %w", err)
+	}
+	return count, masterRows, masterCols, nil
 }
 
 // Convenience functions that open a connection, do the operation, and close.
