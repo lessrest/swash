@@ -134,6 +134,26 @@ func (f *FakeSystemd) StopUnit(ctx context.Context, name UnitName) error {
 	return nil
 }
 
+// StartUnit starts a persistent unit (no-op in fake - only transient units supported).
+func (f *FakeSystemd) StartUnit(ctx context.Context, name UnitName) error {
+	return nil
+}
+
+// Reload tells systemd to reload configuration (no-op in fake).
+func (f *FakeSystemd) Reload(ctx context.Context) error {
+	return nil
+}
+
+// EnableUnits enables unit files (no-op in fake).
+func (f *FakeSystemd) EnableUnits(ctx context.Context, units []string) error {
+	return nil
+}
+
+// DisableUnits disables unit files (no-op in fake).
+func (f *FakeSystemd) DisableUnits(ctx context.Context, units []string) error {
+	return nil
+}
+
 // KillUnit sends a signal to all processes in a unit.
 func (f *FakeSystemd) KillUnit(ctx context.Context, name UnitName, signal syscall.Signal) error {
 	f.mu.Lock()

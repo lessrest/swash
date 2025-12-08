@@ -4,6 +4,7 @@
 # Go binaries
 /bin/
 /swash
+/swash-http
 /main
 
 # Python
