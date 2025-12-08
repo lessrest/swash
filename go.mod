@@ -1,6 +1,6 @@
 module github.com/mbrock/swash
 
-go 1.25.5
+go 1.24.7
 
 require (
 	github.com/coreos/go-systemd/v22 v22.6.0

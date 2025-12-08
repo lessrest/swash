@@ -401,6 +401,107 @@ func cmdHistory() {
 	}
 }
 
+// attachState holds the state for an attached session
+type attachState struct {
+	sessionID    string
+	clientID     string
+	remoteRows   int
+	remoteCols   int
+	localRows    int
+	localCols    int
+	output       *os.File
+	input        *os.File
+	client       swash.TTYClient
+	needsBorder  bool
+	borderTop    int // row offset for remote content
+	borderLeft   int // col offset for remote content
+}
+
+// drawBorder draws a box-drawing border around the remote terminal area
+func (s *attachState) drawBorder() {
+	// Calculate border position (centered)
+	s.borderTop = (s.localRows - s.remoteRows - 2) / 2  // -2 for top/bottom border
+	s.borderLeft = (s.localCols - s.remoteCols - 2) / 2 // -2 for left/right border
+	if s.borderTop < 0 {
+		s.borderTop = 0
+	}
+	if s.borderLeft < 0 {
+		s.borderLeft = 0
+	}
+
+	// Clear screen first
+	fmt.Print("\x1b[2J")
+
+	// Draw top border with session info
+	info := fmt.Sprintf(" %s [%dx%d] ", s.sessionID, s.remoteCols, s.remoteRows)
+	topBorder := "┌"
+	infoStart := (s.remoteCols - len(info)) / 2
+	if infoStart < 0 {
+		infoStart = 0
+	}
+	for i := 0; i < s.remoteCols; i++ {
+		if i == infoStart {
+			topBorder += info
+			i += len(info) - 1
+		} else {
+			topBorder += "─"
+		}
+	}
+	topBorder += "┐"
+
+	// Position and draw top border
+	fmt.Printf("\x1b[%d;%dH%s", s.borderTop+1, s.borderLeft+1, topBorder)
+
+	// Draw side borders
+	for row := 0; row < s.remoteRows; row++ {
+		// Left border
+		fmt.Printf("\x1b[%d;%dH│", s.borderTop+row+2, s.borderLeft+1)
+		// Right border
+		fmt.Printf("\x1b[%d;%dH│", s.borderTop+row+2, s.borderLeft+s.remoteCols+2)
+	}
+
+	// Draw bottom border with detach hint
+	hint := " Ctrl+\\ to detach "
+	bottomBorder := "└"
+	hintStart := (s.remoteCols - len(hint)) / 2
+	if hintStart < 0 {
+		hintStart = 0
+	}
+	for i := 0; i < s.remoteCols; i++ {
+		if i == hintStart {
+			bottomBorder += hint
+			i += len(hint) - 1
+		} else {
+			bottomBorder += "─"
+		}
+	}
+	bottomBorder += "┘"
+	fmt.Printf("\x1b[%d;%dH%s", s.borderTop+s.remoteRows+2, s.borderLeft+1, bottomBorder)
+}
+
+// positionContent positions the remote content within the border
+func (s *attachState) positionContent() {
+	if s.needsBorder {
+		// Position cursor at top-left of content area (inside border)
+		fmt.Printf("\x1b[%d;%dH", s.borderTop+2, s.borderLeft+2)
+	} else {
+		// Position at top-left
+		fmt.Print("\x1b[H")
+	}
+}
+
+// transformOutput wraps output to position it within the border
+func (s *attachState) transformOutput(data []byte) []byte {
+	if !s.needsBorder {
+		return data
+	}
+
+	// For bordered mode, we need to intercept cursor positioning
+	// and translate coordinates. This is a simplified approach that
+	// sets a scroll region and origin mode.
+	return data
+}
+
 func cmdAttach(sessionID string) {
 	client, err := swash.ConnectTTYSession(sessionID)
 	if err != nil {
@@ -408,8 +509,20 @@ func cmdAttach(sessionID string) {
 	}
 	defer client.Close()
 
-	// Call Attach to get fds and screen snapshot
-	outputFD, inputFD, _, _, screenANSI, err := client.Attach()
+	// Get local terminal size
+	stdinFd := int(os.Stdin.Fd())
+	var localCols, localRows int
+	if term.IsTerminal(stdinFd) {
+		localCols, localRows, err = term.GetSize(stdinFd)
+		if err != nil {
+			localCols, localRows = 80, 24
+		}
+	} else {
+		localCols, localRows = 80, 24
+	}
+
+	// Call Attach with our terminal size
+	outputFD, inputFD, remoteRows, remoteCols, screenANSI, clientID, err := client.Attach(int32(localRows), int32(localCols))
 	if err != nil {
 		fatal("attaching to session: %v", err)
 	}
@@ -420,8 +533,21 @@ func cmdAttach(sessionID string) {
 	defer output.Close()
 	defer input.Close()
 
+	// Initialize attach state
+	state := &attachState{
+		sessionID:  sessionID,
+		clientID:   clientID,
+		remoteRows: int(remoteRows),
+		remoteCols: int(remoteCols),
+		localRows:  localRows,
+		localCols:  localCols,
+		output:     output,
+		input:      input,
+		client:     client,
+		needsBorder: localRows > int(remoteRows) || localCols > int(remoteCols),
+	}
+
 	// Put terminal in raw mode (if we're connected to a terminal)
-	stdinFd := int(os.Stdin.Fd())
 	var oldState *term.State
 	if term.IsTerminal(stdinFd) {
 		oldState, err = term.MakeRaw(stdinFd)
@@ -431,14 +557,23 @@ func cmdAttach(sessionID string) {
 		defer term.Restore(stdinFd, oldState)
 	}
 
-	// Switch to alternate screen buffer (like vim does) and show remote screen
+	// Switch to alternate screen buffer (like vim does)
 	fmt.Print("\x1b[?1049h")   // Enter alternate screen buffer
 	fmt.Print("\x1b[2J\x1b[H") // Clear screen, move to top-left
+
+	if state.needsBorder {
+		state.drawBorder()
+		state.positionContent()
+		// Set scroll region to content area
+		fmt.Printf("\x1b[%d;%dr", state.borderTop+2, state.borderTop+1+state.remoteRows)
+		// Set origin mode (coordinates relative to scroll region)
+		fmt.Print("\x1b[?6h")
+	}
 	fmt.Print(screenANSI)
 
-	// Set up signal handling
+	// Set up signal handling for SIGINT, SIGTERM, and SIGWINCH
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGWINCH)
 
 	// Channels to signal exit
 	done := make(chan struct{})
@@ -453,6 +588,7 @@ func cmdAttach(sessionID string) {
 				close(done)
 				return
 			}
+			// In bordered mode, we rely on the scroll region
 			os.Stdout.Write(buf[:n])
 		}
 	}()
@@ -475,10 +611,61 @@ func cmdAttach(sessionID string) {
 		}
 	}()
 
-	select {
-	case <-done:
-	case <-detach:
-	case <-sigCh:
+	for {
+		select {
+		case <-done:
+			goto cleanup
+		case <-detach:
+			goto cleanup
+		case sig := <-sigCh:
+			if sig == syscall.SIGWINCH {
+				// Terminal resized - update local size
+				if term.IsTerminal(stdinFd) {
+					newCols, newRows, err := term.GetSize(stdinFd)
+					if err == nil {
+						state.localCols = newCols
+						state.localRows = newRows
+						state.needsBorder = newRows > state.remoteRows || newCols > state.remoteCols
+
+						// Redraw if needed
+						if state.needsBorder {
+							// Reset scroll region and origin mode first
+							fmt.Print("\x1b[?6l")
+							fmt.Print("\x1b[r")
+							state.drawBorder()
+							state.positionContent()
+							// Re-set scroll region
+							fmt.Printf("\x1b[%d;%dr", state.borderTop+2, state.borderTop+1+state.remoteRows)
+							fmt.Print("\x1b[?6h")
+							// Request screen refresh from remote
+							screenANSI, err := client.GetScreenANSI()
+							if err == nil {
+								fmt.Print(screenANSI)
+							}
+						} else {
+							// No border needed - clear and redraw
+							fmt.Print("\x1b[?6l") // Reset origin mode
+							fmt.Print("\x1b[r")   // Reset scroll region
+							fmt.Print("\x1b[2J\x1b[H")
+							screenANSI, err := client.GetScreenANSI()
+							if err == nil {
+								fmt.Print(screenANSI)
+							}
+						}
+					}
+				}
+			} else {
+				// SIGINT or SIGTERM
+				goto cleanup
+			}
+		}
+	}
+
+cleanup:
+	// Reset scroll region and origin mode
+	if state.needsBorder {
+		fmt.Print("\x1b[?6l") // Reset origin mode
+		fmt.Print("\x1b[r")   // Reset scroll region
 	}
 
 	// Leave alternate screen buffer (restores original screen content)

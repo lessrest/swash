@@ -650,8 +650,8 @@ func TestTTYHost_Attach_Basic(t *testing.T) {
 	// Write some content to establish screen state
 	host.vt.Write([]byte("Hello World"))
 
-	// Attach
-	outputFD, inputFD, rows, cols, screenANSI, err := host.Attach()
+	// Attach with client size matching the host
+	outputFD, inputFD, rows, cols, screenANSI, _, err := host.Attach(5, 40)
 	if err != nil {
 		t.Fatalf("Attach failed: %v", err)
 	}
@@ -671,7 +671,7 @@ func TestTTYHost_Attach_Basic(t *testing.T) {
 	}
 }
 
-func TestTTYHost_Attach_OnlyOneClient(t *testing.T) {
+func TestTTYHost_Attach_MultiClient(t *testing.T) {
 	systemd, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
@@ -685,8 +685,8 @@ func TestTTYHost_Attach_OnlyOneClient(t *testing.T) {
 	})
 	defer host.Close()
 
-	// First attach should succeed
-	outputFD1, inputFD1, _, _, _, err := host.Attach()
+	// First attach should succeed and set terminal size
+	outputFD1, inputFD1, rows1, cols1, _, clientID1, err := host.Attach(10, 80)
 	if err != nil {
 		t.Fatalf("First Attach failed: %v", err)
 	}
@@ -695,10 +695,48 @@ func TestTTYHost_Attach_OnlyOneClient(t *testing.T) {
 	defer output1.Close()
 	defer input1.Close()
 
-	// Second attach should fail
-	_, _, _, _, _, err = host.Attach()
+	// First client sets the terminal size
+	if rows1 != 10 || cols1 != 80 {
+		t.Errorf("expected size (10,80), got (%d,%d)", rows1, cols1)
+	}
+	if clientID1 == "" {
+		t.Error("expected non-empty client ID")
+	}
+
+	// Second attach with sufficient size should succeed
+	outputFD2, inputFD2, rows2, cols2, _, clientID2, err := host.Attach(12, 100)
+	if err != nil {
+		t.Fatalf("Second Attach (large enough) failed: %v", err)
+	}
+	output2 := os.NewFile(uintptr(outputFD2), "output2")
+	input2 := os.NewFile(uintptr(inputFD2), "input2")
+	defer output2.Close()
+	defer input2.Close()
+
+	// Second client should get the same (master) terminal size
+	if rows2 != 10 || cols2 != 80 {
+		t.Errorf("expected size (10,80) for second client, got (%d,%d)", rows2, cols2)
+	}
+	if clientID2 == "" || clientID2 == clientID1 {
+		t.Error("expected unique client ID for second client")
+	}
+
+	// Third attach with too-small terminal should fail
+	_, _, _, _, _, _, err = host.Attach(5, 40)
 	if err == nil {
-		t.Error("expected second Attach to fail")
+		t.Error("expected third Attach with small terminal to fail")
+	}
+
+	// Verify client count
+	count, masterRows, masterCols, err := host.GetAttachedClients()
+	if err != nil {
+		t.Fatalf("GetAttachedClients failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 attached clients, got %d", count)
+	}
+	if masterRows != 10 || masterCols != 80 {
+		t.Errorf("expected master size (10,80), got (%d,%d)", masterRows, masterCols)
 	}
 }
 
@@ -740,7 +778,7 @@ func TestTTYHost_Attach_StreamOutput(t *testing.T) {
 	<-ready
 
 	// Attach while process is running
-	outputFD, inputFD, _, _, _, err := host.Attach()
+	outputFD, inputFD, _, _, _, _, err := host.Attach(5, 40)
 	if err != nil {
 		t.Fatalf("Attach failed: %v", err)
 	}
@@ -787,7 +825,7 @@ func TestTTYHost_Attach_ReattachAfterDisconnect(t *testing.T) {
 	defer host.Close()
 
 	// First attach
-	outputFD1, inputFD1, _, _, _, err := host.Attach()
+	outputFD1, inputFD1, _, _, _, _, err := host.Attach(10, 80)
 	if err != nil {
 		t.Fatalf("First Attach failed: %v", err)
 	}
@@ -801,8 +839,8 @@ func TestTTYHost_Attach_ReattachAfterDisconnect(t *testing.T) {
 	// Give the cleanup goroutine a moment to run
 	time.Sleep(50 * time.Millisecond)
 
-	// Second attach should now succeed
-	outputFD2, inputFD2, _, _, _, err := host.Attach()
+	// Second attach should succeed and can use a different size (no other clients)
+	outputFD2, inputFD2, rows, cols, _, _, err := host.Attach(20, 100)
 	if err != nil {
 		t.Fatalf("Second Attach after disconnect failed: %v", err)
 	}
@@ -810,6 +848,11 @@ func TestTTYHost_Attach_ReattachAfterDisconnect(t *testing.T) {
 	input2 := os.NewFile(uintptr(inputFD2), "input2")
 	defer output2.Close()
 	defer input2.Close()
+
+	// After all clients disconnect, next client can resize
+	if rows != 20 || cols != 100 {
+		t.Errorf("expected size (20,100) after reconnect, got (%d,%d)", rows, cols)
+	}
 }
 
 func TestTTYHost_Attach_SendInput(t *testing.T) {
@@ -853,7 +896,7 @@ func TestTTYHost_Attach_SendInput(t *testing.T) {
 	<-ready
 
 	// Attach
-	outputFD, inputFD, _, _, _, err := host.Attach()
+	outputFD, inputFD, _, _, _, _, err := host.Attach(5, 40)
 	if err != nil {
 		t.Fatalf("Attach failed: %v", err)
 	}
