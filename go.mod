@@ -10,6 +10,9 @@ require (
 	golang.org/x/term v0.37.0
 )
 
-require golang.org/x/sys v0.38.0 // indirect
+require (
+	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+)
 
 replace github.com/coreos/go-systemd/v22 => github.com/mbrock/go-systemd/v22 v22.6.1-swash
