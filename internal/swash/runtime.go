@@ -35,8 +35,8 @@ func DefaultRuntime(ctx context.Context) (*Runtime, error) {
 	return &Runtime{
 		Systemd:           sd,
 		Journal:           j,
-		ConnectSession:    connectSession,
-		ConnectTTYSession: connectTTYSession,
+		ConnectSession:    connectSessionViaDBusBackend,
+		ConnectTTYSession: connectTTYSessionViaDBusBackend,
 	}, nil
 }
 

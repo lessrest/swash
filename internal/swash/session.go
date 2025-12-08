@@ -76,18 +76,18 @@ type SessionClient interface {
 }
 
 // Compile-time check that sessionClient implements SessionClient.
-var _ SessionClient = (*sessionClient)(nil)
+var _ SessionClient = (*sessionClientDBus)(nil)
 
-// sessionClient implements SessionClient via D-Bus.
-type sessionClient struct {
+// sessionClientDBus implements SessionClient via D-Bus.
+type sessionClientDBus struct {
 	conn      *dbus.Conn
 	obj       dbus.BusObject
 	sessionID string
 }
 
-// connectSession connects to a running session's D-Bus service.
+// connectSessionViaDBusBackend connects to a running session's D-Bus service.
 // Use Runtime.ConnectSession instead of calling this directly.
-func connectSession(sessionID string) (SessionClient, error) {
+func connectSessionViaDBusBackend(sessionID string) (SessionClient, error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return nil, fmt.Errorf("connecting to session bus: %w", err)
@@ -96,22 +96,22 @@ func connectSession(sessionID string) (SessionClient, error) {
 	busName := fmt.Sprintf("%s.%s", DBusNamePrefix, sessionID)
 	obj := conn.Object(busName, dbus.ObjectPath(DBusPath))
 
-	return &sessionClient{
+	return &sessionClientDBus{
 		conn:      conn,
 		obj:       obj,
 		sessionID: sessionID,
 	}, nil
 }
 
-func (c *sessionClient) Close() error {
+func (c *sessionClientDBus) Close() error {
 	return c.conn.Close()
 }
 
-func (c *sessionClient) SessionID() (string, error) {
+func (c *sessionClientDBus) SessionID() (string, error) {
 	return c.sessionID, nil
 }
 
-func (c *sessionClient) SendInput(input string) (int, error) {
+func (c *sessionClientDBus) SendInput(input string) (int, error) {
 	var n int
 	err := c.obj.Call(DBusNamePrefix+".SendInput", 0, input).Store(&n)
 	if err != nil {
@@ -120,11 +120,11 @@ func (c *sessionClient) SendInput(input string) (int, error) {
 	return n, nil
 }
 
-func (c *sessionClient) Kill() error {
+func (c *sessionClientDBus) Kill() error {
 	return c.obj.Call(DBusNamePrefix+".Kill", 0).Err
 }
 
-func (c *sessionClient) Gist() (HostStatus, error) {
+func (c *sessionClientDBus) Gist() (HostStatus, error) {
 	var status HostStatus
 	err := c.obj.Call(DBusNamePrefix+".Gist", 0).Store(&status)
 	if err != nil {
@@ -173,22 +173,22 @@ type TTYClient interface {
 	WaitExited() <-chan int32
 }
 
-// ttyClient implements TTYClient via D-Bus.
-type ttyClient struct {
-	*sessionClient
+// ttyClientDBus implements TTYClient via D-Bus.
+type ttyClientDBus struct {
+	*sessionClientDBus
 }
 
-// connectTTYSession connects to a running TTY session's D-Bus service.
+// connectTTYSessionViaDBusBackend connects to a running TTY session's D-Bus service.
 // Use Runtime.ConnectTTYSession instead of calling this directly.
-func connectTTYSession(sessionID string) (TTYClient, error) {
-	client, err := connectSession(sessionID)
+func connectTTYSessionViaDBusBackend(sessionID string) (TTYClient, error) {
+	client, err := connectSessionViaDBusBackend(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return &ttyClient{sessionClient: client.(*sessionClient)}, nil
+	return &ttyClientDBus{sessionClientDBus: client.(*sessionClientDBus)}, nil
 }
 
-func (c *ttyClient) GetScreenText() (string, error) {
+func (c *ttyClientDBus) GetScreenText() (string, error) {
 	var text string
 	err := c.obj.Call(DBusNamePrefix+".GetScreenText", 0).Store(&text)
 	if err != nil {
@@ -197,7 +197,7 @@ func (c *ttyClient) GetScreenText() (string, error) {
 	return text, nil
 }
 
-func (c *ttyClient) GetScreenANSI() (string, error) {
+func (c *ttyClientDBus) GetScreenANSI() (string, error) {
 	var text string
 	err := c.obj.Call(DBusNamePrefix+".GetScreenANSI", 0).Store(&text)
 	if err != nil {
@@ -206,7 +206,7 @@ func (c *ttyClient) GetScreenANSI() (string, error) {
 	return text, nil
 }
 
-func (c *ttyClient) GetCursor() (int32, int32, error) {
+func (c *ttyClientDBus) GetCursor() (int32, int32, error) {
 	var row, col int32
 	err := c.obj.Call(DBusNamePrefix+".GetCursor", 0).Store(&row, &col)
 	if err != nil {
@@ -215,7 +215,7 @@ func (c *ttyClient) GetCursor() (int32, int32, error) {
 	return row, col, nil
 }
 
-func (c *ttyClient) GetTitle() (string, error) {
+func (c *ttyClientDBus) GetTitle() (string, error) {
 	var title string
 	err := c.obj.Call(DBusNamePrefix+".GetTitle", 0).Store(&title)
 	if err != nil {
@@ -224,7 +224,7 @@ func (c *ttyClient) GetTitle() (string, error) {
 	return title, nil
 }
 
-func (c *ttyClient) GetMode() (bool, error) {
+func (c *ttyClientDBus) GetMode() (bool, error) {
 	var altScreen bool
 	err := c.obj.Call(DBusNamePrefix+".GetMode", 0).Store(&altScreen)
 	if err != nil {
@@ -233,11 +233,11 @@ func (c *ttyClient) GetMode() (bool, error) {
 	return altScreen, nil
 }
 
-func (c *ttyClient) Resize(rows, cols int32) error {
+func (c *ttyClientDBus) Resize(rows, cols int32) error {
 	return c.obj.Call(DBusNamePrefix+".Resize", 0, rows, cols).Err
 }
 
-func (c *ttyClient) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, clientID string, err error) {
+func (c *ttyClientDBus) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, clientID string, err error) {
 	err = c.obj.Call(DBusNamePrefix+".Attach", 0, clientRows, clientCols).Store(&outputFD, &inputFD, &rows, &cols, &screenANSI, &clientID)
 	if err != nil {
 		return 0, 0, 0, 0, "", "", fmt.Errorf("calling Attach: %w", err)
@@ -245,11 +245,11 @@ func (c *ttyClient) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus
 	return outputFD, inputFD, rows, cols, screenANSI, clientID, nil
 }
 
-func (c *ttyClient) Detach(clientID string) error {
+func (c *ttyClientDBus) Detach(clientID string) error {
 	return c.obj.Call(DBusNamePrefix+".Detach", 0, clientID).Err
 }
 
-func (c *ttyClient) GetAttachedClients() (count int32, masterRows, masterCols int32, err error) {
+func (c *ttyClientDBus) GetAttachedClients() (count int32, masterRows, masterCols int32, err error) {
 	err = c.obj.Call(DBusNamePrefix+".GetAttachedClients", 0).Store(&count, &masterRows, &masterCols)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("calling GetAttachedClients: %w", err)
@@ -257,7 +257,7 @@ func (c *ttyClient) GetAttachedClients() (count int32, masterRows, masterCols in
 	return count, masterRows, masterCols, nil
 }
 
-func (c *ttyClient) WaitExited() <-chan int32 {
+func (c *ttyClientDBus) WaitExited() <-chan int32 {
 	exitCh := make(chan int32, 1)
 
 	// Add match rule to receive the Exited signal
