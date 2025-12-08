@@ -47,9 +47,11 @@ to see what happened.
 ```bash
 swash run echo "hello world"    # run command, show output, wait for exit
 swash run -d 10s ./slow-script  # wait up to 10s, then detach if still running
+swash run --tty htop            # run interactively with TTY
 swash start ./background-job    # start and detach immediately
 swash                           # list running sessions
 swash follow ABC123             # stream output until exit
+swash attach ABC123             # attach to TTY session (Ctrl+\ to detach)
 swash send ABC123 "input"       # send to stdin
 swash kill ABC123               # terminate
 swash history                   # show past sessions from journal
@@ -70,9 +72,19 @@ full terminal using libvterm. This handles colors, cursor movement, alternate
 screen mode (used by vim, htop, etc.), and other terminal features correctly.
 
 ```bash
-swash start --tty -- htop
+swash run --tty htop            # start htop and attach interactively
+swash start --tty -- htop       # start in background
+swash attach ABC123             # attach to running TTY session
+swash screen ABC123             # view current screen snapshot
+```
+
+When attached, press `Ctrl+\` to detach without killing the process. You can
+reattach later with `swash attach`. Multiple clients can attach to the same
+session - they all see the same screen, and the terminal size follows the
+smallest attached client.
+
+```bash
 swash start --tty --rows 40 --cols 120 -- vim file.txt
-swash screen ABC123             # view current screen content
 ```
 
 The `swash screen` command returns a snapshot of the terminal screen with ANSI
