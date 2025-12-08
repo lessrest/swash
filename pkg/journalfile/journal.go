@@ -163,6 +163,11 @@ func (jf *File) AppendEntry(fields map[string]string) error {
 	jf.mu.Lock()
 	defer jf.mu.Unlock()
 
+	// Mark file as being written so readers know indexes may be changing.
+	if err := jf.beginWrite(); err != nil {
+		return err
+	}
+
 	// File lock for cross-process synchronization
 	if err := syscall.Flock(int(jf.f.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("flock: %w", err)
@@ -200,12 +205,32 @@ func (jf *File) AppendEntry(fields map[string]string) error {
 	}
 
 	// Append entry object
-	return jf.appendEntryObject(realtime, monotonic, xorHash, items)
+	if err := jf.appendEntryObject(realtime, monotonic, xorHash, items); err != nil {
+		return err
+	}
+
+	// Persist entry array immediately so external readers can open safely.
+	if err := jf.writeEntryArray(); err != nil {
+		return err
+	}
+
+	return jf.syncHeader()
 }
 
 // align64 rounds up to the next 8-byte boundary
 func align64(n uint64) uint64 {
 	return (n + 7) &^ 7
+}
+
+// beginWrite marks the header as ONLINE on disk before we start appending new
+// objects. Journald does this to signal readers that the file is being
+// modified, and will flip back to OFFLINE after syncing.
+func (jf *File) beginWrite() error {
+	if jf.header.State == StateOnline {
+		return nil
+	}
+	jf.header.State = StateOnline
+	return jf.syncHeader()
 }
 
 func (jf *File) appendData(data []byte, hash uint64) (uint64, error) {
@@ -634,6 +659,11 @@ func (jf *File) Sync() error {
 	jf.mu.Lock()
 	defer jf.mu.Unlock()
 
+	// While we append the entry array we should advertise ONLINE like real journald.
+	if err := jf.beginWrite(); err != nil {
+		return err
+	}
+
 	// Write entry array if we have entries
 	if len(jf.entryArrayItems) > 0 {
 		if err := jf.writeEntryArray(); err != nil {
@@ -661,6 +691,11 @@ func (jf *File) Sync() error {
 func (jf *File) Close() error {
 	jf.mu.Lock()
 	defer jf.mu.Unlock()
+
+	// Mark file online while we append final objects.
+	if err := jf.beginWrite(); err != nil {
+		return err
+	}
 
 	// Write entry array if we have entries
 	if len(jf.entryArrayItems) > 0 {
@@ -714,9 +749,7 @@ func (jf *File) writeEntryArray() error {
 	}
 
 	// Update header to point to new entry array
-	// We always rewrite the full array, so just update the offset
 	if jf.header.EntryArrayOffset == 0 {
-		// First entry array
 		jf.header.NObjects++
 		jf.header.NEntryArrays++
 	}
