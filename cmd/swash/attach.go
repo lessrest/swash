@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -257,8 +258,7 @@ type attachSession struct {
 	oldState  *term.State
 
 	// Remote PTY IO
-	output *os.File
-	input  *os.File
+	conn io.ReadWriteCloser
 
 	// Sizes
 	localRows, localCols   int
@@ -307,25 +307,31 @@ func newAttachSession(sessionID string, connectTTY func(string) (session.TTYClie
 
 	// Attach to session
 	requestRows, requestCols := GetContentSize()
-	outputFD, inputFD, remoteRows, remoteCols, screenANSI, _, err := client.Attach(int32(requestRows), int32(requestCols))
+	att, err := client.Attach(int32(requestRows), int32(requestCols))
 	if err != nil {
 		client.Close()
 		return nil, fmt.Errorf("attaching to session: %w", err)
 	}
+	if att == nil || att.Conn == nil {
+		client.Close()
+		return nil, fmt.Errorf("attaching to session: missing stream")
+	}
 
-	s.output = os.NewFile(uintptr(outputFD), "attach-output")
-	s.input = os.NewFile(uintptr(inputFD), "attach-input")
-	s.remoteRows = int(remoteRows)
-	s.remoteCols = int(remoteCols)
-	s.initialScreen = screenANSI
+	s.conn = att.Conn
+	s.remoteRows = int(att.Rows)
+	s.remoteCols = int(att.Cols)
+	s.initialScreen = att.ScreenANSI
 
 	return s, nil
 }
 
 func (s *attachSession) readOutput() {
+	if s.conn == nil {
+		return
+	}
 	buf := make([]byte, 4096)
 	for {
-		n, err := s.output.Read(buf)
+		n, err := s.conn.Read(buf)
 		if err != nil {
 			return
 		}
@@ -342,6 +348,9 @@ func (s *attachSession) readOutput() {
 }
 
 func (s *attachSession) readInput() {
+	if s.conn == nil {
+		return
+	}
 	buf := make([]byte, 1)
 	for {
 		n, err := os.Stdin.Read(buf)
@@ -353,7 +362,9 @@ func (s *attachSession) readInput() {
 				close(s.detachCh)
 				return
 			}
-			s.input.Write(buf[:n])
+			if _, err := s.conn.Write(buf[:n]); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -458,8 +469,9 @@ func (s *attachSession) cleanup() {
 		term.Restore(s.stdinFd, s.oldState)
 	}
 
-	s.output.Close()
-	s.input.Close()
+	if s.conn != nil {
+		s.conn.Close()
+	}
 	s.client.Close()
 
 	switch s.exitReason {

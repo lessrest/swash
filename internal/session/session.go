@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/godbus/dbus/v5"
 	"github.com/mbrock/swash/internal/protocol"
@@ -162,9 +163,9 @@ type TTYClient interface {
 
 	// Attach connects to the TTY session for interactive use.
 	// clientRows/clientCols specify the attaching client's terminal size.
-	// Returns output/input file descriptors, current size, screen snapshot, and client ID.
+	// Returns a dedicated byte stream, current size, screen snapshot, and client ID.
 	// If other clients are attached and clientRows/clientCols are too small, returns an error.
-	Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, clientID string, err error)
+	Attach(clientRows, clientCols int32) (*TTYAttachment, error)
 
 	// Detach disconnects a specific client by ID.
 	Detach(clientID string) error
@@ -240,12 +241,34 @@ func (c *ttyClientDBus) Resize(rows, cols int32) error {
 	return c.obj.Call(DBusNamePrefix+".Resize", 0, rows, cols).Err
 }
 
-func (c *ttyClientDBus) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, clientID string, err error) {
-	err = c.obj.Call(DBusNamePrefix+".Attach", 0, clientRows, clientCols).Store(&outputFD, &inputFD, &rows, &cols, &screenANSI, &clientID)
-	if err != nil {
-		return 0, 0, 0, 0, "", "", fmt.Errorf("calling Attach: %w", err)
+func (c *ttyClientDBus) Attach(clientRows, clientCols int32) (*TTYAttachment, error) {
+	var outputFD, inputFD dbus.UnixFD
+	var rows, cols int32
+	var screenANSI, clientID string
+
+	if err := c.obj.Call(DBusNamePrefix+".Attach", 0, clientRows, clientCols).Store(&outputFD, &inputFD, &rows, &cols, &screenANSI, &clientID); err != nil {
+		return nil, fmt.Errorf("calling Attach: %w", err)
 	}
-	return outputFD, inputFD, rows, cols, screenANSI, clientID, nil
+
+	output := os.NewFile(uintptr(outputFD), "tty-output")
+	input := os.NewFile(uintptr(inputFD), "tty-input")
+	if output == nil || input == nil {
+		if output != nil {
+			output.Close()
+		}
+		if input != nil {
+			input.Close()
+		}
+		return nil, fmt.Errorf("invalid file descriptor(s) returned by Attach")
+	}
+
+	return &TTYAttachment{
+		Conn:       &splitConn{r: output, w: input},
+		Rows:       rows,
+		Cols:       cols,
+		ScreenANSI: screenANSI,
+		ClientID:   clientID,
+	}, nil
 }
 
 func (c *ttyClientDBus) Detach(clientID string) error {

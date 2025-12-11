@@ -504,22 +504,21 @@ func handleAttach(ws *websocket.Conn) {
 	}
 	defer client.Close()
 
-	outputFD, inputFD, _, _, screenANSI, _, err := client.Attach(24, 80)
+	att, err := client.Attach(24, 80)
 	if err != nil {
 		return
 	}
+	if att == nil || att.Conn == nil {
+		return
+	}
+	defer att.Conn.Close()
 
-	output := os.NewFile(uintptr(outputFD), "pty-output")
-	input := os.NewFile(uintptr(inputFD), "pty-input")
-	defer output.Close()
-	defer input.Close()
-
-	websocket.Message.Send(ws, screenANSI)
+	websocket.Message.Send(ws, att.ScreenANSI)
 
 	go func() {
 		buf := make([]byte, 4096)
 		for {
-			n, err := output.Read(buf)
+			n, err := att.Conn.Read(buf)
 			if err != nil {
 				ws.Close()
 				return
@@ -553,6 +552,8 @@ func handleAttach(ws *websocket.Conn) {
 			}
 		}
 
-		input.Write([]byte(msg))
+		if _, err := att.Conn.Write([]byte(msg)); err != nil {
+			return
+		}
 	}
 }
