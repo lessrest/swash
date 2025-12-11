@@ -249,21 +249,6 @@ func (e *testEnv) getEnvVars() []string {
 	return env
 }
 
-// runSwashWithInput runs a swash command with stdin input
-func (e *testEnv) runSwashWithInput(input string, args ...string) (string, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, e.swashBin, args...)
-	cmd.Env = e.getEnvVars()
-	cmd.Stdin = strings.NewReader(input)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	return stdout.String(), stderr.String(), err
-}
-
 // runJournalctl runs journalctl with the appropriate arguments for the mode
 func (e *testEnv) runJournalctl(args ...string) (string, error) {
 	var baseArgs []string

@@ -3,7 +3,6 @@ package systemd
 import (
 	"context"
 	"fmt"
-	"sync"
 	"syscall"
 	"time"
 
@@ -62,10 +61,6 @@ type Systemd interface {
 // systemdConn implements Systemd using go-systemd/dbus.
 type systemdConn struct {
 	conn *dbus.Conn
-
-	// For exit signal subscription/emission
-	exitMu   sync.Mutex
-	exitSubs map[UnitName][]chan ExitNotification
 }
 
 // ConnectUserSystemd connects to the user's systemd instance.
@@ -219,35 +214,6 @@ func (s *systemdConn) DisableUnits(ctx context.Context, units []string) error {
 func (s *systemdConn) KillUnit(ctx context.Context, name UnitName, signal syscall.Signal) error {
 	s.conn.KillUnitWithTarget(ctx, name.String(), dbus.All, int32(signal))
 	return nil
-}
-
-// escapeUnitName escapes a unit name for use in D-Bus object paths.
-// Systemd escapes non-alphanumeric characters as _XX where XX is the hex code.
-func escapeUnitName(name string) string {
-	var result []byte
-	for i := 0; i < len(name); i++ {
-		c := name[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
-			result = append(result, c)
-		} else {
-			result = append(result, '_')
-			result = append(result, "0123456789abcdef"[c>>4])
-			result = append(result, "0123456789abcdef"[c&0xf])
-		}
-	}
-	return string(result)
-}
-
-// getExitStatus queries ExecMainStatus from the unit's service properties.
-func (s *systemdConn) getExitStatus(ctx context.Context, name UnitName) (int, error) {
-	props, err := s.conn.GetUnitTypePropertiesContext(ctx, name.String(), "Service")
-	if err != nil {
-		return 0, fmt.Errorf("getting service properties: %w", err)
-	}
-	if exitStatus, ok := props["ExecMainStatus"].(int32); ok {
-		return int(exitStatus), nil
-	}
-	return 0, fmt.Errorf("ExecMainStatus not found")
 }
 
 // StartTransient creates and starts a transient unit via D-Bus API.

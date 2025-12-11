@@ -1,19 +1,18 @@
 module github.com/mbrock/swash
 
-go 1.24.7
+go 1.24.0
+
+toolchain go1.24.4
 
 require (
+	github.com/a-h/templ v0.3.960
 	github.com/coreos/go-systemd/v22 v22.6.0
 	github.com/creack/pty v1.1.24
 	github.com/godbus/dbus/v5 v5.2.0
 	github.com/spf13/pflag v1.0.10
+	golang.org/x/net v0.47.0
+	golang.org/x/sys v0.38.0
 	golang.org/x/term v0.37.0
-)
-
-require (
-	github.com/a-h/templ v0.3.960 // indirect
-	golang.org/x/net v0.47.0 // indirect
-	golang.org/x/sys v0.38.0 // indirect
 )
 
 replace github.com/coreos/go-systemd/v22 => github.com/mbrock/go-systemd/v22 v22.6.1-swash
