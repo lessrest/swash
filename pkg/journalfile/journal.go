@@ -113,7 +113,7 @@ func (jf *File) initialize() error {
 	jf.header = Header{
 		Signature:            HeaderSignature,
 		CompatibleFlags:      0,
-		IncompatibleFlags:    0, // No compression, no keyed hash for simplicity
+		IncompatibleFlags:    HeaderIncompatibleKeyedHash, // Use siphash24 keyed by file_id
 		State:                StateOffline,
 		FileID:               fileID,
 		MachineID:            jf.machineID,
@@ -192,7 +192,10 @@ func (jf *File) AppendEntry(fields map[string]string) error {
 
 	for k, v := range fields {
 		data := []byte(k + "=" + v)
-		hash := JenkinsHash64(data)
+		// Use siphash24 keyed by file_id for hash tables (newer journal format)
+		hash := SipHash24(data, jf.header.FileID)
+		// XOR hash always uses Jenkins, even with keyed hash (per format spec)
+		xorHash ^= JenkinsHash64(data)
 
 		// Deduplicate data objects - reuse existing if same content
 		offset, exists := jf.dataCache[hash]
@@ -209,7 +212,6 @@ func (jf *File) AppendEntry(fields map[string]string) error {
 			ObjectOffset: offset,
 			Hash:         hash,
 		})
-		xorHash ^= hash
 	}
 
 	// Append entry object
@@ -247,8 +249,8 @@ func (jf *File) appendData(data []byte, hash uint64) (uint64, error) {
 	}
 	fieldName := data[:eqIdx]
 
-	// First, ensure field object exists
-	fieldHash := JenkinsHash64(fieldName)
+	// First, ensure field object exists (use siphash24 keyed by file_id)
+	fieldHash := SipHash24(fieldName, jf.header.FileID)
 	fieldOffset, err := jf.ensureField(fieldName, fieldHash)
 	if err != nil {
 		return 0, err

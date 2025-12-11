@@ -15,4 +15,6 @@ require (
 	golang.org/x/term v0.37.0
 )
 
+require github.com/dchest/siphash v1.2.3 // indirect
+
 replace github.com/coreos/go-systemd/v22 => github.com/mbrock/go-systemd/v22 v22.6.1-swash
