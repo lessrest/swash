@@ -8,6 +8,7 @@ package journalfile
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"sync"
@@ -128,25 +129,31 @@ func (jf *File) initialize() error {
 	}
 
 	// Write header
-	if _, err := jf.f.Write(jf.header.Encode()); err != nil {
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, le, &jf.header); err != nil {
+		return fmt.Errorf("encode header: %w", err)
+	}
+	if _, err := jf.f.Write(buf.Bytes()); err != nil {
 		return fmt.Errorf("write header: %w", err)
 	}
 
 	// Write data hash table object with ObjectHeader
 	jf.dataHashTable = make([]HashItem, DefaultDataHashTableSize)
-	dataHashObj := make([]byte, dataHashObjSize)
-	dataHashObj[0] = ObjectDataHashTable // type
-	le.PutUint64(dataHashObj[8:16], dataHashObjSize)
-	if _, err := jf.f.Write(dataHashObj); err != nil {
+	dataHashHdr := ObjectHeader{Type: ObjectDataHashTable, Size: dataHashObjSize}
+	if err := binary.Write(jf.f, le, &dataHashHdr); err != nil {
+		return fmt.Errorf("write data hash table header: %w", err)
+	}
+	if err := binary.Write(jf.f, le, jf.dataHashTable); err != nil {
 		return fmt.Errorf("write data hash table: %w", err)
 	}
 
 	// Write field hash table object with ObjectHeader
 	jf.fieldHashTable = make([]HashItem, DefaultFieldHashTableSize)
-	fieldHashObj := make([]byte, fieldHashObjSize)
-	fieldHashObj[0] = ObjectFieldHashTable // type
-	le.PutUint64(fieldHashObj[8:16], fieldHashObjSize)
-	if _, err := jf.f.Write(fieldHashObj); err != nil {
+	fieldHashHdr := ObjectHeader{Type: ObjectFieldHashTable, Size: fieldHashObjSize}
+	if err := binary.Write(jf.f, le, &fieldHashHdr); err != nil {
+		return fmt.Errorf("write field hash table header: %w", err)
+	}
+	if err := binary.Write(jf.f, le, jf.fieldHashTable); err != nil {
 		return fmt.Errorf("write field hash table: %w", err)
 	}
 
@@ -160,7 +167,11 @@ func (jf *File) syncHeader() error {
 	// Write the entire header in a single syscall. At 272 bytes this fits well
 	// within a filesystem block, giving readers a coherent view without the
 	// risk of observing partially-updated fields.
-	_, err := jf.f.WriteAt(jf.header.Encode(), 0)
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, le, &jf.header); err != nil {
+		return err
+	}
+	_, err := jf.f.WriteAt(buf.Bytes(), 0)
 	return err
 }
 
@@ -227,6 +238,26 @@ func align64(n uint64) uint64 {
 	return (n + 7) &^ 7
 }
 
+// writeAt writes a binary-encodable value at the given file offset.
+func (jf *File) writeAt(offset int64, v any) error {
+	var buf bytes.Buffer
+	if err := binary.Write(&buf, le, v); err != nil {
+		return err
+	}
+	_, err := jf.f.WriteAt(buf.Bytes(), offset)
+	return err
+}
+
+// readAt reads a binary-decodable value from the given file offset.
+func (jf *File) readAt(offset int64, v any) error {
+	size := binary.Size(v)
+	buf := make([]byte, size)
+	if _, err := jf.f.ReadAt(buf, offset); err != nil {
+		return err
+	}
+	return binary.Read(bytes.NewReader(buf), le, v)
+}
+
 // beginWrite mirrors journald: mark the header ONLINE so readers know the file
 // may be mid-update. We immediately persist the state flip so new readers see it.
 func (jf *File) beginWrite() error {
@@ -256,16 +287,11 @@ func (jf *File) appendData(data []byte, hash uint64) (uint64, error) {
 		return 0, err
 	}
 
-	// Read the field's current head_data_offset (at offset 32 in the field object)
+	// Read the field's current head_data_offset
 	var prevHeadData uint64
-	if _, err := jf.f.Seek(int64(fieldOffset)+32, 0); err != nil {
+	if err := jf.readAt(int64(fieldOffset)+FieldObjectHeaderSize-8, &prevHeadData); err != nil {
 		return 0, err
 	}
-	headBuf := make([]byte, 8)
-	if _, err := jf.f.Read(headBuf); err != nil {
-		return 0, err
-	}
-	prevHeadData = le.Uint64(headBuf)
 
 	// Object size is exact (header + payload), no padding in size
 	objSize := uint64(DataObjectHeaderSize + len(data))
@@ -286,27 +312,23 @@ func (jf *File) appendData(data []byte, hash uint64) (uint64, error) {
 		offset = int64(alignedOffset)
 	}
 
-	// Build data object with exact size
-	buf := make([]byte, objSize)
-	buf[0] = ObjectData // type
-	buf[1] = 0          // flags (no compression)
-	le.PutUint64(buf[8:16], objSize)
-	le.PutUint64(buf[16:24], hash)
-	// NextHashOffset at 24: 0 (we don't chain data objects in hash table)
-	le.PutUint64(buf[32:40], prevHeadData) // NextFieldOffset: link to previous head
-	// EntryOffset, EntryArrayOffset, NEntries: 0 for now
-	copy(buf[DataObjectHeaderSize:], data)
-
-	if _, err := jf.f.Write(buf); err != nil {
+	// Build and write data object header
+	dataHdr := DataObject{
+		ObjectHeader:    ObjectHeader{Type: ObjectData, Size: objSize},
+		Hash:            hash,
+		NextFieldOffset: prevHeadData, // link to previous head
+	}
+	if err := binary.Write(jf.f, le, &dataHdr); err != nil {
+		return 0, err
+	}
+	// Write payload
+	if _, err := jf.f.Write(data); err != nil {
 		return 0, err
 	}
 
 	// Update field's head_data_offset to point to this new data object
-	if _, err := jf.f.Seek(int64(fieldOffset)+32, 0); err != nil {
-		return 0, err
-	}
-	le.PutUint64(headBuf, uint64(offset))
-	if _, err := jf.f.Write(headBuf); err != nil {
+	newHeadData := uint64(offset)
+	if err := jf.writeAt(int64(fieldOffset)+FieldObjectHeaderSize-8, &newHeadData); err != nil {
 		return 0, err
 	}
 
@@ -347,15 +369,16 @@ func (jf *File) ensureField(fieldName []byte, hash uint64) (uint64, error) {
 		offset = int64(alignedOffset)
 	}
 
-	buf := make([]byte, objSize)
-	buf[0] = ObjectField
-	le.PutUint64(buf[8:16], objSize)
-	le.PutUint64(buf[16:24], hash)
-	// NextHashOffset at offset 24: will be set by linkFieldHash
-	// HeadDataOffset at offset 32: starts as 0, updated when data is linked
-	copy(buf[FieldObjectHeaderSize:], fieldName)
-
-	if _, err := jf.f.Write(buf); err != nil {
+	// Build and write field object header
+	fieldHdr := FieldObject{
+		ObjectHeader: ObjectHeader{Type: ObjectField, Size: objSize},
+		Hash:         hash,
+	}
+	if err := binary.Write(jf.f, le, &fieldHdr); err != nil {
+		return 0, err
+	}
+	// Write payload (field name)
+	if _, err := jf.f.Write(fieldName); err != nil {
 		return 0, err
 	}
 
@@ -387,28 +410,15 @@ func (jf *File) linkDataHash(offset, hash uint64, idx uint64) error {
 
 	// If there was a previous tail, update its next_hash_offset to point to this new one
 	if prevTail != 0 {
-		// Data object's next_hash_offset is at byte offset 24
-		if _, err := jf.f.Seek(int64(prevTail)+24, 0); err != nil {
-			return err
-		}
-		buf := make([]byte, 8)
-		le.PutUint64(buf, offset)
-		if _, err := jf.f.Write(buf); err != nil {
+		// Data object's next_hash_offset is at byte 24 (after ObjectHeader + Hash)
+		if err := jf.writeAt(int64(prevTail)+ObjectHeaderSize+8, &offset); err != nil {
 			return err
 		}
 	}
 
 	// Write hash table entry to disk
-	hashTableOffset := jf.header.DataHashTableOffset + idx*HashItemSize
-	if _, err := jf.f.Seek(int64(hashTableOffset), 0); err != nil {
-		return err
-	}
-
-	buf := make([]byte, HashItemSize)
-	le.PutUint64(buf[0:8], item.HeadHashOffset)
-	le.PutUint64(buf[8:16], item.TailHashOffset)
-	_, err := jf.f.Write(buf)
-	return err
+	hashTableOffset := int64(jf.header.DataHashTableOffset + idx*HashItemSize)
+	return jf.writeAt(hashTableOffset, item)
 }
 
 func (jf *File) linkFieldHash(offset, hash uint64, idx uint64) error {
@@ -420,71 +430,43 @@ func (jf *File) linkFieldHash(offset, hash uint64, idx uint64) error {
 	item.TailHashOffset = offset
 
 	// Write hash table entry to disk
-	hashTableOffset := jf.header.FieldHashTableOffset + idx*HashItemSize
-	if _, err := jf.f.Seek(int64(hashTableOffset), 0); err != nil {
-		return err
-	}
-
-	buf := make([]byte, HashItemSize)
-	le.PutUint64(buf[0:8], item.HeadHashOffset)
-	le.PutUint64(buf[8:16], item.TailHashOffset)
-	_, err := jf.f.Write(buf)
-	return err
+	hashTableOffset := int64(jf.header.FieldHashTableOffset + idx*HashItemSize)
+	return jf.writeAt(hashTableOffset, item)
 }
 
 // linkDataToEntry updates a data object to reference an entry.
 // For the first entry, sets entry_offset. For additional entries, uses entry arrays.
 func (jf *File) linkDataToEntry(dataOffset, entryOffset uint64) error {
-	// Data object layout:
-	// 40-48: entry_offset
-	// 48-56: entry_array_offset
-	// 56-64: n_entries
-
-	// Read current state
-	if _, err := jf.f.Seek(int64(dataOffset)+40, 0); err != nil {
-		return err
-	}
-	buf := make([]byte, 24)
-	if _, err := jf.f.Read(buf); err != nil {
+	// Read current entry info from data object (at offset 40 = DataObjectHeaderSize - 24)
+	entryInfoOffset := int64(dataOffset) + DataObjectHeaderSize - 24
+	var info DataEntryInfo
+	if err := jf.readAt(entryInfoOffset, &info); err != nil {
 		return err
 	}
 
-	currentEntryOffset := le.Uint64(buf[0:8])
-	entryArrayOffset := le.Uint64(buf[8:16])
-	nEntries := le.Uint64(buf[16:24])
-
-	if currentEntryOffset == 0 {
+	if info.EntryOffset == 0 {
 		// First entry - just set entry_offset
-		le.PutUint64(buf[0:8], entryOffset)
+		info.EntryOffset = entryOffset
 	} else {
 		// Additional entry - need to use entry array
-		if entryArrayOffset == 0 {
+		if info.EntryArrayOffset == 0 {
 			// Create first entry array
 			arrayOffset, err := jf.createEntryArray(entryOffset)
 			if err != nil {
 				return err
 			}
-			le.PutUint64(buf[8:16], arrayOffset)
+			info.EntryArrayOffset = arrayOffset
 		} else {
 			// Append to existing entry array chain
-			if err := jf.appendToEntryArray(entryArrayOffset, entryOffset); err != nil {
+			if err := jf.appendToEntryArray(info.EntryArrayOffset, entryOffset); err != nil {
 				return err
 			}
 		}
 	}
 
-	// Increment n_entries
-	le.PutUint64(buf[16:24], nEntries+1)
-
-	// Write back
-	if _, err := jf.f.Seek(int64(dataOffset)+40, 0); err != nil {
-		return err
-	}
-	if _, err := jf.f.Write(buf); err != nil {
-		return err
-	}
-
-	return nil
+	// Increment n_entries and write back
+	info.NEntries++
+	return jf.writeAt(entryInfoOffset, &info)
 }
 
 // createEntryArray creates a new entry array object with one entry.
@@ -507,14 +489,17 @@ func (jf *File) createEntryArray(entryOffset uint64) (uint64, error) {
 		offset = int64(alignedOffset)
 	}
 
-	buf := make([]byte, objSize)
-	buf[0] = ObjectEntryArray
-	le.PutUint64(buf[8:16], objSize)
-	// next_entry_array_offset at 16: 0
-	// First item at 24
-	le.PutUint64(buf[24:32], entryOffset)
-
-	if _, err := jf.f.Write(buf); err != nil {
+	// Write entry array header
+	arrayHdr := EntryArrayObject{
+		ObjectHeader: ObjectHeader{Type: ObjectEntryArray, Size: objSize},
+	}
+	if err := binary.Write(jf.f, le, &arrayHdr); err != nil {
+		return 0, err
+	}
+	// Write first item and padding (zeros for remaining slots)
+	items := make([]uint64, initialCapacity)
+	items[0] = entryOffset
+	if err := binary.Write(jf.f, le, items); err != nil {
 		return 0, err
 	}
 
@@ -530,39 +515,34 @@ func (jf *File) appendToEntryArray(arrayOffset, entryOffset uint64) error {
 	// Find the last array in the chain and find a free slot
 	for {
 		// Read array header
-		if _, err := jf.f.Seek(int64(arrayOffset), 0); err != nil {
+		var hdr EntryArrayObject
+		if err := jf.readAt(int64(arrayOffset), &hdr); err != nil {
 			return err
 		}
-		header := make([]byte, EntryArrayObjectHeaderSize)
-		if _, err := jf.f.Read(header); err != nil {
-			return err
-		}
-
-		objSize := le.Uint64(header[8:16])
-		nextArray := le.Uint64(header[16:24])
 
 		// If there's a next array, follow the chain
-		if nextArray != 0 {
-			arrayOffset = nextArray
+		if hdr.NextEntryArrayOffset != 0 {
+			arrayOffset = hdr.NextEntryArrayOffset
 			continue
 		}
 
 		// Read items to find a free slot (0 means empty)
-		itemCount := (objSize - EntryArrayObjectHeaderSize) / 8
-		items := make([]byte, itemCount*8)
-		if _, err := jf.f.Read(items); err != nil {
+		itemCount := (hdr.Size - EntryArrayObjectHeaderSize) / 8
+		items := make([]uint64, itemCount)
+		itemsOffset := int64(arrayOffset) + EntryArrayObjectHeaderSize
+		buf := make([]byte, itemCount*8)
+		if _, err := jf.f.ReadAt(buf, itemsOffset); err != nil {
+			return err
+		}
+		if err := binary.Read(bytes.NewReader(buf), le, items); err != nil {
 			return err
 		}
 
 		for i := uint64(0); i < itemCount; i++ {
-			if le.Uint64(items[i*8:(i+1)*8]) == 0 {
+			if items[i] == 0 {
 				// Found free slot, write entry offset
-				if _, err := jf.f.Seek(int64(arrayOffset)+int64(EntryArrayObjectHeaderSize)+int64(i*8), 0); err != nil {
-					return err
-				}
-				buf := make([]byte, 8)
-				le.PutUint64(buf, entryOffset)
-				if _, err := jf.f.Write(buf); err != nil {
+				slotOffset := itemsOffset + int64(i*8)
+				if err := jf.writeAt(slotOffset, &entryOffset); err != nil {
 					return err
 				}
 				return nil
@@ -576,12 +556,7 @@ func (jf *File) appendToEntryArray(arrayOffset, entryOffset uint64) error {
 		}
 
 		// Update next_entry_array_offset in current array
-		if _, err := jf.f.Seek(int64(arrayOffset)+16, 0); err != nil {
-			return err
-		}
-		buf := make([]byte, 8)
-		le.PutUint64(buf, newArrayOffset)
-		if _, err := jf.f.Write(buf); err != nil {
+		if err := jf.writeAt(int64(arrayOffset)+ObjectHeaderSize, &newArrayOffset); err != nil {
 			return err
 		}
 
@@ -611,23 +586,20 @@ func (jf *File) appendEntryObject(realtime, monotonic, xorHash uint64, items []E
 	jf.header.TailEntrySeqnum++
 	seqnum := jf.header.TailEntrySeqnum
 
-	buf := make([]byte, objSize)
-	buf[0] = ObjectEntry
-	le.PutUint64(buf[8:16], objSize)
-	le.PutUint64(buf[16:24], seqnum)
-	le.PutUint64(buf[24:32], realtime)
-	le.PutUint64(buf[32:40], monotonic)
-	copy(buf[40:56], jf.bootID[:])
-	le.PutUint64(buf[56:64], xorHash)
-
-	// Write items
-	for i, item := range items {
-		itemOffset := EntryObjectHeaderSize + i*EntryItemSize
-		le.PutUint64(buf[itemOffset:itemOffset+8], item.ObjectOffset)
-		le.PutUint64(buf[itemOffset+8:itemOffset+16], item.Hash)
+	// Write entry header
+	entryHdr := EntryObject{
+		ObjectHeader: ObjectHeader{Type: ObjectEntry, Size: objSize},
+		Seqnum:       seqnum,
+		Realtime:     realtime,
+		Monotonic:    monotonic,
+		BootID:       jf.bootID,
+		XorHash:      xorHash,
 	}
-
-	if _, err := jf.f.Write(buf); err != nil {
+	if err := binary.Write(jf.f, le, &entryHdr); err != nil {
+		return err
+	}
+	// Write items
+	if err := binary.Write(jf.f, le, items); err != nil {
 		return err
 	}
 
@@ -746,24 +718,21 @@ func (jf *File) appendEntryArray(prevTail uint32, entryOffset uint64) (uint64, e
 		offset = int64(alignedOffset)
 	}
 
-	buf := make([]byte, objSize)
-	buf[0] = ObjectEntryArray
-	le.PutUint64(buf[8:16], objSize)
-	// NextEntryArrayOffset remains zero until we link a subsequent array.
-	le.PutUint64(buf[EntryArrayObjectHeaderSize:], entryOffset)
-
-	if _, err := jf.f.Write(buf); err != nil {
+	// Write entry array header + single item
+	arrayHdr := EntryArrayObject{
+		ObjectHeader: ObjectHeader{Type: ObjectEntryArray, Size: objSize},
+	}
+	if err := binary.Write(jf.f, le, &arrayHdr); err != nil {
+		return 0, err
+	}
+	if err := binary.Write(jf.f, le, &entryOffset); err != nil {
 		return 0, err
 	}
 
-	// Link previous tail to this new array.
+	// Link previous tail to this new array
 	if prevTail != 0 {
-		if _, err := jf.f.Seek(int64(prevTail)+16, 0); err != nil {
-			return 0, err
-		}
-		link := make([]byte, 8)
-		le.PutUint64(link, uint64(offset))
-		if _, err := jf.f.Write(link); err != nil {
+		linkOffset := uint64(offset)
+		if err := jf.writeAt(int64(prevTail)+ObjectHeaderSize, &linkOffset); err != nil {
 			return 0, err
 		}
 	}

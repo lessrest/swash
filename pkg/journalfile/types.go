@@ -156,43 +156,12 @@ type EntryArrayObject struct {
 
 const EntryArrayObjectHeaderSize = ObjectHeaderSize + 8
 
-// Endianness helpers
-var le = binary.LittleEndian
-
-func (h *Header) Encode() []byte {
-	buf := make([]byte, HeaderSize)
-	copy(buf[0:8], h.Signature[:])
-	le.PutUint32(buf[8:12], h.CompatibleFlags)
-	le.PutUint32(buf[12:16], h.IncompatibleFlags)
-	buf[16] = h.State
-	copy(buf[17:24], h.Reserved[:])
-	copy(buf[24:40], h.FileID[:])
-	copy(buf[40:56], h.MachineID[:])
-	copy(buf[56:72], h.TailEntryBootID[:])
-	copy(buf[72:88], h.SeqnumID[:])
-	le.PutUint64(buf[88:96], h.HeaderSize)
-	le.PutUint64(buf[96:104], h.ArenaSize)
-	le.PutUint64(buf[104:112], h.DataHashTableOffset)
-	le.PutUint64(buf[112:120], h.DataHashTableSize)
-	le.PutUint64(buf[120:128], h.FieldHashTableOffset)
-	le.PutUint64(buf[128:136], h.FieldHashTableSize)
-	le.PutUint64(buf[136:144], h.TailObjectOffset)
-	le.PutUint64(buf[144:152], h.NObjects)
-	le.PutUint64(buf[152:160], h.NEntries)
-	le.PutUint64(buf[160:168], h.TailEntrySeqnum)
-	le.PutUint64(buf[168:176], h.HeadEntrySeqnum)
-	le.PutUint64(buf[176:184], h.EntryArrayOffset)
-	le.PutUint64(buf[184:192], h.HeadEntryRealtime)
-	le.PutUint64(buf[192:200], h.TailEntryRealtime)
-	le.PutUint64(buf[200:208], h.TailEntryMonotonic)
-	le.PutUint64(buf[208:216], h.NData)
-	le.PutUint64(buf[216:224], h.NFields)
-	le.PutUint64(buf[224:232], h.NTags)
-	le.PutUint64(buf[232:240], h.NEntryArrays)
-	le.PutUint64(buf[240:248], h.DataHashChainDepth)
-	le.PutUint64(buf[248:256], h.FieldHashChainDepth)
-	le.PutUint32(buf[256:260], h.TailEntryArrayOffset)
-	le.PutUint32(buf[260:264], h.TailEntryArrayNEntries)
-	le.PutUint64(buf[264:272], h.TailEntryOffset)
-	return buf
+// DataEntryInfo holds the entry-related fields of a DataObject (for partial reads/writes)
+type DataEntryInfo struct {
+	EntryOffset      uint64
+	EntryArrayOffset uint64
+	NEntries         uint64
 }
+
+// Endianness for binary.Read/Write
+var le = binary.LittleEndian
