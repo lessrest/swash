@@ -11,21 +11,21 @@ input, kill process) and uses the journal for output streaming.
 ```mermaid
 flowchart TD
     CLI[swash CLI]
-    
+
     CLI -->|D-Bus| SYSTEMD[systemd user]
     CLI -->|D-Bus| HOST
-    
+
     subgraph HOST[swash-host-ABC123.service]
         HOSTINNER[Host / TTYHost<br/>SendInput, Kill, Gist]
     end
-    
+
     SYSTEMD -->|StartTransient| HOST
     HOST -->|StartTransient| TASK
-    
+
     subgraph SLICE[swash-ABC123.slice]
         TASK[swash-task-ABC123.service<br/>the actual command]
     end
-    
+
     HOST -->|Write| JOURNAL[(systemd journal<br/>SWASH_SESSION=ABC123)]
     TASK -.->|stdout/stderr| HOST
 ```
@@ -129,9 +129,9 @@ The CLI (`cmd/swash`) is the main entry point. It talks to systemd over D-Bus
 to start sessions and connects to running host services to send input or query
 status.
 
-The core library (`internal/swash`) contains the session host implementations.
-`Host` handles simple pipe-based I/O, while `TTYHost` adds pseudo-terminal
-allocation and libvterm integration. Both implement the same D-Bus interface,
+The core library (`internal/`) is split into focused packages. The session host
+implementations live in `internal/host` (`Host`, pipe-based I/O) and
+`internal/tty` (`TTYHost`, PTY + libvterm). Both expose the same D-Bus surface,
 so the CLI doesn't need to know which mode a session is using.
 
 The vterm package (`pkg/vterm`) provides Go bindings to libvterm. It tracks

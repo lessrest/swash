@@ -1,3 +1,8 @@
+// Package journalfile implements a writer for systemd journal (*.journal) files.
+//
+// This package is intended to be usable independently of swash; swash uses it
+// to let `cmd/mini-systemd` write real journal files that can be read by
+// `journalctl`.
 package journalfile
 
 import (

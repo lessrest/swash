@@ -5,14 +5,14 @@ package templates
 
 //lint:file-ignore SA4006 This context is only used if a nested component is present.
 
-import "github.com/a-h/templ"
-import templruntime "github.com/a-h/templ/runtime"
-
 import (
 	"fmt"
 	"time"
 
-	"github.com/mbrock/swash/internal/swash"
+	"github.com/a-h/templ"
+	templruntime "github.com/a-h/templ/runtime"
+
+	swrt "github.com/mbrock/swash/internal/runtime"
 )
 
 func parseStarted(s string) time.Time {
@@ -28,7 +28,7 @@ func formatTime(s string) string {
 	return started.Format("15:04:05")
 }
 
-func SessionsPage(sessions []swash.Session) templ.Component {
+func SessionsPage(sessions []swrt.Session) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -83,7 +83,7 @@ func SessionsPage(sessions []swash.Session) templ.Component {
 	})
 }
 
-func SessionsTable(sessions []swash.Session) templ.Component {
+func SessionsTable(sessions []swrt.Session) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {

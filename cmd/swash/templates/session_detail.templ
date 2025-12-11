@@ -3,10 +3,10 @@ package templates
 import (
 	"fmt"
 
-	"github.com/mbrock/swash/internal/swash"
+	swrt "github.com/mbrock/swash/internal/runtime"
 )
 
-templ SessionDetailPage(session *swash.Session) {
+templ SessionDetailPage(session *swrt.Session) {
 	@Layout(fmt.Sprintf("swash - %s", session.ID)) {
 		<nav><a href="/sessions">← All Sessions</a></nav>
 		<h1>Session { session.ID }</h1>

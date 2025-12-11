@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/mbrock/swash/cmd/swash/templates"
-	"github.com/mbrock/swash/internal/swash"
+	"github.com/mbrock/swash/internal/eventlog"
+	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
+	swrt "github.com/mbrock/swash/internal/runtime"
 	"golang.org/x/net/websocket"
 )
 
@@ -96,7 +98,7 @@ ExecStart=%s http
 
 	// Connect to systemd and enable
 	ctx := context.Background()
-	sd, err := swash.ConnectUserSystemd(ctx)
+	sd, err := systemdproc.ConnectUserSystemd(ctx)
 	if err != nil {
 		fatal("connecting to systemd: %v", err)
 	}
@@ -112,7 +114,7 @@ ExecStart=%s http
 	}
 	fmt.Println("enabled swash-http.socket")
 
-	if err := sd.StartUnit(ctx, swash.UnitName("swash-http.socket")); err != nil {
+	if err := sd.StartUnit(ctx, systemdproc.UnitName("swash-http.socket")); err != nil {
 		fatal("starting socket: %v", err)
 	}
 	fmt.Printf("started swash-http.socket on port %s\n", port)
@@ -120,15 +122,15 @@ ExecStart=%s http
 
 func httpUninstall() {
 	ctx := context.Background()
-	sd, err := swash.ConnectUserSystemd(ctx)
+	sd, err := systemdproc.ConnectUserSystemd(ctx)
 	if err != nil {
 		fatal("connecting to systemd: %v", err)
 	}
 	defer sd.Close()
 
 	// Stop and disable
-	sd.StopUnit(ctx, swash.UnitName("swash-http.service"))
-	sd.StopUnit(ctx, swash.UnitName("swash-http.socket"))
+	sd.StopUnit(ctx, systemdproc.UnitName("swash-http.service"))
+	sd.StopUnit(ctx, systemdproc.UnitName("swash-http.socket"))
 	sd.DisableUnits(ctx, []string{"swash-http.socket"})
 	fmt.Println("stopped and disabled swash-http")
 
@@ -145,20 +147,20 @@ func httpUninstall() {
 
 func httpStatus() {
 	ctx := context.Background()
-	sd, err := swash.ConnectUserSystemd(ctx)
+	sd, err := systemdproc.ConnectUserSystemd(ctx)
 	if err != nil {
 		fatal("connecting to systemd: %v", err)
 	}
 	defer sd.Close()
 
-	socketUnit, err := sd.GetUnit(ctx, swash.UnitName("swash-http.socket"))
+	socketUnit, err := sd.GetUnit(ctx, systemdproc.UnitName("swash-http.socket"))
 	if err != nil {
 		fmt.Println("swash-http.socket: not installed")
 	} else {
 		fmt.Printf("swash-http.socket: %s\n", socketUnit.State)
 	}
 
-	serviceUnit, err := sd.GetUnit(ctx, swash.UnitName("swash-http.service"))
+	serviceUnit, err := sd.GetUnit(ctx, systemdproc.UnitName("swash-http.service"))
 	if err != nil {
 		fmt.Println("swash-http.service: not running")
 	} else {
@@ -170,7 +172,7 @@ func httpStatus() {
 
 func runHTTPServer() {
 	var err error
-	rt, err = swash.DefaultRuntime(context.Background())
+	rt, err = swrt.DefaultRuntime(context.Background())
 	if err != nil {
 		fatal("initializing runtime: %v", err)
 	}
@@ -256,7 +258,7 @@ func handleStartSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	hostCommand := findHostCommand()
-	opts := swash.SessionOptions{TTY: tty}
+	opts := swrt.SessionOptions{TTY: tty}
 
 	sessionID, err := rt.StartSessionWithOptions(r.Context(), command, hostCommand, opts)
 	if err != nil {
@@ -341,7 +343,7 @@ func handleGetSession(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(session)
 }
 
-func getSessionByID(ctx context.Context, id string) (*swash.Session, error) {
+func getSessionByID(ctx context.Context, id string) (*swrt.Session, error) {
 	sessions, err := rt.ListSessions(ctx)
 	if err != nil {
 		return nil, err
@@ -462,11 +464,11 @@ func handleSessionOutput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filters := []swash.EventFilter{swash.FilterBySession(sessionID)}
+	filters := []eventlog.EventFilter{eventlog.FilterBySession(sessionID)}
 
 	for entry := range rt.Events.Follow(r.Context(), filters) {
-		if entry.Fields[swash.FieldEvent] == swash.EventExited {
-			fmt.Fprintf(w, "event: exit\ndata: %s\n\n", entry.Fields[swash.FieldExitCode])
+		if entry.Fields[eventlog.FieldEvent] == eventlog.EventExited {
+			fmt.Fprintf(w, "event: exit\ndata: %s\n\n", entry.Fields[eventlog.FieldExitCode])
 			flusher.Flush()
 			return
 		}

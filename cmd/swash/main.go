@@ -24,7 +24,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbrock/swash/internal/swash"
+	"github.com/mbrock/swash/internal/host"
+	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
+	"github.com/mbrock/swash/internal/process"
+	"github.com/mbrock/swash/internal/protocol"
+	swrt "github.com/mbrock/swash/internal/runtime"
 	flag "github.com/spf13/pflag"
 )
 
@@ -40,7 +44,7 @@ var (
 )
 
 // Global runtime (initialized for commands that need it)
-var rt *swash.Runtime
+var rt *swrt.Runtime
 
 func main() {
 	// Handle "host" subcommand before flag parsing, since it has its own flags
@@ -170,7 +174,7 @@ func fatal(format string, args ...any) {
 // initRuntime initializes the global runtime. Call this before using rt.
 func initRuntime() {
 	var err error
-	rt, err = swash.DefaultRuntime(context.Background())
+	rt, err = swrt.DefaultRuntime(context.Background())
 	if err != nil {
 		fatal("initializing runtime: %v", err)
 	}
@@ -219,7 +223,7 @@ func findHostCommand() []string {
 // cmdHost runs as the task host (D-Bus server for a session).
 // This is launched by systemd, not by users directly.
 func cmdHost() {
-	if err := swash.RunHost(); err != nil {
+	if err := host.RunHost(); err != nil {
 		fatal("%v", err)
 	}
 }
@@ -242,7 +246,7 @@ func cmdNotifyExit() {
 
 	// Connect to systemd and emit unit exit notification
 	ctx := context.Background()
-	systemd, err := swash.ConnectUserSystemd(ctx)
+	systemd, err := systemdproc.ConnectUserSystemd(ctx)
 	if err != nil {
 		// Don't fatal - systemd may not be available
 		fmt.Fprintf(os.Stderr, "swash notify-exit: connecting to systemd: %v\n", err)
@@ -250,9 +254,9 @@ func cmdNotifyExit() {
 	}
 	defer systemd.Close()
 
-	backend := swash.NewSystemdBackend(systemd)
+	backend := systemdproc.NewSystemdBackend(systemd)
 
-	if err := backend.EmitExit(ctx, swash.TaskProcess(sessionID), exitStatus, serviceResult); err != nil {
+	if err := backend.EmitExit(ctx, process.TaskProcess(sessionID), exitStatus, serviceResult); err != nil {
 		fmt.Fprintf(os.Stderr, "swash notify-exit: emitting exit: %v\n", err)
 		os.Exit(1)
 	}
@@ -290,8 +294,8 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 	hostCommand := findHostCommand()
 
 	// Build session options from flags
-	opts := swash.SessionOptions{
-		Protocol: swash.Protocol(protocolFlag),
+	opts := swrt.SessionOptions{
+		Protocol: protocol.Protocol(protocolFlag),
 		Tags:     parseTags(tagFlags),
 		TTY:      ttyFlag,
 		Rows:     rowsFlag,
@@ -329,19 +333,19 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 	exitCode, result := rt.FollowSession(ctx, sessionID, detachAfter, outputLimit)
 
 	switch result {
-	case swash.FollowCompleted:
+	case swrt.FollowCompleted:
 		os.Exit(exitCode)
-	case swash.FollowTimedOut:
+	case swrt.FollowTimedOut:
 		fmt.Fprintf(os.Stderr, "swash: still running after %s, detaching\n", detachAfter)
 		fmt.Fprintf(os.Stderr, "swash: session ID: %s\n", sessionID)
 		fmt.Fprintf(os.Stderr, "swash: swash follow %s\n", sessionID)
 		os.Exit(1)
-	case swash.FollowOutputLimit:
+	case swrt.FollowOutputLimit:
 		fmt.Fprintf(os.Stderr, "swash: output exceeded %d bytes, detaching\n", outputLimit)
 		fmt.Fprintf(os.Stderr, "swash: session ID: %s\n", sessionID)
 		fmt.Fprintf(os.Stderr, "swash: swash follow %s\n", sessionID)
 		os.Exit(1)
-	case swash.FollowCancelled:
+	case swrt.FollowCancelled:
 		fmt.Fprintf(os.Stderr, "swash: cancelled, killed session %s\n", sessionID)
 		os.Exit(130) // Standard exit code for SIGINT
 	}
@@ -354,8 +358,8 @@ func cmdRunTTY(command []string) {
 	hostCommand := findHostCommand()
 
 	rows, cols := GetContentSize()
-	opts := swash.SessionOptions{
-		Protocol: swash.Protocol(protocolFlag),
+	opts := swrt.SessionOptions{
+		Protocol: protocol.Protocol(protocolFlag),
 		Tags:     parseTags(tagFlags),
 		TTY:      true,
 		Rows:     rows,
@@ -409,7 +413,7 @@ func cmdFollow(sessionID string) {
 	defer rt.Close()
 
 	exitCode, result := rt.FollowSession(context.Background(), sessionID, 0, 0)
-	if result == swash.FollowCancelled {
+	if result == swrt.FollowCancelled {
 		os.Exit(130)
 	}
 	os.Exit(exitCode)

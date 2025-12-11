@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mbrock/swash/internal/swash"
+	swrt "github.com/mbrock/swash/internal/runtime"
 )
 
 func parseStarted(s string) time.Time {
@@ -20,7 +20,7 @@ func formatTime(s string) string {
 	return started.Format("15:04:05")
 }
 
-templ SessionsPage(sessions []swash.Session) {
+templ SessionsPage(sessions []swrt.Session) {
 	@Layout("swash - sessions") {
 		<h1>Sessions</h1>
 		<nav class="btn-group">
@@ -33,7 +33,7 @@ templ SessionsPage(sessions []swash.Session) {
 	}
 }
 
-templ SessionsTable(sessions []swash.Session) {
+templ SessionsTable(sessions []swrt.Session) {
 	<table id="sessions-table">
 		<thead>
 			<tr>

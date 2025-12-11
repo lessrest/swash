@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/mbrock/swash/internal/swash"
+	"github.com/mbrock/swash/internal/session"
 	"github.com/mbrock/swash/pkg/vterm"
 	"golang.org/x/term"
 )
@@ -252,7 +252,7 @@ func runVtermOwner(ctx context.Context, msgCh <-chan vtermMsg, renderer *termina
 // attachSession encapsulates the state for an attached terminal session.
 type attachSession struct {
 	sessionID string
-	client    swash.TTYClient
+	client    session.TTYClient
 	stdinFd   int
 	oldState  *term.State
 
@@ -282,7 +282,7 @@ type attachSession struct {
 	exitCode   *int32
 }
 
-func newAttachSession(sessionID string, connectTTY func(string) (swash.TTYClient, error)) (*attachSession, error) {
+func newAttachSession(sessionID string, connectTTY func(string) (session.TTYClient, error)) (*attachSession, error) {
 	s := &attachSession{
 		sessionID: sessionID,
 		stdinFd:   int(os.Stdin.Fd()),

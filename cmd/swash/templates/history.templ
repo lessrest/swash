@@ -3,7 +3,7 @@ package templates
 import (
 	"fmt"
 
-	"github.com/mbrock/swash/internal/swash"
+	swrt "github.com/mbrock/swash/internal/runtime"
 )
 
 func truncateID(id string) string {
@@ -20,7 +20,7 @@ func formatExitCode(code *int) string {
 	return fmt.Sprintf("%d", *code)
 }
 
-templ HistoryPage(sessions []swash.HistorySession) {
+templ HistoryPage(sessions []swrt.HistorySession) {
 	@Layout("swash - history") {
 		<nav><a href="/sessions">← Sessions</a></nav>
 		<h1>Session History</h1>
