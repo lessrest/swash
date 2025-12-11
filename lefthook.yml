@@ -1,0 +1,17 @@
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      run: gofmt -l -w . && git add -u
+      skip:
+        - merge
+        - rebase
+    vet:
+      # Filter known false positive from vterm cgo
+      run: go vet ./... 2>&1 | grep -v "possible misuse of unsafe.Pointer" | grep -v "^#" || true
+    staticcheck:
+      run: staticcheck ./...
+    test-unit:
+      run: go test ./pkg/... ./internal/...
+    test-integration:
+      run: make test-integration
