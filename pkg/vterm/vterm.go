@@ -5,6 +5,7 @@ package vterm
 #cgo CFLAGS: -I${SRCDIR}/libvterm/include -I${SRCDIR}/libvterm/src
 #include <vterm.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 // Forward declarations for callbacks
@@ -26,8 +27,8 @@ static VTermScreenCallbacks go_screen_callbacks = {
     .sb_clear = NULL,
 };
 
-static void set_screen_callbacks(VTermScreen* screen, void* user) {
-    vterm_screen_set_callbacks(screen, &go_screen_callbacks, user);
+static void set_screen_callbacks(VTermScreen* screen, uintptr_t handle) {
+    vterm_screen_set_callbacks(screen, &go_screen_callbacks, (void*)handle);
 }
 
 // Helper to extract string from VTermValue for VTERM_PROP_TITLE
@@ -162,7 +163,7 @@ func New(rows, cols int) *VTerm {
 
 	// Create handle and set callbacks
 	vt.handle = cgo.NewHandle(vt)
-	C.set_screen_callbacks(vt.screen, unsafe.Pointer(vt.handle))
+	C.set_screen_callbacks(vt.screen, C.uintptr_t(vt.handle))
 
 	return vt
 }

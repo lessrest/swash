@@ -7,8 +7,7 @@ pre-commit:
         - merge
         - rebase
     vet:
-      # Filter known false positive from vterm cgo
-      run: go vet ./... 2>&1 | grep -v "possible misuse of unsafe.Pointer" | grep -v "^#" || true
+      run: go vet ./...
     staticcheck:
       run: staticcheck ./...
     test-unit:
