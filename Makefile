@@ -32,7 +32,7 @@ test-unit:
 	go test ./pkg/... ./internal/...
 
 test-integration: build
-	go test ./test/... -v -timeout 120s
+	go test ./integration/... -v -timeout 120s
 
 clean:
 	rm -rf bin/
