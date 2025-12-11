@@ -157,91 +157,11 @@ func (jf *File) initialize() error {
 }
 
 func (jf *File) syncHeader() error {
-	// Update only the mutable header fields in a stable order so readers
-	// never observe an impossible combination during concurrent opens.
-	write64 := func(off int64, v uint64) error {
-		var buf [8]byte
-		le.PutUint64(buf[:], v)
-		_, err := jf.f.WriteAt(buf[:], off)
-		return err
-	}
-	writeBytes := func(off int64, b []byte) error {
-		_, err := jf.f.WriteAt(b, off)
-		return err
-	}
-
-	// Arena and tail bounds first so subsequent offsets are always valid.
-	if err := write64(96, jf.header.ArenaSize); err != nil { // arena_size
-		return err
-	}
-	if err := write64(136, jf.header.TailObjectOffset); err != nil { // tail_object_offset
-		return err
-	}
-
-	// Entry array anchor (may be zero until first entry).
-	if err := write64(176, jf.header.EntryArrayOffset); err != nil { // entry_array_offset
-		return err
-	}
-
-	// Object/entry counters.
-	if err := write64(144, jf.header.NObjects); err != nil { // n_objects
-		return err
-	}
-	if err := write64(152, jf.header.NEntries); err != nil { // n_entries
-		return err
-	}
-	if err := write64(232, jf.header.NEntryArrays); err != nil { // n_entry_arrays
-		return err
-	}
-	if err := write64(208, jf.header.NData); err != nil { // n_data
-		return err
-	}
-	if err := write64(216, jf.header.NFields); err != nil { // n_fields
-		return err
-	}
-	if err := write64(224, jf.header.NTags); err != nil { // n_tags
-		return err
-	}
-
-	// Sequence numbers.
-	if err := write64(160, jf.header.TailEntrySeqnum); err != nil { // tail_entry_seqnum
-		return err
-	}
-	if err := write64(168, jf.header.HeadEntrySeqnum); err != nil { // head_entry_seqnum
-		return err
-	}
-
-	// Realtime/monotonic metadata and boot IDs.
-	if err := write64(184, jf.header.HeadEntryRealtime); err != nil { // head_entry_realtime
-		return err
-	}
-	if err := write64(192, jf.header.TailEntryRealtime); err != nil { // tail_entry_realtime
-		return err
-	}
-	if err := write64(200, jf.header.TailEntryMonotonic); err != nil { // tail_entry_monotonic
-		return err
-	}
-	if err := writeBytes(56, jf.header.TailEntryBootID[:]); err != nil { // tail_entry_boot_id
-		return err
-	}
-
-	// Tail entry array metadata (uint32 fields) and tail entry offset.
-	var tailArrBuf [8]byte
-	le.PutUint32(tailArrBuf[0:4], jf.header.TailEntryArrayOffset)
-	le.PutUint32(tailArrBuf[4:8], jf.header.TailEntryArrayNEntries)
-	if err := writeBytes(256, tailArrBuf[:]); err != nil {
-		return err
-	}
-	if err := write64(264, jf.header.TailEntryOffset); err != nil { // tail_entry_offset
-		return err
-	}
-
-	// Finally flip the state byte.
-	if _, err := jf.f.WriteAt([]byte{jf.header.State}, 16); err != nil {
-		return err
-	}
-
-	return nil
+	// Write the entire header in a single syscall. At 272 bytes this fits well
+	// within a filesystem block, giving readers a coherent view without the
+	// risk of observing partially-updated fields.
+	_, err := jf.f.WriteAt(jf.header.Encode(), 0)
+	return err
 }
 
 // AppendEntry appends a new journal entry with the given fields
