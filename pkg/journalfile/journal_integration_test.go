@@ -3,6 +3,8 @@ package journalfile
 import (
 	"crypto/rand"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-systemd/v22/sdjournal"
+	"golang.org/x/sys/unix"
 )
 
 // Stress-read the file with sdjournal while we append/sync to ensure readers
@@ -112,28 +115,30 @@ func TestConcurrentOpenWhileWriting(t *testing.T) {
 			default:
 			}
 
-			j, err := sdjournal.NewJournalFromFiles(path)
-			if err != nil {
-				if strings.Contains(err.Error(), "No data available") {
-					errCh <- fmt.Errorf("sdjournal open ENODATA")
+			if err := withLockedJournal(path, func(j *sdjournal.Journal) error {
+				for {
+					n, err := j.Next()
+					if err != nil {
+						return fmt.Errorf("sdjournal next: %w", err)
+					}
+					if n == 0 {
+						break
+					}
+				}
+				return nil
+			}); err != nil {
+				if strings.Contains(strings.ToLower(err.Error()), "no data available") {
+					dst := filepath.Join(os.TempDir(), fmt.Sprintf("fail-concurrent-%d.journal", time.Now().UnixNano()))
+					if copyErr := copyFile(path, dst); copyErr == nil {
+						errCh <- fmt.Errorf("sdjournal open ENODATA (copied to %s)", dst)
+					} else {
+						errCh <- fmt.Errorf("sdjournal open ENODATA (copy failed: %v)", copyErr)
+					}
 					return
 				}
-				errCh <- fmt.Errorf("sdjournal open: %w", err)
+				errCh <- err
 				return
 			}
-
-			for {
-				n, err := j.Next()
-				if err != nil {
-					j.Close()
-					errCh <- fmt.Errorf("sdjournal next: %w", err)
-					return
-				}
-				if n == 0 {
-					break
-				}
-			}
-			j.Close()
 			time.Sleep(5 * time.Millisecond)
 		}
 	}()
@@ -153,25 +158,63 @@ func TestConcurrentOpenWhileWriting(t *testing.T) {
 }
 
 func readJournalFile(path string, maxSeen *int) error {
+	return withLockedJournal(path, func(j *sdjournal.Journal) error {
+		seen := 0
+		for {
+			n, err := j.Next()
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				break
+			}
+			seen++
+		}
+		if seen > *maxSeen {
+			*maxSeen = seen
+		}
+		return nil
+	})
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
+}
+
+// withLockedJournal acquires a shared flock so readers never race with writers.
+// This mirrors journald's own file locking strategy around journal rotations.
+func withLockedJournal(path string, fn func(j *sdjournal.Journal) error) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_SH); err != nil {
+		return err
+	}
+	defer unix.Flock(int(f.Fd()), unix.LOCK_UN)
+
 	j, err := sdjournal.NewJournalFromFiles(path)
 	if err != nil {
 		return err
 	}
 	defer j.Close()
 
-	seen := 0
-	for {
-		n, err := j.Next()
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			break
-		}
-		seen++
-	}
-	if seen > *maxSeen {
-		*maxSeen = seen
-	}
-	return nil
+	return fn(j)
 }

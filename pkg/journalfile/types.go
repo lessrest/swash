@@ -40,30 +40,30 @@ type ID128 [16]byte
 
 // Header is the journal file header (272 bytes)
 type Header struct {
-	Signature           [8]byte  // "LPKSHHRH"
-	CompatibleFlags     uint32   // le32
-	IncompatibleFlags   uint32   // le32
-	State               uint8    // file state
-	Reserved            [7]byte  // padding
-	FileID              ID128    // unique file ID
-	MachineID           ID128    // machine ID
-	TailEntryBootID     ID128    // boot ID of last entry
-	SeqnumID            ID128    // seqnum ID
-	HeaderSize          uint64   // le64
-	ArenaSize           uint64   // le64 - size of data area
-	DataHashTableOffset uint64   // le64
-	DataHashTableSize   uint64   // le64
+	Signature            [8]byte // "LPKSHHRH"
+	CompatibleFlags      uint32  // le32
+	IncompatibleFlags    uint32  // le32
+	State                uint8   // file state
+	Reserved             [7]byte // padding
+	FileID               ID128   // unique file ID
+	MachineID            ID128   // machine ID
+	TailEntryBootID      ID128   // boot ID of last entry
+	SeqnumID             ID128   // seqnum ID
+	HeaderSize           uint64  // le64
+	ArenaSize            uint64  // le64 - size of data area
+	DataHashTableOffset  uint64  // le64
+	DataHashTableSize    uint64  // le64
 	FieldHashTableOffset uint64  // le64
-	FieldHashTableSize  uint64   // le64
-	TailObjectOffset    uint64   // le64 - offset of last object
-	NObjects            uint64   // le64 - number of objects
-	NEntries            uint64   // le64 - number of entries
-	TailEntrySeqnum     uint64   // le64
-	HeadEntrySeqnum     uint64   // le64
-	EntryArrayOffset    uint64   // le64
-	HeadEntryRealtime   uint64   // le64
-	TailEntryRealtime   uint64   // le64
-	TailEntryMonotonic  uint64   // le64
+	FieldHashTableSize   uint64  // le64
+	TailObjectOffset     uint64  // le64 - offset of last object
+	NObjects             uint64  // le64 - number of objects
+	NEntries             uint64  // le64 - number of entries
+	TailEntrySeqnum      uint64  // le64
+	HeadEntrySeqnum      uint64  // le64
+	EntryArrayOffset     uint64  // le64
+	HeadEntryRealtime    uint64  // le64
+	TailEntryRealtime    uint64  // le64
+	TailEntryMonotonic   uint64  // le64
 	// Added in v187
 	NData   uint64 // le64
 	NFields uint64 // le64
@@ -80,6 +80,7 @@ type Header struct {
 	TailEntryOffset uint64 // le64
 }
 
+// HeaderSize matches the on-disk header length used by journald.
 const HeaderSize = 272
 
 // ObjectHeader is the common header for all objects

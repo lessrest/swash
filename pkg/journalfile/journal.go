@@ -36,8 +36,8 @@ type File struct {
 	// Cache of field name hashes to field offsets
 	fieldCache map[uint64]uint64 // hash -> offset
 
-	// Entry array tracking (written at Close)
-	entryArrayItems []uint64 // entry offsets to include in entry array
+	// Tracks whether new entries were appended since the last durable sync.
+	dirty bool
 }
 
 // Create creates a new journal file at path
@@ -54,6 +54,7 @@ func Create(path string, machineID, bootID ID128) (*File, error) {
 		bootID:     bootID,
 		dataCache:  make(map[uint64]uint64),
 		fieldCache: make(map[uint64]uint64),
+		dirty:      false,
 	}
 
 	if err := jf.initialize(); err != nil {
@@ -108,7 +109,7 @@ func (jf *File) initialize() error {
 		Signature:            HeaderSignature,
 		CompatibleFlags:      0,
 		IncompatibleFlags:    0, // No compression, no keyed hash for simplicity
-		State:                StateOnline,
+		State:                StateOffline,
 		FileID:               fileID,
 		MachineID:            jf.machineID,
 		SeqnumID:             seqnumID,
@@ -151,11 +152,91 @@ func (jf *File) initialize() error {
 }
 
 func (jf *File) syncHeader() error {
-	if _, err := jf.f.Seek(0, 0); err != nil {
+	// Update only the mutable header fields in a stable order so readers
+	// never observe an impossible combination during concurrent opens.
+	write64 := func(off int64, v uint64) error {
+		var buf [8]byte
+		le.PutUint64(buf[:], v)
+		_, err := jf.f.WriteAt(buf[:], off)
 		return err
 	}
-	_, err := jf.f.Write(jf.header.Encode())
-	return err
+	writeBytes := func(off int64, b []byte) error {
+		_, err := jf.f.WriteAt(b, off)
+		return err
+	}
+
+	// Arena and tail bounds first so subsequent offsets are always valid.
+	if err := write64(96, jf.header.ArenaSize); err != nil { // arena_size
+		return err
+	}
+	if err := write64(136, jf.header.TailObjectOffset); err != nil { // tail_object_offset
+		return err
+	}
+
+	// Entry array anchor (may be zero until first entry).
+	if err := write64(176, jf.header.EntryArrayOffset); err != nil { // entry_array_offset
+		return err
+	}
+
+	// Object/entry counters.
+	if err := write64(144, jf.header.NObjects); err != nil { // n_objects
+		return err
+	}
+	if err := write64(152, jf.header.NEntries); err != nil { // n_entries
+		return err
+	}
+	if err := write64(232, jf.header.NEntryArrays); err != nil { // n_entry_arrays
+		return err
+	}
+	if err := write64(208, jf.header.NData); err != nil { // n_data
+		return err
+	}
+	if err := write64(216, jf.header.NFields); err != nil { // n_fields
+		return err
+	}
+	if err := write64(224, jf.header.NTags); err != nil { // n_tags
+		return err
+	}
+
+	// Sequence numbers.
+	if err := write64(160, jf.header.TailEntrySeqnum); err != nil { // tail_entry_seqnum
+		return err
+	}
+	if err := write64(168, jf.header.HeadEntrySeqnum); err != nil { // head_entry_seqnum
+		return err
+	}
+
+	// Realtime/monotonic metadata and boot IDs.
+	if err := write64(184, jf.header.HeadEntryRealtime); err != nil { // head_entry_realtime
+		return err
+	}
+	if err := write64(192, jf.header.TailEntryRealtime); err != nil { // tail_entry_realtime
+		return err
+	}
+	if err := write64(200, jf.header.TailEntryMonotonic); err != nil { // tail_entry_monotonic
+		return err
+	}
+	if err := writeBytes(56, jf.header.TailEntryBootID[:]); err != nil { // tail_entry_boot_id
+		return err
+	}
+
+	// Tail entry array metadata (uint32 fields) and tail entry offset.
+	var tailArrBuf [8]byte
+	le.PutUint32(tailArrBuf[0:4], jf.header.TailEntryArrayOffset)
+	le.PutUint32(tailArrBuf[4:8], jf.header.TailEntryArrayNEntries)
+	if err := writeBytes(256, tailArrBuf[:]); err != nil {
+		return err
+	}
+	if err := write64(264, jf.header.TailEntryOffset); err != nil { // tail_entry_offset
+		return err
+	}
+
+	// Finally flip the state byte.
+	if _, err := jf.f.WriteAt([]byte{jf.header.State}, 16); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // AppendEntry appends a new journal entry with the given fields
@@ -163,20 +244,22 @@ func (jf *File) AppendEntry(fields map[string]string) error {
 	jf.mu.Lock()
 	defer jf.mu.Unlock()
 
-	// Mark file as being written so readers know indexes may be changing.
-	if err := jf.beginWrite(); err != nil {
-		return err
-	}
-
 	// File lock for cross-process synchronization
 	if err := syscall.Flock(int(jf.f.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("flock: %w", err)
 	}
 	defer syscall.Flock(int(jf.f.Fd()), syscall.LOCK_UN)
 
+	// Mark file as being written so readers know indexes may be changing.
+	if err := jf.beginWrite(); err != nil {
+		return err
+	}
+
 	now := time.Now()
 	realtime := uint64(now.UnixMicro())
 	monotonic := uint64(now.UnixNano() / 1000) // approximate
+
+	jf.dirty = true
 
 	// Build data objects for each field
 	items := make([]EntryItem, 0, len(fields))
@@ -209,12 +292,7 @@ func (jf *File) AppendEntry(fields map[string]string) error {
 		return err
 	}
 
-	// Persist entry array immediately so external readers can open safely.
-	if err := jf.writeEntryArray(); err != nil {
-		return err
-	}
-
-	return jf.syncHeader()
+	return nil
 }
 
 // align64 rounds up to the next 8-byte boundary
@@ -222,15 +300,18 @@ func align64(n uint64) uint64 {
 	return (n + 7) &^ 7
 }
 
-// beginWrite marks the header as ONLINE on disk before we start appending new
-// objects. Journald does this to signal readers that the file is being
-// modified, and will flip back to OFFLINE after syncing.
+// beginWrite mirrors journald: mark the header ONLINE so readers know the file
+// may be mid-update. We immediately persist the state flip so new readers see it.
 func (jf *File) beginWrite() error {
 	if jf.header.State == StateOnline {
 		return nil
 	}
 	jf.header.State = StateOnline
-	return jf.syncHeader()
+	// Persist just the state byte to avoid rewriting the full header mid-append.
+	if _, err := jf.f.WriteAt([]byte{byte(StateOnline)}, 16); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (jf *File) appendData(data []byte, hash uint64) (uint64, error) {
@@ -632,10 +713,22 @@ func (jf *File) appendEntryObject(realtime, monotonic, xorHash uint64, items []E
 		}
 	}
 
-	// Update header
-	jf.header.NObjects++
+	prevTailArray := jf.header.TailEntryArrayOffset
+	newArrayOffset, err := jf.appendEntryArray(prevTailArray, entryOffset)
+	if err != nil {
+		return err
+	}
+
+	// Update header counts after the entry array is in place.
+	jf.header.NObjects += 2 // entry + entry array
+	jf.header.NEntryArrays++
+	if jf.header.EntryArrayOffset == 0 {
+		jf.header.EntryArrayOffset = newArrayOffset
+	}
+	jf.header.TailEntryArrayOffset = uint32(newArrayOffset)
+	jf.header.TailEntryArrayNEntries = 1
+	jf.header.TailObjectOffset = newArrayOffset
 	jf.header.NEntries++
-	jf.header.TailObjectOffset = entryOffset
 	jf.header.TailEntryOffset = entryOffset
 	jf.header.TailEntryBootID = jf.bootID
 	jf.header.TailEntryRealtime = realtime
@@ -645,11 +738,13 @@ func (jf *File) appendEntryObject(realtime, monotonic, xorHash uint64, items []E
 		jf.header.HeadEntrySeqnum = seqnum
 		jf.header.HeadEntryRealtime = realtime
 	}
+	if endPos, err := jf.f.Seek(0, 2); err == nil {
+		jf.header.ArenaSize = uint64(endPos) - HeaderSize
+	}
 
-	// Track entry for entry array (will be written at Close)
-	jf.entryArrayItems = append(jf.entryArrayItems, entryOffset)
-
-	return jf.syncHeader()
+	// Mark dirty; Sync/Close will flip offline and fsync.
+	jf.dirty = true
+	return nil
 }
 
 // Sync flushes pending writes and sets state to OFFLINE so external readers
@@ -659,16 +754,29 @@ func (jf *File) Sync() error {
 	jf.mu.Lock()
 	defer jf.mu.Unlock()
 
+	return jf.syncLocked()
+}
+
+// Close closes the journal file
+func (jf *File) Close() error {
+	jf.mu.Lock()
+	defer jf.mu.Unlock()
+
+	if err := jf.syncLocked(); err != nil {
+		return err
+	}
+	return jf.f.Close()
+}
+
+// syncLocked assumes jf.mu is held.
+func (jf *File) syncLocked() error {
+	if !jf.dirty {
+		return nil
+	}
+
 	// While we append the entry array we should advertise ONLINE like real journald.
 	if err := jf.beginWrite(); err != nil {
 		return err
-	}
-
-	// Write entry array if we have entries
-	if len(jf.entryArrayItems) > 0 {
-		if err := jf.writeEntryArray(); err != nil {
-			return err
-		}
 	}
 
 	// Update arena size
@@ -677,59 +785,36 @@ func (jf *File) Sync() error {
 		jf.header.ArenaSize = uint64(endPos) - HeaderSize
 	}
 
-	// Set offline so readers can access
+	// Set offline so readers can access a fully consistent header
 	jf.header.State = StateOffline
 	if err := jf.syncHeader(); err != nil {
 		return err
 	}
 
 	// Fsync to ensure data is on disk
-	return jf.f.Sync()
-}
-
-// Close closes the journal file
-func (jf *File) Close() error {
-	jf.mu.Lock()
-	defer jf.mu.Unlock()
-
-	// Mark file online while we append final objects.
-	if err := jf.beginWrite(); err != nil {
+	if err := jf.f.Sync(); err != nil {
 		return err
 	}
 
-	// Write entry array if we have entries
-	if len(jf.entryArrayItems) > 0 {
-		if err := jf.writeEntryArray(); err != nil {
-			return err
-		}
-	}
-
-	// Compute arena size from file size
-	endPos, err := jf.f.Seek(0, 2)
-	if err == nil {
-		jf.header.ArenaSize = uint64(endPos) - HeaderSize
-	}
-
-	jf.header.State = StateOffline
-	jf.syncHeader()
-	return jf.f.Close()
+	jf.dirty = false
+	return nil
 }
 
-func (jf *File) writeEntryArray() error {
-	nItems := len(jf.entryArrayItems)
-	// Entry array: header (24 bytes) + items (8 bytes each), already 8-byte aligned
-	objSize := uint64(EntryArrayObjectHeaderSize + nItems*8)
+// appendEntryArray writes a new entry array object containing a single entry offset
+// and links it from the previous tail. Returns the offset of the new array.
+func (jf *File) appendEntryArray(prevTail uint32, entryOffset uint64) (uint64, error) {
+	objSize := uint64(EntryArrayObjectHeaderSize + 8) // one offset
 
 	offset, err := jf.f.Seek(0, 2)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	// Align offset to 8 bytes
 	alignedOffset := align64(uint64(offset))
 	if alignedOffset != uint64(offset) {
 		padding := make([]byte, alignedOffset-uint64(offset))
 		if _, err := jf.f.Write(padding); err != nil {
-			return err
+			return 0, err
 		}
 		offset = int64(alignedOffset)
 	}
@@ -737,31 +822,26 @@ func (jf *File) writeEntryArray() error {
 	buf := make([]byte, objSize)
 	buf[0] = ObjectEntryArray
 	le.PutUint64(buf[8:16], objSize)
-	// NextEntryArrayOffset = 0 at offset 16
-
-	for i, entryOff := range jf.entryArrayItems {
-		off := EntryArrayObjectHeaderSize + i*8
-		le.PutUint64(buf[off:off+8], entryOff)
-	}
+	// NextEntryArrayOffset remains zero until we link a subsequent array.
+	le.PutUint64(buf[EntryArrayObjectHeaderSize:], entryOffset)
 
 	if _, err := jf.f.Write(buf); err != nil {
-		return err
+		return 0, err
 	}
 
-	// Update header to point to new entry array
-	if jf.header.EntryArrayOffset == 0 {
-		jf.header.NObjects++
-		jf.header.NEntryArrays++
+	// Link previous tail to this new array.
+	if prevTail != 0 {
+		if _, err := jf.f.Seek(int64(prevTail)+16, 0); err != nil {
+			return 0, err
+		}
+		link := make([]byte, 8)
+		le.PutUint64(link, uint64(offset))
+		if _, err := jf.f.Write(link); err != nil {
+			return 0, err
+		}
 	}
-	jf.header.EntryArrayOffset = uint64(offset)
-	jf.header.TailObjectOffset = uint64(offset)
-	jf.header.TailEntryArrayOffset = uint32(offset)
-	jf.header.TailEntryArrayNEntries = uint32(nItems)
 
-	// Don't clear entryArrayItems - we keep all entries and rewrite the full array each sync
-	// This wastes some space but is simpler than linking multiple entry arrays
-
-	return nil
+	return uint64(offset), nil
 }
 
 // Path returns the file path

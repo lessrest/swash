@@ -250,8 +250,9 @@ func cmdNotifyExit() {
 	}
 	defer systemd.Close()
 
-	taskUnit := swash.TaskUnit(sessionID)
-	if err := systemd.EmitUnitExit(ctx, taskUnit, exitStatus, serviceResult); err != nil {
+	backend := swash.NewSystemdBackend(systemd)
+
+	if err := backend.EmitExit(ctx, swash.TaskProcess(sessionID), exitStatus, serviceResult); err != nil {
 		fmt.Fprintf(os.Stderr, "swash notify-exit: emitting exit: %v\n", err)
 		os.Exit(1)
 	}

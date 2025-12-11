@@ -482,7 +482,7 @@ func cmdAttach(sessionID string) {
 	initRuntime()
 	defer rt.Close()
 
-	session, err := newAttachSession(sessionID, rt.ConnectTTYSession)
+	session, err := newAttachSession(sessionID, rt.Control.ConnectTTYSession)
 	if err != nil {
 		fatal("%v", err)
 	}

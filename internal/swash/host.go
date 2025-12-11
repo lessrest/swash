@@ -22,8 +22,8 @@ type Host struct {
 	protocol  Protocol
 	tags      map[string]string
 
-	systemd Systemd
-	journal Journal
+	processes ProcessBackend
+	events    EventLog
 
 	mu       sync.Mutex
 	stdin    io.WriteCloser
@@ -37,8 +37,8 @@ type HostConfig struct {
 	Command   []string
 	Protocol  Protocol
 	Tags      map[string]string
-	Systemd   Systemd
-	Journal   Journal
+	Processes ProcessBackend
+	Events    EventLog
 }
 
 // NewHost creates a new Host with the given configuration.
@@ -55,8 +55,8 @@ func NewHost(cfg HostConfig) *Host {
 		command:   cfg.Command,
 		protocol:  cfg.Protocol,
 		tags:      tags,
-		systemd:   cfg.Systemd,
-		journal:   cfg.Journal,
+		processes: cfg.Processes,
+		events:    cfg.Events,
 	}
 }
 
@@ -102,7 +102,7 @@ func (h *Host) SendInput(data string) (int, error) {
 // Kill sends SIGKILL to the task process.
 func (h *Host) Kill() error {
 	ctx := context.Background()
-	return h.systemd.KillUnit(ctx, TaskUnit(h.sessionID), syscall.SIGKILL)
+	return h.processes.Kill(ctx, TaskProcess(h.sessionID), syscall.SIGKILL)
 }
 
 // Run starts the D-Bus host and runs until the task exits or a signal is received.
@@ -159,7 +159,7 @@ func (h *Host) RunTask(ctx context.Context) error {
 	}
 
 	// Emit lifecycle event
-	if err := EmitStarted(h.journal, h.sessionID, h.command); err != nil {
+	if err := EmitStarted(h.events, h.sessionID, h.command); err != nil {
 		return fmt.Errorf("emitting started event: %w", err)
 	}
 
@@ -167,19 +167,19 @@ func (h *Host) RunTask(ctx context.Context) error {
 	case <-doneChan:
 		return nil
 	case <-ctx.Done():
-		h.systemd.KillUnit(context.Background(), TaskUnit(h.sessionID), syscall.SIGKILL)
+		h.processes.Kill(context.Background(), TaskProcess(h.sessionID), syscall.SIGKILL)
 		<-doneChan
 		return ctx.Err()
 	}
 }
 
-// startTaskProcess starts the task subprocess via systemd D-Bus API.
+// startTaskProcess starts the task subprocess via the process backend.
 func (srv *Host) startTaskProcess() (chan struct{}, error) {
 	ctx := context.Background()
 
 	// Subscribe to exit notifications before starting the task
-	taskUnit := TaskUnit(srv.sessionID)
-	exitCh, err := srv.systemd.SubscribeUnitExit(ctx, taskUnit)
+	taskRef := TaskProcess(srv.sessionID)
+	exitCh, err := srv.processes.SubscribeExit(ctx, taskRef)
 	if err != nil {
 		return nil, fmt.Errorf("subscribing to exit notifications: %w", err)
 	}
@@ -228,34 +228,33 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		return nil, fmt.Errorf("getting executable path: %w", err)
 	}
 
-	hostUnit := HostUnit(srv.sessionID)
+	hostRef := HostProcess(srv.sessionID)
 
-	spec := TransientSpec{
-		Unit:        taskUnit,
-		Slice:       SessionSlice(srv.sessionID),
-		ServiceType: "exec",
+	spec := ProcessSpec{
+		Ref:         taskRef,
 		WorkingDir:  cwd,
 		Description: strings.Join(srv.command, " "),
 		Environment: env,
 		Command:     srv.command,
-		Collect:     false, // Keep unit around long enough to query exit status
-		Stdin:       &stdinFd,
-		Stdout:      &stdoutFd,
-		Stderr:      &stderrFd,
-		// Unit dependencies: task depends on host
-		BindsTo: []UnitName{hostUnit},
-		After:   []UnitName{hostUnit},
+		Collect:     false, // Keep workload around long enough to query exit status
+		IO: IODescriptor{
+			Stdin:  &stdinFd,
+			Stdout: &stdoutFd,
+			Stderr: &stderrFd,
+		},
+		Dependencies: []ProcessRef{hostRef},
 		// Notify via EmitUnitExit when task exits (args passed directly, not via env)
-		ExecStopPost: [][]string{
+		PostStop: [][]string{
 			{selfExe, "notify-exit", srv.sessionID, "$EXIT_STATUS", "$SERVICE_RESULT"},
 		},
+		LaunchKind: LaunchKindExec,
 	}
 
-	if err := srv.systemd.StartTransient(ctx, spec); err != nil {
+	if err := srv.processes.Start(ctx, spec); err != nil {
 		return nil, err
 	}
 
-	// Close the unit-facing ends of the pipes (they're now owned by systemd)
+	// Close the task-facing ends of the pipes (owned by the backend now)
 	stdinRead.Close()
 	stdoutWrite.Close()
 	stderrWrite.Close()
@@ -273,7 +272,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 
 	// Output handler that writes to journal with tags
 	outputHandler := func(fd int, text string, fields map[string]string) {
-		WriteOutput(srv.journal, fd, text, fields)
+		WriteOutput(srv.events, fd, text, fields)
 	}
 
 	// Read stdout and write to journal (protocol-aware)
@@ -305,7 +304,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		srv.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := EmitExited(srv.journal, srv.sessionID, notification.ExitCode, srv.command); err != nil {
+		if err := EmitExited(srv.events, srv.sessionID, notification.ExitCode, srv.command); err != nil {
 			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
 		}
 
@@ -359,13 +358,14 @@ func RunHost() error {
 	if err != nil {
 		return fmt.Errorf("connecting to systemd: %w", err)
 	}
-	defer systemd.Close()
+	processes := NewSystemdBackend(systemd)
+	defer processes.Close()
 
-	journal, err := OpenJournal()
+	events, err := OpenEventLog()
 	if err != nil {
-		return fmt.Errorf("opening journal: %w", err)
+		return fmt.Errorf("opening event log: %w", err)
 	}
-	defer journal.Close()
+	defer events.Close()
 
 	// Use TTYHost for --tty mode, otherwise use regular Host
 	if *ttyFlag {
@@ -375,8 +375,8 @@ func RunHost() error {
 			Rows:      *rowsFlag,
 			Cols:      *colsFlag,
 			Tags:      tags,
-			Systemd:   systemd,
-			Journal:   journal,
+			Processes: processes,
+			Events:    events,
 		})
 		defer host.Close()
 		return host.Run()
@@ -387,8 +387,8 @@ func RunHost() error {
 		Command:   command,
 		Protocol:  Protocol(*protocolFlag),
 		Tags:      tags,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: processes,
+		Events:    events,
 	})
 
 	return host.Run()

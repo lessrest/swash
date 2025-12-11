@@ -18,8 +18,8 @@ func TestTTYHost_NewTTYHost(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -47,8 +47,8 @@ func TestTTYHost_SessionID(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -70,8 +70,8 @@ func TestTTYHost_DefaultSize(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      0,
 		Cols:      0,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -96,8 +96,8 @@ func TestTTYHost_GetScreenText(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      5,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -122,8 +122,8 @@ func TestTTYHost_GetScreenANSI(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      5,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -152,8 +152,8 @@ func TestTTYHost_GetCursor(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -186,8 +186,8 @@ func TestTTYHost_Resize(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -222,8 +222,8 @@ func TestTTYHost_GetTitle(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -256,8 +256,8 @@ func TestTTYHost_GetMode(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -301,8 +301,8 @@ func TestTTYHost_GetScrollback(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      3, // Small screen to trigger scrollback
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -331,8 +331,8 @@ func TestTTYHost_SendInput_NoProcess(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 	defer host.Close()
 
@@ -360,8 +360,8 @@ func TestTTYHost_RunTask_WithFakePTY(t *testing.T) {
 		Command:   []string{"echo", "Hello from TTY"},
 		Rows:      10,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -428,8 +428,8 @@ func TestTTYHost_RunTask_ColoredOutput(t *testing.T) {
 		Command:   []string{"colortest"},
 		Rows:      5,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -469,8 +469,8 @@ func TestTTYHost_RunTask_Scrollback(t *testing.T) {
 		Command:   []string{"manylines"},
 		Rows:      5, // Small screen to trigger scrollback
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -487,7 +487,7 @@ func TestTTYHost_RunTask_Scrollback(t *testing.T) {
 		t.Errorf("expected at least 10 scrollback lines, got %d", len(scrollback))
 	}
 
-	// Journal should have the scrollback lines logged (with ANSI codes now)
+	// Event log should have the scrollback lines logged (with ANSI codes now)
 	entries := journal.Entries()
 	var lineCount int
 	for _, e := range entries {
@@ -517,8 +517,8 @@ func TestTTYHost_RunTask_Cancel(t *testing.T) {
 		Command:   []string{"sleep"},
 		Rows:      5,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -582,8 +582,8 @@ func TestTTYHost_RunTask_SendInput(t *testing.T) {
 		Command:   []string{"cat"},
 		Rows:      5,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -641,8 +641,8 @@ func TestTTYHost_Attach_Basic(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      5,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -679,8 +679,8 @@ func TestTTYHost_Attach_MultiClient(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      5,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -759,8 +759,8 @@ func TestTTYHost_Attach_StreamOutput(t *testing.T) {
 		Command:   []string{"outputter"},
 		Rows:      5,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -818,8 +818,8 @@ func TestTTYHost_Attach_ReattachAfterDisconnect(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      5,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -877,8 +877,8 @@ func TestTTYHost_Attach_SendInput(t *testing.T) {
 		Command:   []string{"reader"},
 		Rows:      5,
 		Cols:      40,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()

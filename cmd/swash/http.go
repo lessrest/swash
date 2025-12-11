@@ -462,9 +462,9 @@ func handleSessionOutput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	matches := []swash.JournalMatch{swash.MatchSession(sessionID)}
+	filters := []swash.EventFilter{swash.FilterBySession(sessionID)}
 
-	for entry := range rt.Journal.Follow(r.Context(), matches) {
+	for entry := range rt.Events.Follow(r.Context(), filters) {
 		if entry.Fields[swash.FieldEvent] == swash.EventExited {
 			fmt.Fprintf(w, "event: exit\ndata: %s\n\n", entry.Fields[swash.FieldExitCode])
 			flusher.Flush()
@@ -496,7 +496,7 @@ func handleAttach(ws *websocket.Conn) {
 	}
 	sessionID := parts[2]
 
-	client, err := rt.ConnectTTYSession(sessionID)
+	client, err := rt.Control.ConnectTTYSession(sessionID)
 	if err != nil {
 		return
 	}

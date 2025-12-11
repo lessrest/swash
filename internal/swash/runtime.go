@@ -13,43 +13,43 @@ import (
 // Use DefaultRuntime for production, or construct with custom
 // implementations for testing.
 type Runtime struct {
-	Systemd           Systemd
-	Journal           Journal
-	ConnectSession    func(sessionID string) (SessionClient, error)
-	ConnectTTYSession func(sessionID string) (TTYClient, error)
+	Processes ProcessBackend
+	Events    EventLog
+	Control   ControlPlane
 }
 
-// DefaultRuntime creates a Runtime connected to the real systemd and journal.
+// DefaultRuntime creates a Runtime backed by the real systemd+journald stack.
 func DefaultRuntime(ctx context.Context) (*Runtime, error) {
 	sd, err := ConnectUserSystemd(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	j, err := OpenJournal()
+	proc := NewSystemdBackend(sd)
+
+	j, err := OpenEventLog()
 	if err != nil {
-		sd.Close()
+		proc.Close()
 		return nil, err
 	}
 
 	return &Runtime{
-		Systemd:           sd,
-		Journal:           j,
-		ConnectSession:    connectSessionViaDBusBackend,
-		ConnectTTYSession: connectTTYSessionViaDBusBackend,
+		Processes: proc,
+		Events:    j,
+		Control:   NewDBusControlPlane(),
 	}, nil
 }
 
 // Close releases resources held by the runtime.
 func (r *Runtime) Close() error {
 	var firstErr error
-	if r.Journal != nil {
-		if err := r.Journal.Close(); err != nil && firstErr == nil {
+	if r.Events != nil {
+		if err := r.Events.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
-	if r.Systemd != nil {
-		if err := r.Systemd.Close(); err != nil && firstErr == nil {
+	if r.Processes != nil {
+		if err := r.Processes.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -58,30 +58,29 @@ func (r *Runtime) Close() error {
 
 // ListSessions returns all running swash sessions.
 func (r *Runtime) ListSessions(ctx context.Context) ([]Session, error) {
-	units, err := r.Systemd.ListUnits(
-		ctx,
-		[]UnitName{"swash-host-*.service"},
-		[]UnitState{UnitStateActive, UnitStateActivating},
-	)
+	statuses, err := r.Processes.List(ctx, ProcessFilter{
+		Roles:  []ProcessRole{ProcessRoleHost},
+		States: []ProcessState{ProcessStateRunning, ProcessStateStarting},
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	sessions := make([]Session, 0, len(units))
-	for _, u := range units {
+	sessions := make([]Session, 0, len(statuses))
+	for _, st := range statuses {
 		status := "running"
-		if u.ExitStatus != 0 {
+		if st.ExitStatus != 0 {
 			status = "exited"
 		}
 
 		sessions = append(sessions, Session{
-			ID:      u.Name.SessionID(),
-			Unit:    u.Name.String(),
-			PID:     u.MainPID,
-			CWD:     u.WorkingDir,
+			ID:      st.Ref.SessionID,
+			Unit:    unitNameForRef(st.Ref).String(),
+			PID:     st.PID,
+			CWD:     st.WorkingDir,
 			Status:  status,
-			Command: u.Description,
-			Started: u.Started.Format("Mon 2006-01-02 15:04:05 MST"),
+			Command: st.Description,
+			Started: st.Started.Format("Mon 2006-01-02 15:04:05 MST"),
 		})
 	}
 	return sessions, nil
@@ -91,8 +90,8 @@ func (r *Runtime) ListSessions(ctx context.Context) ([]Session, error) {
 // Tries D-Bus first (for running sessions), then falls back to journal (for finished sessions).
 func (r *Runtime) GetScreen(sessionID string) (string, error) {
 	// Try D-Bus for live session
-	if r.ConnectTTYSession != nil {
-		client, err := r.ConnectTTYSession(sessionID)
+	if r.Control != nil {
+		client, err := r.Control.ConnectTTYSession(sessionID)
 		if err == nil {
 			defer client.Close()
 			screen, err := client.GetScreenANSI()
@@ -104,12 +103,12 @@ func (r *Runtime) GetScreen(sessionID string) (string, error) {
 	}
 
 	// Fall back to journal for saved screen
-	matches := []JournalMatch{
-		{Field: FieldEvent, Value: EventScreen},
-		{Field: FieldSession, Value: sessionID},
+	filters := []EventFilter{
+		FilterByEvent(EventScreen),
+		FilterBySession(sessionID),
 	}
 
-	entries, _, err := r.Journal.Poll(context.Background(), matches, "")
+	entries, _, err := r.Events.Poll(context.Background(), filters, "")
 	if err != nil {
 		return "", fmt.Errorf("querying journal: %w", err)
 	}
@@ -168,19 +167,18 @@ func (r *Runtime) StartSessionWithOptions(ctx context.Context, command []string,
 		}
 	}
 
-	spec := TransientSpec{
-		Unit:        HostUnit(sessionID),
-		Slice:       SessionSlice(sessionID),
-		ServiceType: "dbus",
-		BusName:     dbusName,
+	spec := ProcessSpec{
+		Ref:         HostProcess(sessionID),
 		WorkingDir:  cwd,
 		Description: cmdStr,
 		Environment: env,
 		Command:     serverCmd,
 		Collect:     true,
+		BusName:     dbusName,
+		LaunchKind:  LaunchKindService,
 	}
 
-	if err := r.Systemd.StartTransient(ctx, spec); err != nil {
+	if err := r.Processes.Start(ctx, spec); err != nil {
 		return "", err
 	}
 
@@ -189,12 +187,12 @@ func (r *Runtime) StartSessionWithOptions(ctx context.Context, command []string,
 
 // StopSession stops a session by ID.
 func (r *Runtime) StopSession(ctx context.Context, sessionID string) error {
-	return r.Systemd.StopUnit(ctx, HostUnit(sessionID))
+	return r.Processes.Stop(ctx, HostProcess(sessionID))
 }
 
 // KillSession sends SIGKILL to the process in a session.
 func (r *Runtime) KillSession(sessionID string) error {
-	client, err := r.ConnectSession(sessionID)
+	client, err := r.Control.ConnectSession(sessionID)
 	if err != nil {
 		return err
 	}
@@ -204,7 +202,7 @@ func (r *Runtime) KillSession(sessionID string) error {
 
 // SendInput sends input to the process via the swash D-Bus service.
 func (r *Runtime) SendInput(sessionID string, input string) (int, error) {
-	client, err := r.ConnectSession(sessionID)
+	client, err := r.Control.ConnectSession(sessionID)
 	if err != nil {
 		return 0, err
 	}
@@ -214,9 +212,9 @@ func (r *Runtime) SendInput(sessionID string, input string) (int, error) {
 
 // PollSessionOutput reads output events from a session's journal since cursor.
 func (r *Runtime) PollSessionOutput(sessionID, cursor string) ([]Event, string, error) {
-	matches := []JournalMatch{MatchSlice(SessionSlice(sessionID))}
+	filters := []EventFilter{FilterBySession(sessionID)}
 
-	entries, newCursor, err := r.Journal.Poll(context.Background(), matches, cursor)
+	entries, newCursor, err := r.Events.Poll(context.Background(), filters, cursor)
 	if err != nil {
 		return nil, "", err
 	}
@@ -266,7 +264,7 @@ const (
 // If timeout is 0, waits indefinitely. If outputLimit is 0, output is unlimited.
 // Returns (exitCode, result). exitCode is only valid when result is FollowCompleted.
 func (r *Runtime) FollowSession(ctx context.Context, sessionID string, timeout time.Duration, outputLimit int) (int, FollowResult) {
-	matches := []JournalMatch{MatchSession(sessionID)}
+	filters := []EventFilter{FilterBySession(sessionID)}
 	outputBytes := 0
 
 	// Create a timeout context if timeout > 0
@@ -276,7 +274,7 @@ func (r *Runtime) FollowSession(ctx context.Context, sessionID string, timeout t
 		defer cancel()
 	}
 
-	for e := range r.Journal.Follow(ctx, matches) {
+	for e := range r.Events.Follow(ctx, filters) {
 		// Check for exit event
 		if e.Fields[FieldEvent] == EventExited {
 			exitCode := 0
@@ -309,9 +307,9 @@ func (r *Runtime) FollowSession(ctx context.Context, sessionID string, timeout t
 // ListHistory returns recently exited sessions by querying lifecycle events.
 func (r *Runtime) ListHistory(ctx context.Context) ([]HistorySession, error) {
 	// Query for exited events
-	matches := []JournalMatch{{Field: FieldEvent, Value: EventExited}}
+	filters := []EventFilter{FilterByEvent(EventExited)}
 
-	entries, _, err := r.Journal.Poll(ctx, matches, "")
+	entries, _, err := r.Events.Poll(ctx, filters, "")
 	if err != nil {
 		return nil, err
 	}

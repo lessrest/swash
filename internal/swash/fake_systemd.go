@@ -343,7 +343,7 @@ func (f *FakeSystemd) StartTransient(ctx context.Context, spec TransientSpec) er
 
 		// Write systemd-style exit event to journal (like real systemd does)
 		if journal != nil {
-			journal.AddEntry(JournalEntry{
+			journal.AddEntry(EventRecord{
 				Message: fmt.Sprintf("%s: Main process exited, code=exited, status=%d", spec.Unit, exitCode),
 				Fields: map[string]string{
 					"USER_UNIT":   spec.Unit.String(),
@@ -485,4 +485,129 @@ func (f *FakeSystemd) EmitUnitExit(ctx context.Context, unit UnitName, exitCode 
 	}
 
 	return nil
+}
+
+// --- ProcessBackend implementation (semantic wrapper) ---
+
+// Start launches a workload described by ProcessSpec.
+func (f *FakeSystemd) Start(ctx context.Context, spec ProcessSpec) error {
+	tSpec := TransientSpec{
+		Unit:         unitNameForRef(spec.Ref),
+		Slice:        SessionSlice(spec.Ref.SessionID),
+		WorkingDir:   spec.WorkingDir,
+		Description:  spec.Description,
+		Environment:  spec.Environment,
+		Command:      spec.Command,
+		Collect:      spec.Collect,
+		TTYPath:      spec.TTYPath,
+		ExecStopPost: spec.PostStop,
+	}
+
+	if spec.IO.Stdin != nil {
+		tSpec.Stdin = spec.IO.Stdin
+	}
+	if spec.IO.Stdout != nil {
+		tSpec.Stdout = spec.IO.Stdout
+	}
+	if spec.IO.Stderr != nil {
+		tSpec.Stderr = spec.IO.Stderr
+	}
+
+	switch spec.LaunchKind {
+	case LaunchKindService:
+		tSpec.ServiceType = "dbus"
+		tSpec.BusName = spec.BusName
+	default:
+		tSpec.ServiceType = "exec"
+	}
+
+	if len(spec.Dependencies) > 0 {
+		deps := make([]UnitName, 0, len(spec.Dependencies))
+		for _, ref := range spec.Dependencies {
+			deps = append(deps, unitNameForRef(ref))
+		}
+		tSpec.BindsTo = deps
+		tSpec.After = deps
+	}
+
+	return f.StartTransient(ctx, tSpec)
+}
+
+// Stop stops a workload.
+func (f *FakeSystemd) Stop(ctx context.Context, ref ProcessRef) error {
+	return f.StopUnit(ctx, unitNameForRef(ref))
+}
+
+// Kill sends a signal to a workload.
+func (f *FakeSystemd) Kill(ctx context.Context, ref ProcessRef, signal syscall.Signal) error {
+	return f.KillUnit(ctx, unitNameForRef(ref), signal)
+}
+
+// List lists workloads matching the filter.
+func (f *FakeSystemd) List(ctx context.Context, filter ProcessFilter) ([]ProcessStatus, error) {
+	units, err := f.ListUnits(ctx, patternsForRoles(filter.Roles), statesForFilter(filter.States))
+	if err != nil {
+		return nil, err
+	}
+
+	var statuses []ProcessStatus
+	for _, u := range units {
+		ref, ok := refFromUnit(u.Name)
+		if !ok {
+			continue
+		}
+		statuses = append(statuses, ProcessStatus{
+			Ref:         ref,
+			State:       processStateFromUnit(u.State, u.ExitStatus),
+			Description: u.Description,
+			Started:     u.Started,
+			PID:         u.MainPID,
+			WorkingDir:  u.WorkingDir,
+			ExitStatus:  u.ExitStatus,
+		})
+	}
+	return statuses, nil
+}
+
+// Describe returns info about a single workload.
+func (f *FakeSystemd) Describe(ctx context.Context, ref ProcessRef) (*ProcessStatus, error) {
+	unit, err := f.GetUnit(ctx, unitNameForRef(ref))
+	if err != nil {
+		return nil, err
+	}
+
+	return &ProcessStatus{
+		Ref:         ref,
+		State:       processStateFromUnit(unit.State, unit.ExitStatus),
+		Description: unit.Description,
+		Started:     unit.Started,
+		PID:         unit.MainPID,
+		WorkingDir:  unit.WorkingDir,
+		ExitStatus:  unit.ExitStatus,
+	}, nil
+}
+
+// SubscribeExit subscribes to workload exit notifications.
+func (f *FakeSystemd) SubscribeExit(ctx context.Context, ref ProcessRef) (<-chan ProcessExit, error) {
+	unitCh, err := f.SubscribeUnitExit(ctx, unitNameForRef(ref))
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan ProcessExit, 1)
+	go func() {
+		defer close(out)
+		for n := range unitCh {
+			out <- ProcessExit{
+				Ref:      ref,
+				ExitCode: n.ExitCode,
+				Result:   n.ServiceResult,
+			}
+		}
+	}()
+	return out, nil
+}
+
+// EmitExit emits an exit notification for a workload.
+func (f *FakeSystemd) EmitExit(ctx context.Context, ref ProcessRef, exitCode int, result string) error {
+	return f.EmitUnitExit(ctx, unitNameForRef(ref), exitCode, result)
 }

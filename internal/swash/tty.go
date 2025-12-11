@@ -152,8 +152,8 @@ type TTYHost struct {
 	rows, cols int
 	tags       map[string]string
 
-	systemd Systemd
-	journal Journal
+	processes ProcessBackend
+	events    EventLog
 
 	mu              sync.Mutex
 	vt              *vterm.VTerm
@@ -179,8 +179,8 @@ type TTYHostConfig struct {
 	Command    []string
 	Rows, Cols int
 	Tags       map[string]string
-	Systemd    Systemd
-	Journal    Journal
+	Processes  ProcessBackend
+	Events     EventLog
 
 	// OpenPTY is optional; defaults to OpenRealPTY if nil.
 	// Provide a custom implementation for testing.
@@ -215,8 +215,8 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 		rows:            rows,
 		cols:            cols,
 		tags:            tags,
-		systemd:         cfg.Systemd,
-		journal:         cfg.Journal,
+		processes:       cfg.Processes,
+		events:          cfg.Events,
 		maxScrollback:   10000,
 		openPTY:         openPTY,
 		attachedClients: make(map[string]*attachedClient),
@@ -228,15 +228,15 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 	// Set up vterm callbacks
 	h.vt.OnPushLine(func(line string) {
 		h.mu.Lock()
-		// Only log to journal when not in alternate screen mode
+		// Only log to the event log when not in alternate screen mode
 		if !h.alternateScreen {
 			h.scrollback = append(h.scrollback, line)
 			if len(h.scrollback) > h.maxScrollback {
 				h.scrollback = h.scrollback[1:]
 			}
 			// Write scrollback line to journal
-			if h.journal != nil {
-				WriteOutput(h.journal, 1, line, h.tags)
+			if h.events != nil {
+				WriteOutput(h.events, 1, line, h.tags)
 			}
 		}
 		h.mu.Unlock()
@@ -294,7 +294,7 @@ func (h *TTYHost) SendInput(data string) (int, error) {
 // Kill sends SIGKILL to the task process.
 func (h *TTYHost) Kill() error {
 	ctx := context.Background()
-	return h.systemd.KillUnit(ctx, TaskUnit(h.sessionID), 9) // SIGKILL
+	return h.processes.Kill(ctx, TaskProcess(h.sessionID), 9) // SIGKILL
 }
 
 // Terminal-specific methods
@@ -539,7 +539,7 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 	}
 
 	// Emit lifecycle event
-	if err := EmitStarted(h.journal, h.sessionID, h.command); err != nil {
+	if err := EmitStarted(h.events, h.sessionID, h.command); err != nil {
 		return fmt.Errorf("emitting started event: %w", err)
 	}
 
@@ -547,19 +547,19 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 	case <-doneChan:
 		return nil
 	case <-ctx.Done():
-		h.systemd.KillUnit(context.Background(), TaskUnit(h.sessionID), 9)
+		h.processes.Kill(context.Background(), TaskProcess(h.sessionID), 9)
 		<-doneChan
 		return ctx.Err()
 	}
 }
 
-// startTTYProcess starts the task subprocess with PTY via systemd.
+// startTTYProcess starts the task subprocess with PTY via the process backend.
 func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 	ctx := context.Background()
 
 	// Subscribe to exit notifications before starting the task
-	taskUnit := TaskUnit(h.sessionID)
-	exitCh, err := h.systemd.SubscribeUnitExit(ctx, taskUnit)
+	taskRef := TaskProcess(h.sessionID)
+	exitCh, err := h.processes.SubscribeExit(ctx, taskRef)
 	if err != nil {
 		return nil, fmt.Errorf("subscribing to exit notifications: %w", err)
 	}
@@ -601,36 +601,35 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		return nil, fmt.Errorf("getting executable path: %w", err)
 	}
 
-	hostUnit := HostUnit(h.sessionID)
+	hostRef := HostProcess(h.sessionID)
 
-	spec := TransientSpec{
-		Unit:        taskUnit,
-		Slice:       SessionSlice(h.sessionID),
-		ServiceType: "exec",
+	spec := ProcessSpec{
+		Ref:         taskRef,
 		WorkingDir:  cwd,
 		Description: strings.Join(h.command, " "),
 		Environment: env,
 		Command:     h.command,
-		Collect:     false, // Keep unit around long enough to query exit status
-		Stdin:       &slaveFd,
-		Stdout:      &slaveFd,
-		Stderr:      &slaveFd,
-		TTYPath:     ptyPair.SlavePath(), // e.g., /dev/pts/5 (or empty for fakes)
-		// Unit dependencies: task depends on host
-		BindsTo: []UnitName{hostUnit},
-		After:   []UnitName{hostUnit},
+		Collect:     false, // Keep workload around long enough to query exit status
+		IO: IODescriptor{
+			Stdin:  &slaveFd,
+			Stdout: &slaveFd,
+			Stderr: &slaveFd,
+		},
+		TTYPath:      ptyPair.SlavePath(), // e.g., /dev/pts/5 (or empty for fakes)
+		Dependencies: []ProcessRef{hostRef},
 		// Notify via EmitUnitExit when task exits (args passed directly, not via env)
-		ExecStopPost: [][]string{
+		PostStop: [][]string{
 			{selfExe, "notify-exit", h.sessionID, "$EXIT_STATUS", "$SERVICE_RESULT"},
 		},
+		LaunchKind: LaunchKindExec,
 	}
 
-	if err := h.systemd.StartTransient(ctx, spec); err != nil {
+	if err := h.processes.Start(ctx, spec); err != nil {
 		ptyPair.Close()
 		return nil, err
 	}
 
-	// Close the slave side - systemd now owns it
+	// Close the slave side - backend now owns it
 	ptyPair.CloseSlave()
 
 	// Store ptyPair for SendInput, Resize, and reading
@@ -674,19 +673,19 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		h.exitCode = &notification.ExitCode
 		h.mu.Unlock()
 
-		// Persist final screen state to journal (with ANSI codes for colors)
-		if h.vt != nil && h.journal != nil {
+		// Persist final screen state to the event log (with ANSI codes for colors)
+		if h.vt != nil && h.events != nil {
 			screenANSI := h.vt.GetScreenANSI()
 			h.mu.Lock()
 			rows, cols := h.rows, h.cols
 			h.mu.Unlock()
-			if err := EmitScreen(h.journal, h.sessionID, screenANSI, rows, cols); err != nil {
+			if err := EmitScreen(h.events, h.sessionID, screenANSI, rows, cols); err != nil {
 				fmt.Fprintf(os.Stderr, "error: failed to emit screen: %v\n", err)
 			}
 		}
 
 		// Emit lifecycle event
-		if err := EmitExited(h.journal, h.sessionID, notification.ExitCode, h.command); err != nil {
+		if err := EmitExited(h.events, h.sessionID, notification.ExitCode, h.command); err != nil {
 			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
 		}
 

@@ -9,10 +9,10 @@ import (
 	"time"
 )
 
-// FakeJournal is an in-memory implementation of Journal for unit tests.
+// FakeJournal is an in-memory implementation of EventLog for unit tests.
 type FakeJournal struct {
 	mu      sync.RWMutex
-	entries []JournalEntry
+	entries []EventRecord
 	cursor  int64 // Next cursor to assign
 	closed  bool
 }
@@ -32,7 +32,7 @@ func (f *FakeJournal) Write(message string, fields map[string]string) error {
 	}
 
 	f.cursor++
-	entry := JournalEntry{
+	entry := EventRecord{
 		Cursor:    strconv.FormatInt(f.cursor, 10),
 		Timestamp: time.Now(),
 		Message:   message,
@@ -43,7 +43,7 @@ func (f *FakeJournal) Write(message string, fields map[string]string) error {
 }
 
 // AddEntry adds a pre-built entry to the journal (for test setup).
-func (f *FakeJournal) AddEntry(entry JournalEntry) {
+func (f *FakeJournal) AddEntry(entry EventRecord) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -58,7 +58,7 @@ func (f *FakeJournal) AddEntry(entry JournalEntry) {
 }
 
 // Poll reads entries matching filters since cursor.
-func (f *FakeJournal) Poll(ctx context.Context, matches []JournalMatch, cursor string) ([]JournalEntry, string, error) {
+func (f *FakeJournal) Poll(ctx context.Context, matches []EventFilter, cursor string) ([]EventRecord, string, error) {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 
@@ -77,7 +77,7 @@ func (f *FakeJournal) Poll(ctx context.Context, matches []JournalMatch, cursor s
 		}
 	}
 
-	var result []JournalEntry
+	var result []EventRecord
 	var lastCursor string
 
 	for i := startIdx; i < len(f.entries); i++ {
@@ -92,8 +92,8 @@ func (f *FakeJournal) Poll(ctx context.Context, matches []JournalMatch, cursor s
 }
 
 // Follow returns an iterator over entries matching filters.
-func (f *FakeJournal) Follow(ctx context.Context, matches []JournalMatch) iter.Seq[JournalEntry] {
-	return func(yield func(JournalEntry) bool) {
+func (f *FakeJournal) Follow(ctx context.Context, matches []EventFilter) iter.Seq[EventRecord] {
+	return func(yield func(EventRecord) bool) {
 		idx := 0
 		for {
 			select {
@@ -141,10 +141,10 @@ func (f *FakeJournal) Close() error {
 }
 
 // Entries returns a copy of all entries in the journal.
-func (f *FakeJournal) Entries() []JournalEntry {
+func (f *FakeJournal) Entries() []EventRecord {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
-	result := make([]JournalEntry, len(f.entries))
+	result := make([]EventRecord, len(f.entries))
 	for i, e := range f.entries {
 		result[i] = copyEntry(e)
 	}
@@ -168,7 +168,7 @@ func (f *FakeJournal) Clear() {
 
 // matchesFilters checks if an entry matches all the given filters.
 // Empty matches matches all entries.
-func matchesFilters(entry JournalEntry, matches []JournalMatch) bool {
+func matchesFilters(entry EventRecord, matches []EventFilter) bool {
 	for _, m := range matches {
 		value, ok := entry.Fields[m.Field]
 		if !ok || value != m.Value {
@@ -191,8 +191,8 @@ func copyFields(fields map[string]string) map[string]string {
 }
 
 // copyEntry creates a deep copy of a journal entry.
-func copyEntry(e JournalEntry) JournalEntry {
-	return JournalEntry{
+func copyEntry(e EventRecord) EventRecord {
+	return EventRecord{
 		Cursor:    e.Cursor,
 		Timestamp: e.Timestamp,
 		Message:   e.Message,

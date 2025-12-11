@@ -19,8 +19,8 @@ func runTestTask(t *testing.T, cmd FakeCommand, protocol Protocol) (*FakeJournal
 		SessionID: "TEST01",
 		Command:   []string{"test-cmd"},
 		Protocol:  protocol,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -44,8 +44,8 @@ func startTestTask(t *testing.T, systemd *FakeSystemd, journal *FakeJournal, cmd
 		SessionID: "TEST01",
 		Command:   []string{"test-cmd"},
 		Protocol:  protocol,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 
 	done := make(chan error, 1)
@@ -235,8 +235,8 @@ func TestHost_SendInput_NoProcess(t *testing.T) {
 		SessionID: "TEST01",
 		Command:   []string{"test-cmd"},
 		Protocol:  ProtocolShell,
-		Systemd:   systemd,
-		Journal:   journal,
+		Processes: systemd,
+		Events:    journal,
 	})
 
 	// Try to send input before task is started
