@@ -103,6 +103,11 @@ type Solution struct {
 	bindings map[string]Term
 }
 
+// NewSolution creates a new solution from a map of bindings.
+func NewSolution(bindings map[string]Term) Solution {
+	return Solution{bindings: bindings}
+}
+
 // Get returns the term bound to a variable.
 func (s Solution) Get(variable string) (Term, bool) {
 	t, ok := s.bindings[variable]

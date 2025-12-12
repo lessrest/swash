@@ -13,11 +13,13 @@ import (
 	"github.com/mbrock/swash/internal/control"
 	controldbus "github.com/mbrock/swash/internal/control/dbus"
 	"github.com/mbrock/swash/internal/eventlog"
+	"github.com/mbrock/swash/internal/graph"
 	journald "github.com/mbrock/swash/internal/platform/systemd/eventlog"
 	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
 	"github.com/mbrock/swash/internal/process"
 	"github.com/mbrock/swash/internal/protocol"
 	"github.com/mbrock/swash/internal/session"
+	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
 func init() {
@@ -473,4 +475,60 @@ func defaultStateDir() string {
 		return home + "/.local/state/swash"
 	}
 	return os.TempDir() + "/swash-state"
+}
+
+// -----------------------------------------------------------------------------
+// Graph (RDF knowledge graph)
+// -----------------------------------------------------------------------------
+
+func (b *SystemdBackend) graphClient() *graph.Client {
+	cfg := graph.DefaultConfig()
+	return graph.NewClient(cfg.SocketPath)
+}
+
+// ensureGraph checks that the graph service is available.
+// With systemd socket activation, connecting to the socket starts the service.
+func (b *SystemdBackend) ensureGraph(ctx context.Context) error {
+	client := b.graphClient()
+
+	// Try health check - this will trigger socket activation if installed
+	if err := client.Health(ctx); err != nil {
+		return fmt.Errorf("graph service not available (run 'swash graph install' to enable): %w", err)
+	}
+	return nil
+}
+
+func (b *SystemdBackend) GraphQuery(ctx context.Context, sparql string) ([]oxigraph.Solution, error) {
+	if err := b.ensureGraph(ctx); err != nil {
+		return nil, err
+	}
+
+	client := b.graphClient()
+	results, err := client.Query(ctx, sparql)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert from JSON representation back to oxigraph.Solution
+	solutions := make([]oxigraph.Solution, len(results))
+	for i, row := range results {
+		solutions[i] = graph.JSONToSolution(row)
+	}
+	return solutions, nil
+}
+
+func (b *SystemdBackend) GraphSerialize(ctx context.Context, pattern oxigraph.Pattern, format oxigraph.Format) ([]byte, error) {
+	if err := b.ensureGraph(ctx); err != nil {
+		return nil, err
+	}
+
+	client := b.graphClient()
+
+	// Map format to string for HTTP API
+	formatStr := ""
+	if format == oxigraph.NQuads {
+		formatStr = "nquads"
+	}
+
+	return client.Quads(ctx, pattern, formatStr)
 }

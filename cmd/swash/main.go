@@ -76,6 +76,12 @@ func main() {
 		return
 	}
 
+	// Handle "graph" subcommand (RDF knowledge graph service)
+	if len(os.Args) >= 2 && os.Args[1] == "graph" {
+		cmdGraph(os.Args[2:])
+		return
+	}
+
 	// Register flags
 	flag.StringVar(&backendFlag, "backend", os.Getenv("SWASH_BACKEND"), "Backend: systemd, posix (overrides SWASH_BACKEND)")
 	flag.StringVarP(&protocolFlag, "protocol", "p", "shell", "Protocol: shell, sse")
@@ -110,6 +116,13 @@ Usage:
   swash http install [port]          Install HTTP server as systemd socket service
   swash http uninstall               Uninstall HTTP server
   swash http status                  Show HTTP server status
+  swash graph                        Show graph service status
+  swash graph serve                  Run the RDF graph service
+  swash graph install                Install as systemd socket service
+  swash graph uninstall              Uninstall systemd service
+  swash graph query <sparql>         Execute SPARQL query
+  swash graph quads [-s S] [-p P] [-o O]  Query quads by pattern
+  swash graph load [-f format] [file]    Load RDF data
   swash host                         (internal) Run as task host
 
 Flags:
@@ -185,6 +198,8 @@ Flags:
 		cmdHTTP(cmdArgs)
 	case "context":
 		cmdContext(cmdArgs)
+	case "graph":
+		cmdGraph(cmdArgs)
 	case "prompt":
 		cmdPrompt()
 	default:

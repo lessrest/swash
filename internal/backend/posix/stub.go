@@ -17,8 +17,10 @@ import (
 	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/internal/eventlog/sink"
 	"github.com/mbrock/swash/internal/eventlog/source"
+	"github.com/mbrock/swash/internal/graph"
 	"github.com/mbrock/swash/internal/journald"
 	"github.com/mbrock/swash/internal/session"
+	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
 func init() {
@@ -734,4 +736,103 @@ func (b *PosixBackend) emitSessionContext(ctx context.Context, sessionID, contex
 	// Don't close - kept open for future writes
 
 	return eventlog.EmitSessionContext(el, sessionID, contextID)
+}
+
+// -----------------------------------------------------------------------------
+// Graph (RDF knowledge graph)
+// -----------------------------------------------------------------------------
+
+func (b *PosixBackend) graphSocketPath() string {
+	return filepath.Join(b.cfg.RuntimeDir, "graph.sock")
+}
+
+func (b *PosixBackend) graphClient() *graph.Client {
+	return graph.NewClient(b.graphSocketPath())
+}
+
+// ensureGraph starts "swash graph serve" if it's not already running.
+func (b *PosixBackend) ensureGraph(ctx context.Context) error {
+	socketPath := b.graphSocketPath()
+
+	// Check if service is already running and healthy
+	client := b.graphClient()
+	if err := client.Health(ctx); err == nil {
+		return nil // Already running
+	}
+
+	// Use the same swash binary with "graph serve" subcommand
+	swashBin := b.cfg.HostCommand[0]
+
+	cmd := osexec.CommandContext(ctx, swashBin, "graph", "serve",
+		"--socket", socketPath,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	// Redirect output
+	devNull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if devNull != nil {
+		cmd.Stdin = devNull
+		cmd.Stdout = devNull
+		cmd.Stderr = os.Stderr // Let errors show
+	}
+
+	if err := cmd.Start(); err != nil {
+		if devNull != nil {
+			devNull.Close()
+		}
+		return fmt.Errorf("starting swash graph serve: %w", err)
+	}
+	if devNull != nil {
+		devNull.Close()
+	}
+
+	// Wait for health check to pass
+	deadline := time.Now().Add(10 * time.Second) // Graph service takes longer to start (WASM)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for graph service to start")
+		}
+		if err := client.Health(ctx); err == nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func (b *PosixBackend) GraphQuery(ctx context.Context, sparql string) ([]oxigraph.Solution, error) {
+	if err := b.ensureGraph(ctx); err != nil {
+		return nil, fmt.Errorf("ensuring graph service: %w", err)
+	}
+
+	client := b.graphClient()
+	results, err := client.Query(ctx, sparql)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert from JSON representation back to oxigraph.Solution
+	solutions := make([]oxigraph.Solution, len(results))
+	for i, row := range results {
+		solutions[i] = graph.JSONToSolution(row)
+	}
+	return solutions, nil
+}
+
+func (b *PosixBackend) GraphSerialize(ctx context.Context, pattern oxigraph.Pattern, format oxigraph.Format) ([]byte, error) {
+	if err := b.ensureGraph(ctx); err != nil {
+		return nil, fmt.Errorf("ensuring graph service: %w", err)
+	}
+
+	client := b.graphClient()
+
+	// Map format to string for HTTP API
+	formatStr := ""
+	if format == oxigraph.NQuads {
+		formatStr = "nquads"
+	}
+
+	return client.Quads(ctx, pattern, formatStr)
 }

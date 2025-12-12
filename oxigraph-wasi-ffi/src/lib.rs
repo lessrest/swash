@@ -8,6 +8,7 @@ use std::sync::Mutex;
 static STORES: Mutex<Vec<Option<Store>>> = Mutex::new(Vec::new());
 static QUERY_ITERS: Mutex<Vec<Option<QueryIterator>>> = Mutex::new(Vec::new());
 static QUAD_ITERS: Mutex<Vec<Option<QuadIterator>>> = Mutex::new(Vec::new());
+static SERIALIZE_BUFS: Mutex<Vec<Option<Vec<u8>>>> = Mutex::new(Vec::new());
 
 struct QueryIterator {
     solutions: Vec<QuerySolution>,
@@ -495,6 +496,123 @@ pub extern "C" fn quads_result_ptr(iter_handle: i32) -> *const u8 {
 #[no_mangle]
 pub extern "C" fn quads_free(iter_handle: i32) {
     free_handle(&QUAD_ITERS, iter_handle);
+}
+
+// ============================================================================
+// Serialization FFI
+// ============================================================================
+
+/// Format constants for serialization
+pub const FORMAT_NQUADS: i32 = 0;
+pub const FORMAT_TRIG: i32 = 1;
+pub const FORMAT_NTRIPLES: i32 = 2;
+pub const FORMAT_TURTLE: i32 = 3;
+
+/// Serialize quads matching a pattern to RDF format.
+/// Returns a buffer handle >= 0 on success, -1 on error.
+/// format: 0 = N-Quads, 1 = TriG, 2 = N-Triples, 3 = Turtle
+#[no_mangle]
+pub extern "C" fn quads_serialize(
+    store_handle: i32,
+    subj_ptr: *const u8,
+    subj_len: usize,
+    pred_ptr: *const u8,
+    pred_len: usize,
+    obj_ptr: *const u8,
+    obj_len: usize,
+    graph_ptr: *const u8,
+    graph_len: usize,
+    format: i32,
+) -> i32 {
+    let subject = if subj_ptr.is_null() || subj_len == 0 {
+        None
+    } else {
+        let data = unsafe { std::slice::from_raw_parts(subj_ptr, subj_len) };
+        parse_subject_from_ntriples(data)
+    };
+
+    let predicate = if pred_ptr.is_null() || pred_len == 0 {
+        None
+    } else {
+        let data = unsafe { std::slice::from_raw_parts(pred_ptr, pred_len) };
+        parse_named_node_from_ntriples(data)
+    };
+
+    let object = if obj_ptr.is_null() || obj_len == 0 {
+        None
+    } else {
+        let data = unsafe { std::slice::from_raw_parts(obj_ptr, obj_len) };
+        parse_term_from_ntriples(data)
+    };
+
+    let graph = if graph_ptr.is_null() || graph_len == 0 {
+        None
+    } else {
+        let data = unsafe { std::slice::from_raw_parts(graph_ptr, graph_len) };
+        parse_graph_from_ntriples(data)
+    };
+
+    let rdf_format = match format {
+        FORMAT_NQUADS => RdfFormat::NQuads,
+        FORMAT_TRIG => RdfFormat::TriG,
+        FORMAT_NTRIPLES => RdfFormat::NTriples,
+        FORMAT_TURTLE => RdfFormat::Turtle,
+        _ => return -1,
+    };
+
+    with_handle(&STORES, store_handle, |store| {
+        let quads: Vec<Quad> = store
+            .quads_for_pattern(
+                subject.as_ref().map(|s| s.into()),
+                predicate.as_ref().map(|p| p.into()),
+                object.as_ref().map(|o| o.into()),
+                graph.as_ref().map(|g| g.into()),
+            )
+            .flatten()
+            .collect();
+
+        let mut buf = Vec::new();
+        let mut serializer = oxigraph::io::RdfSerializer::from_format(rdf_format)
+            .for_writer(&mut buf);
+        
+        for quad in &quads {
+            if serializer.serialize_quad(quad.as_ref()).is_err() {
+                return -1;
+            }
+        }
+        
+        if serializer.finish().is_err() {
+            return -1;
+        }
+
+        alloc_handle(&SERIALIZE_BUFS, buf)
+    })
+    .unwrap_or(-1)
+}
+
+/// Get the length of a serialization buffer.
+#[no_mangle]
+pub extern "C" fn serialize_buf_len(handle: i32) -> i32 {
+    with_handle(&SERIALIZE_BUFS, handle, |buf| buf.len() as i32).unwrap_or(-1)
+}
+
+/// Get pointer to a serialization buffer.
+#[no_mangle]
+pub extern "C" fn serialize_buf_ptr(handle: i32) -> *const u8 {
+    with_handle(&SERIALIZE_BUFS, handle, |buf| {
+        if buf.is_empty() {
+            std::ptr::null()
+        } else {
+            buf.as_ptr()
+        }
+    })
+    .unwrap_or(std::ptr::null())
+}
+
+/// Free a serialization buffer.
+#[no_mangle]
+pub extern "C" fn serialize_buf_free(handle: i32) {
+    free_handle(&SERIALIZE_BUFS, handle);
 }
 
 // ============================================================================

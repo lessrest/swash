@@ -12,6 +12,7 @@ import (
 
 	"github.com/mbrock/swash/internal/dirs"
 	"github.com/mbrock/swash/internal/session"
+	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
 // Kind identifies a backend implementation.
@@ -61,6 +62,10 @@ type Backend interface {
 	ListContexts(ctx context.Context) ([]Context, error)
 	GetContextDir(ctx context.Context, contextID string) (string, error)
 	ListContextSessions(ctx context.Context, contextID string) ([]string, error)
+
+	// Graph (RDF knowledge graph)
+	GraphQuery(ctx context.Context, sparql string) ([]oxigraph.Solution, error)
+	GraphSerialize(ctx context.Context, pattern oxigraph.Pattern, format oxigraph.Format) ([]byte, error)
 }
 
 type opener func(ctx context.Context, cfg Config) (Backend, error)

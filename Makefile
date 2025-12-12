@@ -50,8 +50,8 @@ test-integration: build
 clean:
 	rm -rf bin/
 
-# Build oxigraph WASI module (compressed blob is embedded and decompressed at runtime)
-OXIGRAPH_WASM_ZST := cmd/oxigraph-poc/oxigraph.wasm.zst
+# Build oxigraph WASI module (compressed blob is embedded in pkg/oxigraph)
+OXIGRAPH_WASM_ZST := pkg/oxigraph/oxigraph.wasm.zst
 OXIGRAPH_SOURCES := oxigraph-wasi-ffi/src/lib.rs oxigraph-wasi-ffi/Cargo.toml
 
 oxigraph-wasm: $(OXIGRAPH_WASM_ZST)

@@ -46,6 +46,10 @@ type Runtime struct {
 	quadsNext         api.Function
 	quadsResultPtr    api.Function
 	quadsFree         api.Function
+	quadsSerialize    api.Function
+	serializeBufLen   api.Function
+	serializeBufPtr   api.Function
+	serializeBufFree  api.Function
 	alloc             api.Function
 	dealloc           api.Function
 }
@@ -89,6 +93,10 @@ func NewRuntime(ctx context.Context) (*Runtime, error) {
 		quadsNext:         mod.ExportedFunction("quads_next"),
 		quadsResultPtr:    mod.ExportedFunction("quads_result_ptr"),
 		quadsFree:         mod.ExportedFunction("quads_free"),
+		quadsSerialize:    mod.ExportedFunction("quads_serialize"),
+		serializeBufLen:   mod.ExportedFunction("serialize_buf_len"),
+		serializeBufPtr:   mod.ExportedFunction("serialize_buf_ptr"),
+		serializeBufFree:  mod.ExportedFunction("serialize_buf_free"),
 		alloc:             mod.ExportedFunction("alloc"),
 		dealloc:           mod.ExportedFunction("dealloc"),
 	}
@@ -164,6 +172,16 @@ type Format int
 const (
 	NTriples Format = iota
 	Turtle
+	NQuads
+	TriG
+)
+
+// Output format constants (must match Rust FFI)
+const (
+	formatNQuads   = 0
+	formatTriG     = 1
+	formatNTriples = 2
+	formatTurtle   = 3
 )
 
 // Load parses and inserts RDF data from a reader.
@@ -469,4 +487,120 @@ func (s *Store) Quads(p Pattern) iter.Seq[Quad] {
 // All returns an iterator over all quads.
 func (s *Store) All() iter.Seq[Quad] {
 	return s.Quads(Pattern{})
+}
+
+// Serialize returns quads matching the pattern serialized in the given format.
+// Supported formats: NQuads, TriG, NTriples, Turtle.
+func (s *Store) Serialize(p Pattern, format Format) ([]byte, error) {
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	// Map Format to FFI format constant
+	var ffiFormat int
+	switch format {
+	case NQuads:
+		ffiFormat = formatNQuads
+	case TriG:
+		ffiFormat = formatTriG
+	case NTriples:
+		ffiFormat = formatNTriples
+	case Turtle:
+		ffiFormat = formatTurtle
+	default:
+		return nil, fmt.Errorf("unsupported serialization format: %d", format)
+	}
+
+	s.runtime.mu.Lock()
+	defer s.runtime.mu.Unlock()
+
+	var subjPtr, predPtr, objPtr, graphPtr uint32
+	var subjData, predData, objData, graphData []byte
+
+	// Write pattern terms to WASM memory
+	if p.Subject != nil {
+		subjData = []byte(p.Subject.String())
+		var err error
+		subjPtr, err = s.writeToWasm(subjData)
+		if err != nil {
+			return nil, err
+		}
+		defer s.freeWasm(subjPtr, len(subjData))
+	}
+	if p.Predicate != nil {
+		predData = []byte(p.Predicate.String())
+		var err error
+		predPtr, err = s.writeToWasm(predData)
+		if err != nil {
+			return nil, err
+		}
+		defer s.freeWasm(predPtr, len(predData))
+	}
+	if p.Object != nil {
+		objData = []byte(p.Object.String())
+		var err error
+		objPtr, err = s.writeToWasm(objData)
+		if err != nil {
+			return nil, err
+		}
+		defer s.freeWasm(objPtr, len(objData))
+	}
+	if p.Graph != nil {
+		graphData = []byte(p.Graph.String())
+		var err error
+		graphPtr, err = s.writeToWasm(graphData)
+		if err != nil {
+			return nil, err
+		}
+		defer s.freeWasm(graphPtr, len(graphData))
+	}
+
+	// Call quads_serialize
+	res, err := s.runtime.quadsSerialize.Call(s.runtime.ctx,
+		uint64(s.handle),
+		uint64(subjPtr), uint64(len(subjData)),
+		uint64(predPtr), uint64(len(predData)),
+		uint64(objPtr), uint64(len(objData)),
+		uint64(graphPtr), uint64(len(graphData)),
+		uint64(ffiFormat),
+	)
+	if err != nil {
+		return nil, err
+	}
+	bufHandle := int32(res[0])
+	if bufHandle < 0 {
+		return nil, errors.New("serialization failed")
+	}
+	defer s.runtime.serializeBufFree.Call(s.runtime.ctx, uint64(bufHandle))
+
+	// Get buffer length
+	res, err = s.runtime.serializeBufLen.Call(s.runtime.ctx, uint64(bufHandle))
+	if err != nil {
+		return nil, err
+	}
+	length := int32(res[0])
+	if length < 0 {
+		return nil, errors.New("failed to get buffer length")
+	}
+	if length == 0 {
+		return []byte{}, nil
+	}
+
+	// Get buffer pointer and read data
+	res, err = s.runtime.serializeBufPtr.Call(s.runtime.ctx, uint64(bufHandle))
+	if err != nil {
+		return nil, err
+	}
+	bufPtr := uint32(res[0])
+
+	data, ok := s.runtime.mod.Memory().Read(bufPtr, uint32(length))
+	if !ok {
+		return nil, errors.New("failed to read serialized data from wasm memory")
+	}
+
+	// Make a copy since the buffer will be freed
+	result := make([]byte, len(data))
+	copy(result, data)
+
+	return result, nil
 }
