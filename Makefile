@@ -30,13 +30,10 @@ all: build
 generate:
 	go generate ./cmd/swash/templates/
 
-build: generate bin/swash bin/mini-systemd
+build: generate bin/swash
 
 bin/swash: $(shell find . -name '*.go' -not -path './test/*')
 	go build -o $@ ./cmd/swash/
-
-bin/mini-systemd: $(shell find . -name '*.go' -not -path './test/*')
-	go build -o $@ ./cmd/mini-systemd/
 
 install:
 	go install ./cmd/swash/

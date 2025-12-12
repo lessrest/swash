@@ -28,7 +28,7 @@ func init() {
 type PosixBackend struct {
 	cfg backend.Config
 
-	// journaldConfig holds the socket and journal paths for "swash journald".
+	// journaldConfig holds the socket and journal paths for "swash minijournald".
 	journaldConfig journald.Config
 
 	// sharedLog is the socket-based eventlog for writing to the shared journal.
@@ -63,7 +63,7 @@ func (b *PosixBackend) Close() error {
 	return nil
 }
 
-// ensureJournald starts "swash journald" if it's not already running.
+// ensureJournald starts "swash minijournald" if it's not already running.
 // It returns when the daemon is ready to accept connections.
 func (b *PosixBackend) ensureJournald(ctx context.Context) error {
 	socketPath := b.journaldConfig.SocketPath
@@ -74,10 +74,10 @@ func (b *PosixBackend) ensureJournald(ctx context.Context) error {
 		return nil
 	}
 
-	// Use the same swash binary with "journald" subcommand
+	// Use the same swash binary with "minijournald" subcommand
 	swashBin := b.cfg.HostCommand[0]
 
-	cmd := osexec.CommandContext(ctx, swashBin, "journald",
+	cmd := osexec.CommandContext(ctx, swashBin, "minijournald",
 		"--socket", socketPath,
 		"--journal", b.journaldConfig.JournalPath,
 	)
@@ -95,7 +95,7 @@ func (b *PosixBackend) ensureJournald(ctx context.Context) error {
 		if devNull != nil {
 			devNull.Close()
 		}
-		return fmt.Errorf("starting swash journald: %w", err)
+		return fmt.Errorf("starting swash minijournald: %w", err)
 	}
 	if devNull != nil {
 		devNull.Close()
@@ -108,7 +108,7 @@ func (b *PosixBackend) ensureJournald(ctx context.Context) error {
 			return ctx.Err()
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for swash journald socket")
+			return fmt.Errorf("timeout waiting for swash minijournald socket")
 		}
 		if _, err := os.Stat(socketPath); err == nil {
 			return nil
@@ -124,7 +124,7 @@ func (b *PosixBackend) ensureSharedLog(ctx context.Context) (eventlog.EventLog, 
 		return b.sharedLog, nil
 	}
 
-	// Make sure "swash journald" is running
+	// Make sure "swash minijournald" is running
 	if err := b.ensureJournald(ctx); err != nil {
 		return nil, fmt.Errorf("ensuring journald: %w", err)
 	}
@@ -321,7 +321,7 @@ func (b *PosixBackend) ListHistory(ctx context.Context) ([]backend.HistorySessio
 }
 
 func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts backend.SessionOptions) (string, error) {
-	// Ensure "swash journald" is running
+	// Ensure "swash minijournald" is running
 	if err := b.ensureJournald(ctx); err != nil {
 		return "", fmt.Errorf("ensuring journald: %w", err)
 	}

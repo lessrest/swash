@@ -64,9 +64,15 @@ func main() {
 		return
 	}
 
-	// Handle "journald" subcommand (minimal journald daemon for posix backend)
-	if len(os.Args) >= 2 && os.Args[1] == "journald" {
-		cmdJournald()
+	// Handle "minijournald" subcommand (minimal journald daemon for posix backend)
+	if len(os.Args) >= 2 && os.Args[1] == "minijournald" {
+		cmdMinijournald()
+		return
+	}
+
+	// Handle "minisystemd" subcommand (minimal systemd for testing)
+	if len(os.Args) >= 2 && os.Args[1] == "minisystemd" {
+		cmdMinisystemd()
 		return
 	}
 

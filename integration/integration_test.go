@@ -63,8 +63,7 @@ type testEnv struct {
 	journalDir string
 	rootSlice  string // unique slice for test isolation
 
-	// mini-systemd specific
-	miniSystemdBin string
+	// minisystemd specific
 	miniSystemdCmd *exec.Cmd
 	dbusCmd        *exec.Cmd
 	busSocket      string
@@ -157,9 +156,9 @@ func (e *testEnv) setupPosix() error {
 		return fmt.Errorf("creating runtime dir: %w", err)
 	}
 
-	// Start "swash journald" daemon for the test suite (uses already-built swash binary)
+	// Start "swash minijournald" daemon for the test suite (uses already-built swash binary)
 	journalPath := filepath.Join(e.stateDir, "swash.journal")
-	e.journaldCmd = exec.Command(e.swashBin, "journald",
+	e.journaldCmd = exec.Command(e.swashBin, "minijournald",
 		"--socket", e.journalSocket,
 		"--journal", journalPath,
 	)
@@ -168,7 +167,7 @@ func (e *testEnv) setupPosix() error {
 	e.journaldCmd.Stderr = os.Stderr
 	e.journaldCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := e.journaldCmd.Start(); err != nil {
-		return fmt.Errorf("starting swash journald: %w", err)
+		return fmt.Errorf("starting swash minijournald: %w", err)
 	}
 
 	// Wait for socket to appear
@@ -179,7 +178,7 @@ func (e *testEnv) setupPosix() error {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if _, err := os.Stat(e.journalSocket); err != nil {
-		return fmt.Errorf("swash journald socket did not appear: %w", err)
+		return fmt.Errorf("swash minijournald socket did not appear: %w", err)
 	}
 
 	return nil
@@ -193,15 +192,6 @@ func (e *testEnv) setupMiniSystemd() error {
 	if err := os.MkdirAll(e.journalDir, 0755); err != nil {
 		return fmt.Errorf("creating journal dir: %w", err)
 	}
-
-	// Build mini-systemd
-	miniSystemdBin := filepath.Join(e.tmpDir, "mini-systemd")
-	cmd := exec.Command("go", "build", "-o", miniSystemdBin, "./cmd/mini-systemd/")
-	cmd.Dir = getProjectRoot()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("building mini-systemd: %w\n%s", err, out)
-	}
-	e.miniSystemdBin = miniSystemdBin
 
 	// Start dbus-daemon in its own process group so we can kill all children
 	e.dbusCmd = exec.Command("dbus-daemon", "--session", "--nofork", "--address=unix:path="+e.busSocket)
@@ -218,14 +208,14 @@ func (e *testEnv) setupMiniSystemd() error {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Start mini-systemd in its own process group so we can kill all children
-	e.miniSystemdCmd = exec.Command(miniSystemdBin, "--journal-dir="+e.journalDir, "--journal-socket="+e.journalSocket)
+	// Start "swash minisystemd" in its own process group so we can kill all children
+	e.miniSystemdCmd = exec.Command(e.swashBin, "minisystemd", "--journal-dir="+e.journalDir, "--journal-socket="+e.journalSocket)
 	e.miniSystemdCmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS=unix:path="+e.busSocket)
 	e.miniSystemdCmd.Stdout = os.Stdout
 	e.miniSystemdCmd.Stderr = os.Stderr
 	e.miniSystemdCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := e.miniSystemdCmd.Start(); err != nil {
-		return fmt.Errorf("starting mini-systemd: %w", err)
+		return fmt.Errorf("starting swash minisystemd: %w", err)
 	}
 
 	// Wait for journal socket
@@ -260,7 +250,7 @@ func (e *testEnv) cleanup() {
 			syscall.Kill(-e.dbusCmd.Process.Pid, syscall.SIGKILL)
 			e.dbusCmd.Wait()
 		}
-		// Kill "swash journald" for posix mode
+		// Kill "swash minijournald" for posix mode
 		if e.journaldCmd != nil && e.journaldCmd.Process != nil {
 			syscall.Kill(-e.journaldCmd.Process.Pid, syscall.SIGKILL)
 			e.journaldCmd.Wait()
