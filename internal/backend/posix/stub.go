@@ -15,8 +15,8 @@ import (
 
 	"github.com/mbrock/swash/internal/backend"
 	"github.com/mbrock/swash/internal/eventlog"
-	eventlogfile "github.com/mbrock/swash/internal/eventlog/file"
-	eventlogsocket "github.com/mbrock/swash/internal/eventlog/socket"
+	"github.com/mbrock/swash/internal/eventlog/sink"
+	"github.com/mbrock/swash/internal/eventlog/source"
 	"github.com/mbrock/swash/internal/journald"
 	"github.com/mbrock/swash/internal/session"
 )
@@ -31,7 +31,8 @@ type PosixBackend struct {
 	// journaldConfig holds the socket and journal paths for "swash minijournald".
 	journaldConfig journald.Config
 
-	// sharedLog is the socket-based eventlog for writing to the shared journal.
+	// sharedLog is the combined eventlog for the shared journal.
+	// Uses SocketSink for writing and JournalfileSource for reading.
 	// Lazily initialized on first use.
 	sharedLog eventlog.EventLog
 }
@@ -117,8 +118,8 @@ func (b *PosixBackend) ensureJournald(ctx context.Context) error {
 	}
 }
 
-// ensureSharedLog lazily initializes the socket-based eventlog for writing
-// to the shared journal (used for context events and other backend operations).
+// ensureSharedLog lazily initializes the eventlog for reading and writing
+// to the shared journal. Uses SocketSink for writing and JournalfileSource for reading.
 func (b *PosixBackend) ensureSharedLog(ctx context.Context) (eventlog.EventLog, error) {
 	if b.sharedLog != nil {
 		return b.sharedLog, nil
@@ -129,16 +130,19 @@ func (b *PosixBackend) ensureSharedLog(ctx context.Context) (eventlog.EventLog, 
 		return nil, fmt.Errorf("ensuring journald: %w", err)
 	}
 
-	cfg := eventlogsocket.Config{
-		SocketPath:  b.journaldConfig.SocketPath,
-		JournalPath: b.journaldConfig.JournalPath,
-	}
-	el, err := eventlogsocket.Open(cfg)
+	// Create sink (write to socket)
+	snk := sink.NewSocketSink(b.journaldConfig.SocketPath)
+
+	// Create source (read from journal file)
+	src, err := source.NewJournalfileSource(b.journaldConfig.JournalPath)
 	if err != nil {
-		return nil, fmt.Errorf("opening socket eventlog: %w", err)
+		snk.Close()
+		return nil, fmt.Errorf("opening journal source: %w", err)
 	}
-	b.sharedLog = el
-	return el, nil
+
+	// Combine into full EventLog
+	b.sharedLog = eventlog.NewCombinedEventLog(snk, src)
+	return b.sharedLog, nil
 }
 
 // -----------------------------------------------------------------------------
@@ -255,22 +259,18 @@ func (b *PosixBackend) ListSessions(ctx context.Context) ([]backend.Session, err
 }
 
 func (b *PosixBackend) ListHistory(ctx context.Context) ([]backend.HistorySession, error) {
-	_ = ctx
-
-	// Open shared journal and query all exited events
-	el, err := eventlogfile.Open(b.journaldConfig.JournalPath)
+	el, err := b.ensureSharedLog(ctx)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	defer el.Close()
 
 	filters := []eventlog.EventFilter{
 		eventlog.FilterByEvent(eventlog.EventExited),
 	}
-	recs, _, err := el.Poll(context.Background(), filters, "")
+	recs, _, err := el.Poll(ctx, filters, "")
 	if err != nil {
 		return nil, err
 	}
@@ -461,11 +461,10 @@ func (b *PosixBackend) waitReady(ctx context.Context, sessionID string, pid int,
 
 // hasSessionStarted checks if a session has a "started" event in the shared journal.
 func (b *PosixBackend) hasSessionStarted(sessionID string) bool {
-	el, err := eventlogfile.Open(b.journaldConfig.JournalPath)
+	el, err := b.ensureSharedLog(context.Background())
 	if err != nil {
 		return false
 	}
-	defer el.Close()
 
 	filters := []eventlog.EventFilter{
 		eventlog.FilterBySession(sessionID),
@@ -515,11 +514,10 @@ func (b *PosixBackend) SendInput(ctx context.Context, sessionID, input string) (
 }
 
 func (b *PosixBackend) PollSessionOutput(ctx context.Context, sessionID, cursor string) ([]backend.Event, string, error) {
-	el, err := eventlogfile.Open(b.journaldConfig.JournalPath)
+	el, err := b.ensureSharedLog(ctx)
 	if err != nil {
 		return nil, "", err
 	}
-	defer el.Close()
 
 	filters := []eventlog.EventFilter{eventlog.FilterBySession(sessionID)}
 	entries, newCursor, err := el.Poll(ctx, filters, cursor)
@@ -554,11 +552,10 @@ func (b *PosixBackend) PollSessionOutput(ctx context.Context, sessionID, cursor 
 }
 
 func (b *PosixBackend) FollowSession(ctx context.Context, sessionID string, timeout time.Duration, outputLimit int) (int, backend.FollowResult) {
-	el, err := eventlogfile.Open(b.journaldConfig.JournalPath)
+	el, err := b.ensureSharedLog(ctx)
 	if err != nil {
 		return 0, backend.FollowCancelled
 	}
-	defer el.Close()
 
 	filters := []eventlog.EventFilter{eventlog.FilterBySession(sessionID)}
 	outputBytes := 0
@@ -597,7 +594,6 @@ func (b *PosixBackend) FollowSession(ctx context.Context, sessionID string, time
 }
 
 func (b *PosixBackend) GetScreen(ctx context.Context, sessionID string) (string, error) {
-	_ = ctx
 	// Try control plane for a live session first.
 	client, err := b.ConnectTTYSession(sessionID)
 	if err == nil {
@@ -608,17 +604,16 @@ func (b *PosixBackend) GetScreen(ctx context.Context, sessionID string) (string,
 	}
 
 	// Fall back to saved screen event in shared journal.
-	el, err := eventlogfile.Open(b.journaldConfig.JournalPath)
+	el, err := b.ensureSharedLog(ctx)
 	if err != nil {
 		return "", err
 	}
-	defer el.Close()
 
 	filters := []eventlog.EventFilter{
 		eventlog.FilterByEvent(eventlog.EventScreen),
 		eventlog.FilterBySession(sessionID),
 	}
-	entries, _, err := el.Poll(context.Background(), filters, "")
+	entries, _, err := el.Poll(ctx, filters, "")
 	if err != nil {
 		return "", err
 	}

@@ -17,7 +17,8 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/mbrock/swash/internal/eventlog"
-	eventlogsocket "github.com/mbrock/swash/internal/eventlog/socket"
+	"github.com/mbrock/swash/internal/eventlog/sink"
+	"github.com/mbrock/swash/internal/eventlog/source"
 	journald "github.com/mbrock/swash/internal/platform/systemd/eventlog"
 	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
 	"github.com/mbrock/swash/internal/process"
@@ -383,13 +384,15 @@ func RunHost() error {
 		if journalPath == "" {
 			journalPath = filepath.Join(filepath.Dir(socketPath), "swash.journal")
 		}
-		events, err := eventlogsocket.Open(eventlogsocket.Config{
-			SocketPath:  socketPath,
-			JournalPath: journalPath,
-		})
+
+		// Create combined eventlog: SocketSink for writing, JournalfileSource for reading
+		snk := sink.NewSocketSink(socketPath)
+		src, err := source.NewJournalfileSource(journalPath)
 		if err != nil {
-			return fmt.Errorf("opening event log: %w", err)
+			snk.Close()
+			return fmt.Errorf("opening journal source: %w", err)
 		}
+		events := eventlog.NewCombinedEventLog(snk, src)
 		defer events.Close()
 
 		// Set up context that cancels on SIGTERM/SIGINT (like D-Bus mode).

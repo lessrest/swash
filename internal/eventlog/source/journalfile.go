@@ -1,0 +1,147 @@
+// Package source provides EventSource implementations for reading from journals.
+package source
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"iter"
+	"log/slog"
+	"time"
+
+	"github.com/mbrock/swash/internal/eventlog"
+	"github.com/mbrock/swash/pkg/journalfile"
+)
+
+// JournalfileSource implements EventSource using the pure Go journalfile reader.
+// This works without CGO or libsystemd, making it portable to any platform.
+type JournalfileSource struct {
+	path   string
+	reader *journalfile.Reader
+}
+
+var _ eventlog.EventSource = (*JournalfileSource)(nil)
+
+// NewJournalfileSource creates a source that reads from a journal file.
+func NewJournalfileSource(path string) (*JournalfileSource, error) {
+	reader, err := journalfile.OpenRead(path)
+	if err != nil {
+		return nil, fmt.Errorf("opening journal file %s: %w", path, err)
+	}
+	return &JournalfileSource{
+		path:   path,
+		reader: reader,
+	}, nil
+}
+
+// Poll reads entries matching filters since cursor.
+func (s *JournalfileSource) Poll(ctx context.Context, filters []eventlog.EventFilter, cursor string) ([]eventlog.EventRecord, string, error) {
+	// Refresh to see latest entries
+	if err := s.reader.Refresh(); err != nil {
+		return nil, "", fmt.Errorf("refreshing journal: %w", err)
+	}
+
+	// Apply matches
+	s.reader.FlushMatches()
+	for _, f := range filters {
+		s.reader.AddMatch(f.Field, f.Value)
+	}
+
+	// Seek to position
+	if cursor != "" {
+		if err := s.reader.SeekCursor(cursor); err != nil {
+			s.reader.SeekHead()
+		}
+	} else {
+		s.reader.SeekHead()
+	}
+
+	var entries []eventlog.EventRecord
+	var lastCursor string
+
+	for {
+		entry, err := s.reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, "", fmt.Errorf("reading journal: %w", err)
+		}
+
+		record := eventlog.EventRecord{
+			Cursor:    journalfile.GetCursor(entry),
+			Timestamp: entry.Realtime,
+			Message:   entry.Fields["MESSAGE"],
+			Fields:    entry.Fields,
+		}
+		entries = append(entries, record)
+		lastCursor = record.Cursor
+	}
+
+	return entries, lastCursor, nil
+}
+
+// Follow returns an iterator over entries matching filters.
+func (s *JournalfileSource) Follow(ctx context.Context, filters []eventlog.EventFilter) iter.Seq[eventlog.EventRecord] {
+	return func(yield func(eventlog.EventRecord) bool) {
+		slog.Debug("JournalfileSource.Follow starting", "path", s.path, "filters", len(filters))
+
+		// Apply matches
+		s.reader.FlushMatches()
+		for _, f := range filters {
+			s.reader.AddMatch(f.Field, f.Value)
+		}
+
+		s.reader.SeekHead()
+
+		for {
+			entry, err := s.reader.Next()
+			if err == io.EOF {
+				// No more entries, wait and refresh
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(100 * time.Millisecond):
+					if err := s.reader.Refresh(); err != nil {
+						slog.Debug("JournalfileSource.Follow refresh error", "error", err)
+						return
+					}
+					continue
+				}
+			}
+			if err != nil {
+				slog.Debug("JournalfileSource.Follow read error", "error", err)
+				return
+			}
+
+			record := eventlog.EventRecord{
+				Cursor:    journalfile.GetCursor(entry),
+				Timestamp: entry.Realtime,
+				Message:   entry.Fields["MESSAGE"],
+				Fields:    entry.Fields,
+			}
+
+			if !yield(record) {
+				return
+			}
+		}
+	}
+}
+
+// Close releases resources.
+func (s *JournalfileSource) Close() error {
+	if s.reader != nil {
+		return s.reader.Close()
+	}
+	return nil
+}
+
+// Path returns the journal file path.
+func (s *JournalfileSource) Path() string {
+	return s.path
+}
+
+// Refresh reloads the journal to see new entries.
+func (s *JournalfileSource) Refresh() error {
+	return s.reader.Refresh()
+}

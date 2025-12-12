@@ -34,18 +34,22 @@ func FilterByEvent(kind string) EventFilter {
 	return EventFilter{Field: FieldEvent, Value: kind}
 }
 
-// EventLog provides semantic operations for storing and reading swash events.
-// The default implementation is backed by systemd-journald, but callers only
-// see domain concepts.
-type EventLog interface {
-	// Write sends a structured entry to the backing store (fire-and-forget).
+// EventSink is a write-only interface for sending events.
+// Implementations use the native journald socket protocol.
+type EventSink interface {
+	// Write sends a structured entry (fire-and-forget).
 	// Use for high-volume streaming data like process output.
 	Write(message string, fields map[string]string) error
 
-	// WriteSync sends a structured entry and waits until it is readable.
-	// Use for lifecycle events that need read-after-write consistency.
-	WriteSync(message string, fields map[string]string) error
+	// Close releases any resources.
+	Close() error
+}
 
+// EventSource is a read-only interface for querying events.
+// Implementations:
+//   - SDJournalSource: uses sdjournal (CGO, full libsystemd features)
+//   - JournalfileSource: uses journalfile (pure Go, portable)
+type EventSource interface {
 	// Poll reads entries matching filters since cursor.
 	Poll(ctx context.Context, filters []EventFilter, cursor string) ([]EventRecord, string, error)
 
@@ -54,6 +58,18 @@ type EventLog interface {
 
 	// Close releases any resources.
 	Close() error
+}
+
+// EventLog combines EventSink and EventSource, adding WriteSync for
+// read-after-write consistency. This is the main interface used by most code.
+type EventLog interface {
+	EventSink
+	EventSource
+
+	// WriteSync sends a structured entry and waits until it is readable.
+	// Use for lifecycle events that need read-after-write consistency.
+	// This requires both write (sink) and read (source) capabilities.
+	WriteSync(message string, fields map[string]string) error
 }
 
 // -----------------------------------------------------------------------------
