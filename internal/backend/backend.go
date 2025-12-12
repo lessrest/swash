@@ -52,6 +52,12 @@ type Backend interface {
 
 	ConnectSession(sessionID string) (session.SessionClient, error)
 	ConnectTTYSession(sessionID string) (session.TTYClient, error)
+
+	// Context management
+	CreateContext(ctx context.Context) (contextID string, dir string, err error)
+	ListContexts(ctx context.Context) ([]Context, error)
+	GetContextDir(ctx context.Context, contextID string) (string, error)
+	ListContextSessions(ctx context.Context, contextID string) ([]string, error)
 }
 
 type opener func(ctx context.Context, cfg Config) (Backend, error)

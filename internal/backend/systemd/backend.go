@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -144,9 +145,20 @@ func (b *SystemdBackend) GetScreen(ctx context.Context, sessionID string) (strin
 // StartSession starts a new swash session with the given command and options.
 func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opts backend.SessionOptions) (string, error) {
 	sessionID := session.GenSessionID()
-	cwd, _ := os.Getwd()
+	cwd := opts.WorkingDir
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
 	dbusName := fmt.Sprintf("%s.%s", session.DBusNamePrefix, sessionID)
 	cmdStr := strings.Join(command, " ")
+
+	// Resolve command[0] to absolute path so systemd can find it
+	// (systemd uses its own PATH, not the inherited environment)
+	if len(command) > 0 && !strings.HasPrefix(command[0], "/") {
+		if absPath, err := exec.LookPath(command[0]); err == nil {
+			command = append([]string{absPath}, command[1:]...)
+		}
+	}
 
 	// Build environment map (excluding underscore-prefixed vars)
 	env := make(map[string]string)
@@ -200,6 +212,14 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 
 	if err := b.processes.Start(ctx, spec); err != nil {
 		return "", err
+	}
+
+	// Emit session-context relation if context is set
+	if opts.ContextID != "" {
+		if err := eventlog.EmitSessionContext(b.events, sessionID, opts.ContextID); err != nil {
+			// Log but don't fail - session already started
+			fmt.Fprintf(os.Stderr, "warning: failed to emit session-context: %v\n", err)
+		}
 	}
 
 	return sessionID, nil
@@ -368,4 +388,89 @@ func unitNameStringForRef(ref process.ProcessRef) string {
 	default:
 		return fmt.Sprintf("swash-task-%s.service", ref.SessionID)
 	}
+}
+
+// -----------------------------------------------------------------------------
+// Context management
+// -----------------------------------------------------------------------------
+
+func (b *SystemdBackend) contextDir(stateDir, contextID string) string {
+	return stateDir + "/contexts/" + contextID
+}
+
+func (b *SystemdBackend) CreateContext(ctx context.Context) (string, string, error) {
+	contextID := session.GenSessionID()
+
+	// Get state directory - we need to look it up since systemd backend doesn't store cfg
+	stateDir := defaultStateDir()
+	dir := b.contextDir(stateDir, contextID)
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", fmt.Errorf("creating context directory: %w", err)
+	}
+
+	if err := eventlog.EmitContextCreated(b.events, contextID, dir); err != nil {
+		return "", "", fmt.Errorf("emitting context-created event: %w", err)
+	}
+
+	return contextID, dir, nil
+}
+
+func (b *SystemdBackend) ListContexts(ctx context.Context) ([]backend.Context, error) {
+	filters := []eventlog.EventFilter{eventlog.FilterByEvent(eventlog.EventContextCreated)}
+	entries, _, err := b.events.Poll(ctx, filters, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var contexts []backend.Context
+	for _, e := range entries {
+		contexts = append(contexts, backend.Context{
+			ID:      e.Fields[eventlog.FieldContext],
+			Dir:     e.Fields["DIR"],
+			Created: e.Timestamp,
+		})
+	}
+	return contexts, nil
+}
+
+func (b *SystemdBackend) GetContextDir(ctx context.Context, contextID string) (string, error) {
+	stateDir := defaultStateDir()
+	dir := b.contextDir(stateDir, contextID)
+	if _, err := os.Stat(dir); err != nil {
+		return "", fmt.Errorf("context %s not found", contextID)
+	}
+	return dir, nil
+}
+
+func (b *SystemdBackend) ListContextSessions(ctx context.Context, contextID string) ([]string, error) {
+	filters := []eventlog.EventFilter{
+		eventlog.FilterByEvent(eventlog.EventSessionContext),
+		eventlog.FilterByContext(contextID),
+	}
+	entries, _, err := b.events.Poll(ctx, filters, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var sessionIDs []string
+	for _, e := range entries {
+		if sid := e.Fields[eventlog.FieldSession]; sid != "" {
+			sessionIDs = append(sessionIDs, sid)
+		}
+	}
+	return sessionIDs, nil
+}
+
+func defaultStateDir() string {
+	if v := os.Getenv("SWASH_STATE_DIR"); v != "" {
+		return v
+	}
+	if base := os.Getenv("XDG_STATE_HOME"); base != "" {
+		return base + "/swash"
+	}
+	if home := os.Getenv("HOME"); home != "" {
+		return home + "/.local/state/swash"
+	}
+	return os.TempDir() + "/swash-state"
 }

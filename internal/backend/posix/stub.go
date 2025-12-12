@@ -265,6 +265,9 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 
 	cmd := osexec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if opts.WorkingDir != "" {
+		cmd.Dir = opts.WorkingDir
+	}
 
 	devNull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if devNull != nil {
@@ -299,6 +302,14 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	// Wait for the control socket to appear and respond.
 	if err := b.waitReady(ctx, sessionID, cmd.Process.Pid, socketPath, eventLogPath); err != nil {
 		return "", err
+	}
+
+	// Emit session-context relation if context is set
+	if opts.ContextID != "" {
+		if err := b.emitSessionContext(sessionID, opts.ContextID); err != nil {
+			// Log but don't fail - session already started
+			fmt.Fprintf(os.Stderr, "warning: failed to emit session-context: %v\n", err)
+		}
 	}
 
 	return sessionID, nil
@@ -506,4 +517,114 @@ func (b *PosixBackend) ConnectTTYSession(sessionID string) (session.TTYClient, e
 		return nil, err
 	}
 	return session.ConnectUnixTTYSession(sessionID, sock)
+}
+
+// -----------------------------------------------------------------------------
+// Context management
+// -----------------------------------------------------------------------------
+
+func (b *PosixBackend) contextDir(contextID string) string {
+	return filepath.Join(b.cfg.StateDir, "contexts", contextID)
+}
+
+func (b *PosixBackend) contextEventLogPath() string {
+	return filepath.Join(b.cfg.StateDir, "contexts.journal")
+}
+
+func (b *PosixBackend) CreateContext(ctx context.Context) (string, string, error) {
+	_ = ctx
+	contextID := session.GenSessionID()
+	dir := b.contextDir(contextID)
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", "", fmt.Errorf("creating context directory: %w", err)
+	}
+
+	el, err := eventlogfile.Open(b.contextEventLogPath())
+	if err != nil {
+		return "", "", fmt.Errorf("opening context event log: %w", err)
+	}
+	defer el.Close()
+
+	if err := eventlog.EmitContextCreated(el, contextID, dir); err != nil {
+		return "", "", fmt.Errorf("emitting context-created event: %w", err)
+	}
+
+	return contextID, dir, nil
+}
+
+func (b *PosixBackend) ListContexts(ctx context.Context) ([]backend.Context, error) {
+	_ = ctx
+	el, err := eventlogfile.Open(b.contextEventLogPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("opening context event log: %w", err)
+	}
+	defer el.Close()
+
+	filters := []eventlog.EventFilter{eventlog.FilterByEvent(eventlog.EventContextCreated)}
+	entries, _, err := el.Poll(context.Background(), filters, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var contexts []backend.Context
+	for _, e := range entries {
+		contexts = append(contexts, backend.Context{
+			ID:      e.Fields[eventlog.FieldContext],
+			Dir:     e.Fields["DIR"],
+			Created: e.Timestamp,
+		})
+	}
+	return contexts, nil
+}
+
+func (b *PosixBackend) GetContextDir(ctx context.Context, contextID string) (string, error) {
+	_ = ctx
+	dir := b.contextDir(contextID)
+	if _, err := os.Stat(dir); err != nil {
+		return "", fmt.Errorf("context %s not found", contextID)
+	}
+	return dir, nil
+}
+
+func (b *PosixBackend) ListContextSessions(ctx context.Context, contextID string) ([]string, error) {
+	_ = ctx
+	el, err := eventlogfile.Open(b.contextEventLogPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("opening context event log: %w", err)
+	}
+	defer el.Close()
+
+	filters := []eventlog.EventFilter{
+		eventlog.FilterByEvent(eventlog.EventSessionContext),
+		eventlog.FilterByContext(contextID),
+	}
+	entries, _, err := el.Poll(context.Background(), filters, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var sessionIDs []string
+	for _, e := range entries {
+		if sid := e.Fields[eventlog.FieldSession]; sid != "" {
+			sessionIDs = append(sessionIDs, sid)
+		}
+	}
+	return sessionIDs, nil
+}
+
+func (b *PosixBackend) emitSessionContext(sessionID, contextID string) error {
+	el, err := eventlogfile.Open(b.contextEventLogPath())
+	if err != nil {
+		return fmt.Errorf("opening context event log: %w", err)
+	}
+	defer el.Close()
+
+	return eventlog.EmitSessionContext(el, sessionID, contextID)
 }

@@ -87,6 +87,10 @@ Usage:
   swash screen <session_id>          Show TTY session screen
   swash attach <session_id>          Attach to TTY session interactively
   swash history                      Show session history
+  swash context new                  Create a new context
+  swash context list                 List all contexts
+  swash context dir <context_id>     Print context directory
+  swash context shell <context_id>   Enter context shell
   swash http                         Run HTTP API server
   swash http install [port]          Install HTTP server as systemd socket service
   swash http uninstall               Uninstall HTTP server
@@ -164,6 +168,8 @@ Flags:
 		cmdHost()
 	case "http":
 		cmdHTTP(cmdArgs)
+	case "context":
+		cmdContext(cmdArgs)
 	default:
 		fatal("unknown command: %s", cmd)
 	}
@@ -303,11 +309,19 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 
 	// Build session options from flags
 	opts := backend.SessionOptions{
-		Protocol: protocol.Protocol(protocolFlag),
-		Tags:     parseTags(tagFlags),
-		TTY:      ttyFlag,
-		Rows:     rowsFlag,
-		Cols:     colsFlag,
+		Protocol:  protocol.Protocol(protocolFlag),
+		Tags:      parseTags(tagFlags),
+		TTY:       ttyFlag,
+		Rows:      rowsFlag,
+		Cols:      colsFlag,
+		ContextID: os.Getenv("SWASH_CONTEXT"),
+	}
+
+	// Use context directory as working directory if in a context
+	if opts.ContextID != "" {
+		if dir, err := bk.GetContextDir(context.Background(), opts.ContextID); err == nil {
+			opts.WorkingDir = dir
+		}
 	}
 
 	sessionID, err := bk.StartSession(context.Background(), command, opts)
@@ -365,11 +379,19 @@ func cmdRunTTY(command []string) {
 
 	rows, cols := GetContentSize()
 	opts := backend.SessionOptions{
-		Protocol: protocol.Protocol(protocolFlag),
-		Tags:     parseTags(tagFlags),
-		TTY:      true,
-		Rows:     rows,
-		Cols:     cols,
+		Protocol:  protocol.Protocol(protocolFlag),
+		Tags:      parseTags(tagFlags),
+		TTY:       true,
+		Rows:      rows,
+		Cols:      cols,
+		ContextID: os.Getenv("SWASH_CONTEXT"),
+	}
+
+	// Use context directory as working directory if in a context
+	if opts.ContextID != "" {
+		if dir, err := bk.GetContextDir(context.Background(), opts.ContextID); err == nil {
+			opts.WorkingDir = dir
+		}
 	}
 
 	sessionID, err := bk.StartSession(context.Background(), command, opts)
@@ -462,6 +484,26 @@ func cmdHistory() {
 	sessions, err := bk.ListHistory(context.Background())
 	if err != nil {
 		fatal("listing history: %v", err)
+	}
+
+	// Filter by context if SWASH_CONTEXT is set
+	contextID := os.Getenv("SWASH_CONTEXT")
+	if contextID != "" {
+		contextSessions, err := bk.ListContextSessions(context.Background(), contextID)
+		if err != nil {
+			fatal("listing context sessions: %v", err)
+		}
+		sessionSet := make(map[string]bool)
+		for _, sid := range contextSessions {
+			sessionSet[sid] = true
+		}
+		var filtered []backend.HistorySession
+		for _, s := range sessions {
+			if sessionSet[s.ID] {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
 	}
 
 	if len(sessions) == 0 {

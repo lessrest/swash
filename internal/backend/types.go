@@ -1,8 +1,10 @@
 package backend
 
 import (
+	"time"
+
 	"github.com/mbrock/swash/internal/eventlog"
-	"github.com/mbrock/swash/internal/session"
+	"github.com/mbrock/swash/internal/protocol"
 )
 
 // Session is the platform-neutral presentation model for a swash session.
@@ -25,7 +27,22 @@ type Session struct {
 }
 
 // SessionOptions configures a new session.
-type SessionOptions = session.SessionOptions
+type SessionOptions struct {
+	Protocol   protocol.Protocol // shell (default), sse
+	Tags       map[string]string // Extra journal fields
+	TTY        bool              // Use PTY mode with terminal emulation
+	Rows       int               // Terminal rows (for TTY mode)
+	Cols       int               // Terminal columns (for TTY mode)
+	ContextID  string            // Context this session belongs to (optional)
+	WorkingDir string            // Working directory for the session (optional, defaults to cwd)
+}
+
+// Context represents a swash context (a namespace for grouping sessions).
+type Context struct {
+	ID      string    `json:"id"`
+	Dir     string    `json:"dir"`
+	Created time.Time `json:"created"`
+}
 
 // EventFilter is a semantic event query filter.
 type EventFilter = eventlog.EventFilter

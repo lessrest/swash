@@ -56,9 +56,11 @@ type EventLog interface {
 
 // Lifecycle event constants.
 const (
-	EventStarted = "started"
-	EventExited  = "exited"
-	EventScreen  = "screen" // Final screen state for TTY sessions
+	EventStarted        = "started"
+	EventExited         = "exited"
+	EventScreen         = "screen"          // Final screen state for TTY sessions
+	EventContextCreated = "context-created" // Context creation
+	EventSessionContext = "session-context" // Session-to-context relation
 )
 
 // Event field names for swash events.
@@ -67,6 +69,7 @@ const (
 	FieldSession  = "SWASH_SESSION"
 	FieldCommand  = "SWASH_COMMAND"
 	FieldExitCode = "SWASH_EXIT_CODE"
+	FieldContext  = "SWASH_CONTEXT"
 )
 
 // EmitStarted writes a session started event to the log.
@@ -108,6 +111,29 @@ func EmitScreen(log EventLog, sessionID string, screenText string, rows, cols in
 		"ROWS":       strconv.Itoa(rows),
 		"COLS":       strconv.Itoa(cols),
 	})
+}
+
+// EmitContextCreated writes a context creation event to the log.
+func EmitContextCreated(log EventLog, contextID string, dir string) error {
+	return log.Write("Context created", map[string]string{
+		FieldEvent:   EventContextCreated,
+		FieldContext: contextID,
+		"DIR":        dir,
+	})
+}
+
+// EmitSessionContext writes a session-to-context relation event.
+func EmitSessionContext(log EventLog, sessionID, contextID string) error {
+	return log.Write("Session belongs to context", map[string]string{
+		FieldEvent:   EventSessionContext,
+		FieldSession: sessionID,
+		FieldContext: contextID,
+	})
+}
+
+// FilterByContext creates a filter for a context's SWASH_CONTEXT field.
+func FilterByContext(contextID string) EventFilter {
+	return EventFilter{Field: FieldContext, Value: contextID}
 }
 
 // OutputEvent represents a parsed output event from the log.
