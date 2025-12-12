@@ -90,14 +90,31 @@ func Open(ctx context.Context, cfg Config) (Backend, error) {
 }
 
 // DetectKind returns the appropriate backend based on environment.
-// If DBUS_SESSION_BUS_ADDRESS is set, returns systemd (assumes systemd user session).
-// Otherwise, returns posix.
+// Returns systemd if D-Bus session bus is available, otherwise posix.
 func DetectKind() Kind {
-	// Check for D-Bus session bus (indicates systemd user session is available)
-	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") != "" {
+	if hasDBusSessionBus() {
 		return KindSystemd
 	}
 	return KindPosix
+}
+
+// hasDBusSessionBus checks if a D-Bus session bus is available.
+// It checks DBUS_SESSION_BUS_ADDRESS first, then looks for the standard
+// socket at /run/user/<uid>/bus (common on systemd systems even when
+// the environment variable isn't set).
+func hasDBusSessionBus() bool {
+	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") != "" {
+		return true
+	}
+
+	// Check for standard systemd user bus socket
+	uid := os.Getuid()
+	socketPath := fmt.Sprintf("/run/user/%d/bus", uid)
+	if _, err := os.Stat(socketPath); err == nil {
+		return true
+	}
+
+	return false
 }
 
 // Default constructs the backend selected by environment variable SWASH_BACKEND,

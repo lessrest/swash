@@ -66,8 +66,8 @@ systemd-specific components:
 
 To use the posix backend explicitly: `SWASH_BACKEND=posix swash run ...`
 
-swash auto-detects: if `DBUS_SESSION_BUS_ADDRESS` is set, it uses systemd;
-otherwise it falls back to posix.
+swash auto-detects: if `DBUS_SESSION_BUS_ADDRESS` is set or `/run/user/<uid>/bus`
+exists, it uses systemd; otherwise it falls back to posix.
 
 ## Usage
 
