@@ -1,11 +1,10 @@
 package journalfile
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/coreos/go-systemd/v22/sdjournal"
 )
 
 func TestJenkinsHash64(t *testing.T) {
@@ -97,6 +96,7 @@ func TestJournalFileReadable(t *testing.T) {
 	t.Logf("  journalctl --file=%s", path)
 }
 
+// TestFieldMatching tests that field filtering works correctly
 func TestFieldMatching(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.journal")
@@ -126,30 +126,27 @@ func TestFieldMatching(t *testing.T) {
 	// Dump field hash table for debugging
 	dumpHashTables(t, path)
 
-	// Test matching with sdjournal
-	j, err := sdjournal.NewJournalFromFiles(path)
+	// Test matching with JournalReader interface
+	r, err := OpenRead(path)
 	if err != nil {
-		t.Fatalf("NewJournalFromFiles: %v", err)
+		t.Fatalf("OpenRead: %v", err)
 	}
-	defer j.Close()
+	defer r.Close()
 
-	if err := j.AddMatch("SWASH_SESSION=TESTSESS"); err != nil {
-		t.Fatalf("AddMatch: %v", err)
-	}
+	r.AddMatch("SWASH_SESSION", "TESTSESS")
+	r.SeekHead()
 
-	j.SeekHead()
-	n, err := j.Next()
-	if err != nil {
-		t.Fatalf("Next: %v", err)
-	}
-	if n == 0 {
+	entry, err := r.Next()
+	if err == io.EOF {
 		t.Error("No matching entries found")
+	} else if err != nil {
+		t.Fatalf("Next: %v", err)
 	} else {
-		entry, _ := j.GetEntry()
 		t.Logf("Matched entry: %s", entry.Fields["MESSAGE"])
 	}
 }
 
+// TestFieldMatchingMultipleEntries tests filtering with multiple matching entries
 func TestFieldMatchingMultipleEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.journal")
@@ -180,27 +177,24 @@ func TestFieldMatchingMultipleEntries(t *testing.T) {
 	}
 
 	// Test matching - should find all 3 entries
-	j, err := sdjournal.NewJournalFromFiles(path)
+	r, err := OpenRead(path)
 	if err != nil {
-		t.Fatalf("NewJournalFromFiles: %v", err)
+		t.Fatalf("OpenRead: %v", err)
 	}
-	defer j.Close()
+	defer r.Close()
 
-	if err := j.AddMatch("SWASH_SESSION=SESS123"); err != nil {
-		t.Fatalf("AddMatch: %v", err)
-	}
+	r.AddMatch("SWASH_SESSION", "SESS123")
+	r.SeekHead()
 
-	j.SeekHead()
 	count := 0
 	for {
-		n, err := j.Next()
+		entry, err := r.Next()
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
 			t.Fatalf("Next: %v", err)
 		}
-		if n == 0 {
-			break
-		}
-		entry, _ := j.GetEntry()
 		t.Logf("Entry %d: %s", count+1, entry.Fields["MESSAGE"])
 		count++
 	}
@@ -303,8 +297,8 @@ func dumpDataObject(t *testing.T, f *os.File, offset uint64) {
 		offset, objType, objSize, hash, nextHashOff, nextFieldOff, entryOff, entryArrayOff, nEntries, payload)
 }
 
-// TestPureGoReader tests our pure Go reader implementation
-func TestPureGoReader(t *testing.T) {
+// TestReaderBasic tests our pure Go reader implementation
+func TestReaderBasic(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.journal")
 
@@ -371,8 +365,8 @@ func TestPureGoReader(t *testing.T) {
 	}
 }
 
-// TestPureGoReaderFiltering tests field-based filtering
-func TestPureGoReaderFiltering(t *testing.T) {
+// TestReaderFiltering tests field-based filtering
+func TestReaderFiltering(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.journal")
 
@@ -424,8 +418,8 @@ func TestPureGoReaderFiltering(t *testing.T) {
 	}
 }
 
-// TestPureGoReaderCursor tests cursor-based seeking
-func TestPureGoReaderCursor(t *testing.T) {
+// TestReaderCursor tests cursor-based seeking
+func TestReaderCursor(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.journal")
 

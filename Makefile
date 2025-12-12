@@ -8,6 +8,21 @@ CGO_CFLAGS := -I$(CURDIR)/cvendor
 
 export CGO_CFLAGS
 
+# Detect platform for test defaults
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+  # macOS: use posix backend and native journal reader
+  SWASH_TEST_MODE ?= posix
+  SWASH_TEST_JOURNAL_READER ?= native
+else
+  # Linux: use mini-systemd (or real systemd) with journalctl
+  SWASH_TEST_MODE ?= mini
+  SWASH_TEST_JOURNAL_READER ?= journalctl
+endif
+
+export SWASH_TEST_MODE
+export SWASH_TEST_JOURNAL_READER
+
 .PHONY: all build test test-unit test-integration install clean generate
 
 all: build
@@ -32,6 +47,7 @@ test-unit:
 	go test ./pkg/... ./internal/...
 
 test-integration: build
+	@echo "Test mode: $(SWASH_TEST_MODE), journal reader: $(SWASH_TEST_JOURNAL_READER)"
 	go test ./integration/... -v -timeout 120s
 
 clean:

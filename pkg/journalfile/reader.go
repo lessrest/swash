@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// Verify Reader implements JournalReader at compile time.
+var _ JournalReader = (*Reader)(nil)
+
 // Reader reads entries from a journal file.
 type Reader struct {
 	f      *os.File
@@ -26,15 +29,6 @@ type Reader struct {
 type match struct {
 	field string
 	value string
-}
-
-// Entry represents a journal entry with its fields.
-type Entry struct {
-	Seqnum    uint64
-	Realtime  time.Time
-	Monotonic uint64
-	BootID    ID128
-	Fields    map[string]string
 }
 
 // OpenRead opens an existing journal file for reading.
@@ -102,9 +96,9 @@ func (r *Reader) SeekCursor(cursor string) error {
 	return nil
 }
 
-// GetCursor returns a cursor for the given entry.
-func GetCursor(e *Entry) string {
-	return fmt.Sprintf("s=%d;b=%x", e.Seqnum, e.BootID)
+// formatCursor creates a cursor string from seqnum and bootID.
+func formatCursor(seqnum uint64, bootID ID128) string {
+	return fmt.Sprintf("s=%d;b=%x", seqnum, bootID)
 }
 
 func parseCursor(cursor string) (uint64, error) {
