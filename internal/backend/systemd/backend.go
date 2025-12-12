@@ -3,6 +3,7 @@ package systemd
 import (
 	"context"
 	"fmt"
+	"iter"
 	"os"
 	"os/exec"
 	"strconv"
@@ -531,4 +532,18 @@ func (b *SystemdBackend) GraphSerialize(ctx context.Context, pattern oxigraph.Pa
 	}
 
 	return client.Quads(ctx, pattern, formatStr)
+}
+
+// -----------------------------------------------------------------------------
+// Lifecycle events (for graph population)
+// -----------------------------------------------------------------------------
+
+func (b *SystemdBackend) PollLifecycleEvents(ctx context.Context, cursor string) ([]eventlog.EventRecord, string, error) {
+	filters := eventlog.LifecycleEventFilters()
+	return b.events.Poll(ctx, filters, cursor)
+}
+
+func (b *SystemdBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[eventlog.EventRecord] {
+	filters := eventlog.LifecycleEventFilters()
+	return b.events.Follow(ctx, filters)
 }

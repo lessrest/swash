@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/mbrock/swash/internal/dirs"
+	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
@@ -150,4 +151,40 @@ func (s *Service) Serialize(pattern oxigraph.Pattern, format oxigraph.Format) ([
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.store.Serialize(pattern, format)
+}
+
+// AddQuads adds quads to the store by serializing them as N-Triples.
+func (s *Service) AddQuads(quads []oxigraph.Quad) error {
+	if len(quads) == 0 {
+		return nil
+	}
+
+	// Serialize quads as N-Triples (simple line-by-line format)
+	var buf []byte
+	for _, q := range quads {
+		// N-Triple: subject predicate object .
+		line := fmt.Sprintf("%s %s %s .\n",
+			q.Subject.String(),
+			q.Predicate.String(),
+			q.Object.String(),
+		)
+		buf = append(buf, line...)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.store.LoadBytes(buf, oxigraph.NTriples)
+}
+
+// AddEvent converts an event record to RDF quads and adds them to the store.
+// Returns the number of quads added.
+func (s *Service) AddEvent(e eventlog.EventRecord) (int, error) {
+	quads := eventlog.EventToQuads(e)
+	if len(quads) == 0 {
+		return 0, nil
+	}
+	if err := s.AddQuads(quads); err != nil {
+		return 0, err
+	}
+	return len(quads), nil
 }

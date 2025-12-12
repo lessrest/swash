@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"os"
 	osexec "os/exec"
 	"path/filepath"
@@ -835,4 +836,26 @@ func (b *PosixBackend) GraphSerialize(ctx context.Context, pattern oxigraph.Patt
 	}
 
 	return client.Quads(ctx, pattern, formatStr)
+}
+
+// -----------------------------------------------------------------------------
+// Lifecycle events (for graph population)
+// -----------------------------------------------------------------------------
+
+func (b *PosixBackend) PollLifecycleEvents(ctx context.Context, cursor string) ([]eventlog.EventRecord, string, error) {
+	log, err := b.ensureSharedLog(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	filters := eventlog.LifecycleEventFilters()
+	return log.Poll(ctx, filters, cursor)
+}
+
+func (b *PosixBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[eventlog.EventRecord] {
+	log, err := b.ensureSharedLog(ctx)
+	if err != nil {
+		return func(yield func(eventlog.EventRecord) bool) {}
+	}
+	filters := eventlog.LifecycleEventFilters()
+	return log.Follow(ctx, filters)
 }

@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mbrock/swash/internal/backend"
+	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/internal/graph"
 	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
 	"github.com/mbrock/swash/pkg/oxigraph"
@@ -57,12 +59,39 @@ func cmdGraphServe(args []string) {
 
 	ctx := context.Background()
 
+	// Initialize backend to access lifecycle events
+	bk, err := backend.Default(ctx)
+	if err != nil {
+		fatal("initializing backend: %v", err)
+	}
+	defer bk.Close()
+
 	fmt.Fprintf(os.Stderr, "swash graph: initializing oxigraph runtime...\n")
 	service, err := graph.New(ctx)
 	if err != nil {
 		fatal("creating graph service: %v", err)
 	}
 	defer service.Close()
+
+	// Load existing lifecycle events from journal
+	fmt.Fprintf(os.Stderr, "swash graph: loading events from journal...\n")
+	events, _, err := bk.PollLifecycleEvents(ctx, "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "swash graph: warning: failed to load events: %v\n", err)
+	} else {
+		var quadCount int
+		for _, e := range events {
+			quads := eventlog.EventToQuads(e)
+			if len(quads) > 0 {
+				if err := service.AddQuads(quads); err != nil {
+					fmt.Fprintf(os.Stderr, "swash graph: warning: failed to add quads: %v\n", err)
+				} else {
+					quadCount += len(quads)
+				}
+			}
+		}
+		fmt.Fprintf(os.Stderr, "swash graph: loaded %d events (%d quads)\n", len(events), quadCount)
+	}
 
 	server := graph.NewServer(service, cfg.SocketPath)
 

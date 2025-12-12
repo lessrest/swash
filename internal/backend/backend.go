@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/mbrock/swash/internal/dirs"
+	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/internal/session"
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
@@ -66,6 +68,10 @@ type Backend interface {
 	// Graph (RDF knowledge graph)
 	GraphQuery(ctx context.Context, sparql string) ([]oxigraph.Solution, error)
 	GraphSerialize(ctx context.Context, pattern oxigraph.Pattern, format oxigraph.Format) ([]byte, error)
+
+	// Lifecycle events (for graph population)
+	PollLifecycleEvents(ctx context.Context, cursor string) ([]eventlog.EventRecord, string, error)
+	FollowLifecycleEvents(ctx context.Context) iter.Seq[eventlog.EventRecord]
 }
 
 type opener func(ctx context.Context, cfg Config) (Backend, error)
