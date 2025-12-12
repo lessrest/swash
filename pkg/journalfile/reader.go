@@ -57,6 +57,9 @@ func (r *Reader) readHeader() error {
 		return fmt.Errorf("decode header: %w", err)
 	}
 
+	fmt.Fprintf(os.Stderr, "[JOURNAL READ] readHeader: path=%s NEntries=%d EntryArrayOffset=%d\n",
+		r.f.Name(), r.header.NEntries, r.header.EntryArrayOffset)
+
 	if r.header.Signature != HeaderSignature {
 		return fmt.Errorf("invalid signature: %x", r.header.Signature)
 	}
