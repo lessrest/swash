@@ -302,3 +302,182 @@ func dumpDataObject(t *testing.T, f *os.File, offset uint64) {
 	t.Logf("      Data @%d: type=%d size=%d hash=%x nextHash=%d nextField=%d entry=%d entryArray=%d nEntries=%d payload=%q",
 		offset, objType, objSize, hash, nextHashOff, nextFieldOff, entryOff, entryArrayOff, nEntries, payload)
 }
+
+// TestPureGoReader tests our pure Go reader implementation
+func TestPureGoReader(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.journal")
+
+	var machineID, bootID ID128
+	copy(machineID[:], []byte("0123456789abcdef"))
+	copy(bootID[:], []byte("fedcba9876543210"))
+
+	// Create and write entries
+	jf, err := Create(path, machineID, bootID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for i, msg := range []string{"first", "second", "third"} {
+		err = jf.AppendEntry(map[string]string{
+			"MESSAGE":       msg,
+			"SWASH_SESSION": "SESS123",
+			"INDEX":         string(rune('0' + i)),
+		})
+		if err != nil {
+			t.Fatalf("AppendEntry %d: %v", i, err)
+		}
+	}
+
+	if err := jf.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Read with our pure Go reader
+	r, err := OpenRead(path)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	defer r.Close()
+
+	t.Logf("NEntries: %d", r.NEntries())
+	if r.NEntries() != 3 {
+		t.Errorf("Expected 3 entries, got %d", r.NEntries())
+	}
+
+	// Read all entries
+	var entries []*Entry
+	for {
+		entry, err := r.Next()
+		if err != nil {
+			break
+		}
+		entries = append(entries, entry)
+		t.Logf("Entry %d: MESSAGE=%s", entry.Seqnum, entry.Fields["MESSAGE"])
+	}
+
+	if len(entries) != 3 {
+		t.Errorf("Expected 3 entries, got %d", len(entries))
+	}
+
+	// Check content
+	if len(entries) >= 3 {
+		if entries[0].Fields["MESSAGE"] != "first" {
+			t.Errorf("First message wrong: %s", entries[0].Fields["MESSAGE"])
+		}
+		if entries[2].Fields["MESSAGE"] != "third" {
+			t.Errorf("Third message wrong: %s", entries[2].Fields["MESSAGE"])
+		}
+	}
+}
+
+// TestPureGoReaderFiltering tests field-based filtering
+func TestPureGoReaderFiltering(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.journal")
+
+	var machineID, bootID ID128
+	copy(machineID[:], []byte("0123456789abcdef"))
+	copy(bootID[:], []byte("fedcba9876543210"))
+
+	jf, err := Create(path, machineID, bootID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Write entries with different sessions
+	jf.AppendEntry(map[string]string{"MESSAGE": "a1", "SWASH_SESSION": "A"})
+	jf.AppendEntry(map[string]string{"MESSAGE": "b1", "SWASH_SESSION": "B"})
+	jf.AppendEntry(map[string]string{"MESSAGE": "a2", "SWASH_SESSION": "A"})
+	jf.AppendEntry(map[string]string{"MESSAGE": "b2", "SWASH_SESSION": "B"})
+
+	if err := jf.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Read with filter
+	r, err := OpenRead(path)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	defer r.Close()
+
+	r.AddMatch("SWASH_SESSION", "A")
+
+	var messages []string
+	for {
+		entry, err := r.Next()
+		if err != nil {
+			break
+		}
+		messages = append(messages, entry.Fields["MESSAGE"])
+	}
+
+	if len(messages) != 2 {
+		t.Errorf("Expected 2 entries for session A, got %d: %v", len(messages), messages)
+	}
+
+	if len(messages) >= 2 {
+		if messages[0] != "a1" || messages[1] != "a2" {
+			t.Errorf("Wrong messages: %v", messages)
+		}
+	}
+}
+
+// TestPureGoReaderCursor tests cursor-based seeking
+func TestPureGoReaderCursor(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.journal")
+
+	var machineID, bootID ID128
+	copy(machineID[:], []byte("0123456789abcdef"))
+	copy(bootID[:], []byte("fedcba9876543210"))
+
+	jf, err := Create(path, machineID, bootID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		jf.AppendEntry(map[string]string{"MESSAGE": string(rune('A' + i))})
+	}
+
+	if err := jf.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Read first two entries, save cursor
+	r, err := OpenRead(path)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+
+	entry1, _ := r.Next()
+	entry2, _ := r.Next()
+	cursor := GetCursor(entry2)
+	r.Close()
+
+	t.Logf("Cursor after entry 2: %s", cursor)
+
+	// Reopen and seek to cursor
+	r, err = OpenRead(path)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	defer r.Close()
+
+	if err := r.SeekCursor(cursor); err != nil {
+		t.Fatalf("SeekCursor: %v", err)
+	}
+
+	// Next entry should be entry 3 (C)
+	entry3, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next after seek: %v", err)
+	}
+
+	if entry3.Fields["MESSAGE"] != "C" {
+		t.Errorf("Expected MESSAGE=C after cursor, got %s (seqnum=%d, entry1=%s, entry2=%s)",
+			entry3.Fields["MESSAGE"], entry3.Seqnum, entry1.Fields["MESSAGE"], entry2.Fields["MESSAGE"])
+	}
+}

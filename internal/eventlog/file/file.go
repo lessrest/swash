@@ -4,13 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"iter"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
-	"github.com/coreos/go-systemd/v22/sdjournal"
 	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/pkg/journalfile"
 )
@@ -19,7 +19,7 @@ import (
 //
 // It supports:
 // - writing via pkg/journalfile (when opened in create mode)
-// - reading/following via sdjournal.NewJournalFromFiles
+// - reading/following via pkg/journalfile.Reader (pure Go, works on all platforms)
 //
 // When opened read-only, Write returns an error.
 type FileEventLog struct {
@@ -27,7 +27,7 @@ type FileEventLog struct {
 
 	mu     sync.Mutex
 	writer *journalfile.File
-	reader *sdjournal.Journal
+	reader *journalfile.Reader
 }
 
 var _ eventlog.EventLog = (*FileEventLog)(nil)
@@ -48,7 +48,7 @@ func Create(path string) (eventlog.EventLog, error) {
 		return nil, err
 	}
 
-	r, err := sdjournal.NewJournalFromFiles(path)
+	r, err := journalfile.OpenRead(path)
 	if err != nil {
 		_ = w.Close()
 		return nil, fmt.Errorf("opening journal reader: %w", err)
@@ -64,7 +64,7 @@ func Create(path string) (eventlog.EventLog, error) {
 // Open opens an existing journal file at path for reading/following.
 // Write is not supported.
 func Open(path string) (eventlog.EventLog, error) {
-	r, err := sdjournal.NewJournalFromFiles(path)
+	r, err := journalfile.OpenRead(path)
 	if err != nil {
 		return nil, fmt.Errorf("opening journal reader: %w", err)
 	}
@@ -119,48 +119,51 @@ func (l *FileEventLog) Write(message string, fields map[string]string) error {
 
 // Poll reads entries matching filters since cursor.
 func (l *FileEventLog) Poll(ctx context.Context, filters []eventlog.EventFilter, cursor string) ([]eventlog.EventRecord, string, error) {
-	j := l.reader
-	if j == nil {
+	r := l.reader
+	if r == nil {
 		return nil, "", fmt.Errorf("journal reader not initialized")
 	}
 
+	// Refresh to see latest entries
+	if err := r.Refresh(); err != nil {
+		return nil, "", fmt.Errorf("refreshing journal: %w", err)
+	}
+
 	// Apply matches
-	j.FlushMatches()
+	r.FlushMatches()
 	for _, f := range filters {
-		if err := j.AddMatch(f.Field + "=" + f.Value); err != nil {
-			return nil, "", fmt.Errorf("adding match %s=%s: %w", f.Field, f.Value, err)
-		}
+		r.AddMatch(f.Field, f.Value)
 	}
 
 	// Seek to position
 	if cursor != "" {
-		if err := j.SeekCursor(cursor); err == nil {
-			_, _ = j.Next() // Skip the cursor entry itself
-		} else {
-			_ = j.SeekHead()
+		if err := r.SeekCursor(cursor); err != nil {
+			r.SeekHead()
 		}
 	} else {
-		_ = j.SeekHead()
+		r.SeekHead()
 	}
 
 	var entries []eventlog.EventRecord
 	var lastCursor string
 
 	for {
-		n, err := j.Next()
+		entry, err := r.Next()
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
 			return nil, "", fmt.Errorf("reading journal: %w", err)
 		}
-		if n == 0 {
-			break
-		}
 
-		entry, err := parseEntry(j)
-		if err != nil {
-			continue
+		record := eventlog.EventRecord{
+			Cursor:    journalfile.GetCursor(entry),
+			Timestamp: entry.Realtime,
+			Message:   entry.Fields["MESSAGE"],
+			Fields:    entry.Fields,
 		}
-		entries = append(entries, entry)
-		lastCursor = entry.Cursor
+		entries = append(entries, record)
+		lastCursor = record.Cursor
 	}
 
 	return entries, lastCursor, nil
@@ -168,68 +171,49 @@ func (l *FileEventLog) Poll(ctx context.Context, filters []eventlog.EventFilter,
 
 // Follow returns an iterator over entries matching filters.
 func (l *FileEventLog) Follow(ctx context.Context, filters []eventlog.EventFilter) iter.Seq[eventlog.EventRecord] {
-	j := l.reader
+	r := l.reader
 	return func(yield func(eventlog.EventRecord) bool) {
-		if j == nil {
+		if r == nil {
 			return
 		}
 
 		// Apply matches
-		j.FlushMatches()
+		r.FlushMatches()
 		for _, f := range filters {
-			if err := j.AddMatch(f.Field + "=" + f.Value); err != nil {
-				return // Can't report error from iterator, just stop
-			}
+			r.AddMatch(f.Field, f.Value)
 		}
 
-		_ = j.SeekHead()
+		r.SeekHead()
 
 		for {
-			n, err := j.Next()
+			entry, err := r.Next()
+			if err == io.EOF {
+				// No more entries, wait and refresh
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(100 * time.Millisecond):
+					// Refresh to pick up new entries
+					if err := r.Refresh(); err != nil {
+						return
+					}
+					continue
+				}
+			}
 			if err != nil {
 				return
 			}
 
-			if n == 0 {
-				// No entries available, wait for new ones (cancellable)
-				waitCh := make(chan struct{})
-				go func() {
-					j.Wait(5 * time.Second)
-					close(waitCh)
-				}()
-
-				select {
-				case <-ctx.Done():
-					return
-				case <-waitCh:
-					continue
-				}
+			record := eventlog.EventRecord{
+				Cursor:    journalfile.GetCursor(entry),
+				Timestamp: entry.Realtime,
+				Message:   entry.Fields["MESSAGE"],
+				Fields:    entry.Fields,
 			}
 
-			entry, err := parseEntry(j)
-			if err != nil {
-				continue
-			}
-
-			if !yield(entry) {
+			if !yield(record) {
 				return // Consumer broke out of loop
 			}
 		}
 	}
-}
-
-func parseEntry(j *sdjournal.Journal) (eventlog.EventRecord, error) {
-	raw, err := j.GetEntry()
-	if err != nil {
-		return eventlog.EventRecord{}, err
-	}
-
-	cursor, _ := j.GetCursor()
-
-	return eventlog.EventRecord{
-		Cursor:    cursor,
-		Timestamp: time.Unix(int64(raw.RealtimeTimestamp/1000000), int64((raw.RealtimeTimestamp%1000000)*1000)),
-		Message:   raw.Fields["MESSAGE"],
-		Fields:    raw.Fields,
-	}, nil
 }

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/mbrock/swash/pkg/journalfile"
 )
 
 const testTimeout = 10 * time.Second
@@ -308,24 +311,60 @@ func (e *testEnv) getEnvVars() []string {
 	return env
 }
 
-// runJournalctl runs journalctl with the appropriate arguments for the mode.
+// journalReaderMode determines how to read journal files in tests.
+// Set SWASH_TEST_JOURNAL_READER=journalctl to force journalctl,
+// SWASH_TEST_JOURNAL_READER=native to force pure Go reader,
+// or leave empty for auto-detect (journalctl if available, else native).
+func journalReaderMode() string {
+	mode := os.Getenv("SWASH_TEST_JOURNAL_READER")
+	if mode != "" {
+		return mode
+	}
+	// Auto-detect: use journalctl if available
+	if _, err := exec.LookPath("journalctl"); err == nil {
+		return "journalctl"
+	}
+	return "native"
+}
+
+// runJournalctl runs journalctl with the appropriate arguments for the mode,
+// or falls back to pure Go reader if journalctl is not available.
 func (e *testEnv) runJournalctl(args ...string) (string, error) {
-	var baseArgs []string
+	readerMode := journalReaderMode()
+
+	// For "real" mode with system journal, we must use journalctl
+	if e.mode == "real" && readerMode == "native" {
+		return "", fmt.Errorf("native reader cannot read system journal; install journalctl or use SWASH_TEST_MODE=mini")
+	}
+
+	// Collect journal files for mini/posix modes
+	var journalFiles []string
 	switch e.mode {
 	case "mini":
 		files, _ := filepath.Glob(filepath.Join(e.journalDir, "*.journal"))
 		if len(files) == 0 {
 			return "", fmt.Errorf("no journal files found in %s", e.journalDir)
 		}
-		baseArgs = []string{"--file=" + files[0]}
+		journalFiles = files
 	case "posix":
-		// Posix backend stores per-session journal files in state/sessions/*/events.journal
 		files, _ := filepath.Glob(filepath.Join(e.tmpDir, "state", "sessions", "*", "events.journal"))
 		if len(files) == 0 {
 			return "", fmt.Errorf("no journal files found in %s", filepath.Join(e.tmpDir, "state", "sessions"))
 		}
-		// Pass all journal files to journalctl
-		for _, f := range files {
+		journalFiles = files
+	}
+
+	if readerMode == "native" && len(journalFiles) > 0 {
+		return e.readJournalNative(journalFiles, args...)
+	}
+
+	// Use journalctl
+	var baseArgs []string
+	switch e.mode {
+	case "mini":
+		baseArgs = []string{"--file=" + journalFiles[0]}
+	case "posix":
+		for _, f := range journalFiles {
 			baseArgs = append(baseArgs, "--file="+f)
 		}
 	default:
@@ -333,6 +372,62 @@ func (e *testEnv) runJournalctl(args ...string) (string, error) {
 	}
 	out, err := runCmd(5*time.Second, "journalctl", append(baseArgs, args...)...)
 	return string(out), err
+}
+
+// readJournalNative reads journal files using our pure Go reader.
+// Supports a subset of journalctl args: -o cat, FIELD=VALUE filters.
+func (e *testEnv) readJournalNative(files []string, args ...string) (string, error) {
+	// Parse args for output format and filters
+	outputFormat := "short"
+	var filters []struct{ field, value string }
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-o" && i+1 < len(args) {
+			outputFormat = args[i+1]
+			i++
+		} else if strings.Contains(arg, "=") && !strings.HasPrefix(arg, "-") {
+			parts := strings.SplitN(arg, "=", 2)
+			filters = append(filters, struct{ field, value string }{parts[0], parts[1]})
+		}
+	}
+
+	var lines []string
+	for _, path := range files {
+		r, err := journalfile.OpenRead(path)
+		if err != nil {
+			continue // skip unreadable files
+		}
+
+		// Apply filters
+		for _, f := range filters {
+			r.AddMatch(f.field, f.value)
+		}
+
+		for {
+			entry, err := r.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				break
+			}
+
+			switch outputFormat {
+			case "cat":
+				lines = append(lines, entry.Fields["MESSAGE"])
+			case "short":
+				lines = append(lines, fmt.Sprintf("%s %s",
+					entry.Realtime.Format("Jan 02 15:04:05"),
+					entry.Fields["MESSAGE"]))
+			default:
+				lines = append(lines, entry.Fields["MESSAGE"])
+			}
+		}
+		r.Close()
+	}
+
+	return strings.Join(lines, "\n"), nil
 }
 
 // TestMain handles setup and teardown
