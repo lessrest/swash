@@ -356,6 +356,12 @@ func (b *PosixBackend) waitReady(ctx context.Context, sessionID string, pid int,
 			return fmt.Errorf("timeout waiting for host socket")
 		}
 
+		// Check if the host process died unexpectedly.
+		// This catches early failures like socket bind errors.
+		if !pidAlive(pid) {
+			return fmt.Errorf("host process exited unexpectedly (pid %d)", pid)
+		}
+
 		if _, err := os.Stat(socketPath); err == nil {
 			c, err := session.ConnectUnixSession(sessionID, socketPath)
 			if err == nil {
@@ -370,8 +376,12 @@ func (b *PosixBackend) waitReady(ctx context.Context, sessionID string, pid int,
 		// Treat existence of the event log file as readiness. This makes starting a
 		// short-lived session robust even if the unix socket is created/removed
 		// faster than the parent can observe it.
+		// But only if the process is still running - otherwise we'd miss startup errors.
 		if fi, err := os.Stat(eventLogPath); err == nil && fi.Size() > 0 {
-			return nil
+			// Double-check process is alive before declaring success
+			if pidAlive(pid) {
+				return nil
+			}
 		}
 
 		time.Sleep(25 * time.Millisecond)
