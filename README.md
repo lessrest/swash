@@ -1,12 +1,25 @@
 # swash
 
-Process sessions over D-Bus with systemd integration.
+Persistent process sessions with detach/reattach and structured output logging.
 
-swash runs commands as systemd transient units and captures their output to the
-systemd journal. Each session gets a dedicated D-Bus service for control (send
-input, kill process) and uses the journal for output streaming.
+swash runs commands in the background and captures their output to a structured
+log. Each session gets a control interface for sending input, killing the
+process, and querying status. You can disconnect and reconnect without losing
+the session.
+
+Two backends are available:
+
+- **systemd** (default on Linux with D-Bus): Sessions run as systemd transient
+  units with D-Bus control and journal-based output. Provides cgroup isolation,
+  automatic cleanup, and integration with standard systemd tooling.
+
+- **posix** (portable): Sessions run as background processes with Unix socket
+  control and file-based output logging. Works on any POSIX system without
+  systemd dependencies.
 
 ## Architecture
+
+### systemd backend
 
 ```mermaid
 flowchart TD
@@ -42,6 +55,20 @@ systemd journal with `SWASH_SESSION=ABC123`. This means output survives even if
 the original client disconnects - you can reconnect later and query the journal
 to see what happened.
 
+### posix backend
+
+The posix backend uses the same host process architecture but replaces
+systemd-specific components:
+
+- **Control**: Unix domain socket instead of D-Bus
+- **Output**: Per-session journal files in native systemd format (readable by `journalctl --file=...`)
+- **Process management**: Direct fork/exec with POSIX signals instead of transient units
+
+To use the posix backend explicitly: `SWASH_BACKEND=posix swash run ...`
+
+swash auto-detects: if `DBUS_SESSION_BUS_ADDRESS` is set, it uses systemd;
+otherwise it falls back to posix.
+
 ## Usage
 
 ```bash
@@ -53,7 +80,8 @@ swash                           # list running sessions
 swash follow ABC123             # stream output until exit
 swash attach ABC123             # attach to TTY session (Ctrl+\ to detach)
 swash send ABC123 "input"       # send to stdin
-swash kill ABC123               # terminate
+swash stop ABC123               # graceful stop
+swash kill ABC123               # terminate immediately
 swash history                   # show past sessions from journal
 ```
 
@@ -123,6 +151,49 @@ The `--protocol` flag controls how stdout is parsed. The default `shell`
 protocol treats each line as a separate journal entry. The `sse` protocol
 parses Server-Sent Events format, extracting the content from `data:` lines.
 
+### Contexts
+
+Contexts group related sessions with a shared working directory. This is useful
+for isolating work on different projects or tasks.
+
+```bash
+swash context new               # create a new context, prints ID and directory
+swash context list              # list all contexts
+swash context dir ABC123        # print context directory path
+swash context shell ABC123      # enter a shell in the context
+```
+
+Inside a context shell, `SWASH_CONTEXT` is set automatically. All `swash run`
+and `swash start` commands inherit this, so sessions are grouped together.
+The prompt shows the context ID and number of running sessions.
+
+```bash
+$ swash context shell ABC123
+[swash context ABC123]
+~/.local/state/swash/contexts/ABC123$ swash start ./build.sh
+XYZ789 started
+[swash context ABC123; 1 running]
+~/.local/state/swash/contexts/ABC123$ swash
+# shows only sessions in this context
+```
+
+Use `swash -a` or `swash history -a` to see all sessions regardless of context.
+
+### HTTP API
+
+swash includes an HTTP server for web-based session management:
+
+```bash
+swash http                      # run server (default: socket-activated or :8484)
+swash http install [port]       # install as systemd socket service
+swash http uninstall            # remove systemd units
+swash http status               # check service status
+```
+
+The server provides a web UI for listing sessions, viewing output, and attaching
+to TTY sessions via WebSocket. When installed as a socket service, systemd
+starts the server on-demand when connections arrive.
+
 ## Components
 
 The CLI (`cmd/swash`) is the main entry point. It talks to systemd over D-Bus
@@ -162,14 +233,14 @@ make test-unit                  # just unit tests
 make test-integration           # integration tests (uses mini-systemd)
 ```
 
-You'll need Go 1.23+, a C compiler (for libvterm via cgo). The systemd headers
+You'll need Go 1.24+, a C compiler (for libvterm via cgo). The systemd headers
 are vendored in `cvendor/`, so you don't need libsystemd-dev installed - just
 make sure to use `./build.sh` or `make` to set the include path correctly.
 
-## Journal Integration
+## Journal Integration (systemd backend)
 
-swash writes structured fields to the journal, making it easy to query session
-output:
+With the systemd backend, swash writes structured fields to the journal, making
+it easy to query session output:
 
 ```bash
 journalctl --user SWASH_SESSION=ABC123          # all output from a session
@@ -181,23 +252,34 @@ The `SWASH_SESSION` field identifies the session. `SWASH_EVENT` marks lifecycle
 events (`started`, `exited`, `screen`). Regular output lines include `FD` (1 for
 stdout, 2 for stderr) and `MESSAGE` (the actual text).
 
+With the posix backend, output goes to `~/.local/state/swash/sessions/<ID>/events.journal`.
+These are native systemd journal files - you can query them directly with journalctl:
+
+```bash
+journalctl --file=~/.local/state/swash/sessions/ABC123/events.journal
+```
+
+Use `swash poll` and `swash follow` to query output regardless of backend.
+
 ## Design Rationale
 
-swash uses systemd transient units because systemd already solves process
-lifecycle management well. It handles starting, stopping, and killing processes,
-isolates resources via cgroups, cleans up automatically on exit, and integrates
-with standard tooling. There's no need to reimplement any of that.
+The core idea is that each session runs a "host" process that manages the actual
+command. The host provides a control interface (for input, kill, status) and
+writes output to a structured log. Clients can disconnect and reconnect because
+the host keeps running - the session isn't tied to a terminal.
 
-Each session gets its own D-Bus service (the host) so that clients can
-disconnect and reconnect without losing the session. The D-Bus name provides
-stable addressing - you can always reach session ABC123 at `sh.swa.Swash.ABC123`
-regardless of PIDs or transient state. D-Bus method calls are a natural fit for
-operations like "send this input" or "kill this process."
+On Linux with systemd, swash uses transient units because systemd already solves
+process lifecycle management well. It handles starting, stopping, and killing
+processes, isolates resources via cgroups, cleans up automatically on exit, and
+integrates with standard tooling. D-Bus provides stable addressing - session
+ABC123 is always reachable at `sh.swa.Swash.ABC123` regardless of PIDs. The
+systemd journal provides structured fields, efficient queries, automatic
+rotation, and persistence across restarts.
 
-Output goes to the systemd journal rather than being held in memory or written
-to files. The journal provides structured fields, efficient queries, automatic
-rotation, and persistence across restarts. When you run `swash follow`, it's
-just tailing the journal with a filter on `SWASH_SESSION`.
+The posix backend provides the same session semantics without systemd
+dependencies. It uses Unix domain sockets for control and file-based event logs
+for output. This makes swash portable to macOS, BSD, and Linux systems without
+systemd.
 
 TTY mode uses libvterm because terminal emulation is surprisingly complex.
 Regex-based approaches break on edge cases; libvterm implements a proper state
