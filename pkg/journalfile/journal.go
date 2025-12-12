@@ -171,8 +171,6 @@ func (jf *File) syncHeader() error {
 	if err := binary.Write(&buf, le, &jf.header); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "[JOURNAL WRITE] syncHeader: path=%s NEntries=%d EntryArrayOffset=%d\n",
-		jf.path, jf.header.NEntries, jf.header.EntryArrayOffset)
 	_, err := jf.f.WriteAt(buf.Bytes(), 0)
 	return err
 }

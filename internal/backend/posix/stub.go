@@ -97,7 +97,10 @@ func (b *PosixBackend) eventLogPath(sessionID string) string {
 }
 
 func (b *PosixBackend) socketPath(sessionID string) string {
-	return filepath.Join(b.cfg.RuntimeDir, "sessions", sessionID+".sock")
+	// Unix socket paths have length limits: 104 bytes on macOS/BSD, 108 on Linux.
+	// Use /tmp for sockets to avoid path length issues with deep temp directories.
+	// The session ID is unique enough to avoid conflicts.
+	return filepath.Join(os.TempDir(), "swash-"+sessionID+".sock")
 }
 
 func (b *PosixBackend) readMeta(sessionID string) (*meta, error) {
@@ -301,8 +304,7 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	if devNull != nil {
 		cmd.Stdin = devNull
 		cmd.Stdout = devNull
-		// Keep stderr for debugging
-		cmd.Stderr = os.Stderr
+		cmd.Stderr = devNull
 	}
 
 	if err := cmd.Start(); err != nil {
