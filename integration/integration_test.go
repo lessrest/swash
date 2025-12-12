@@ -234,6 +234,38 @@ func (e *testEnv) runSwash(args ...string) (string, string, error) {
 	return stdout.String(), stderr.String(), err
 }
 
+// runSwashEnv runs swash with additional environment overrides applied.
+// This is used by tests that need per-test SWASH_* directories without mutating
+// the global process environment (tests run in parallel).
+func (e *testEnv) runSwashEnv(overrides map[string]string, args ...string) (string, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, e.swashBin, args...)
+	env := e.getEnvVars()
+	for k, v := range overrides {
+		env = setEnv(env, k, v)
+	}
+	cmd.Env = env
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	for i, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			env[i] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
 // getEnvVars returns the environment variables for running swash
 func (e *testEnv) getEnvVars() []string {
 	env := os.Environ()
@@ -608,6 +640,58 @@ func TestTTYScreenEvent(t *testing.T) {
 
 		if !strings.Contains(journalOut, "SCREEN_CAPTURE_TEST") {
 			t.Errorf("expected 'SCREEN_CAPTURE_TEST' in screen event, got: %s", journalOut)
+		}
+	})
+}
+
+func TestPosixBackendRun(t *testing.T) {
+	runTest(t, func(t *testing.T, e *testEnv) {
+		base := t.TempDir()
+		env := map[string]string{
+			"SWASH_STATE_DIR":   filepath.Join(base, "state"),
+			"SWASH_RUNTIME_DIR": filepath.Join(base, "runtime"),
+		}
+
+		stdout, stderr, err := e.runSwashEnv(env, "--backend", "posix", "run", "--", "sh", "-c", "echo POSIX_BACKEND_OK")
+		if err != nil {
+			t.Fatalf("swash posix run failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		}
+		if !strings.Contains(stdout, "POSIX_BACKEND_OK") {
+			t.Fatalf("expected marker in stdout, got:\n%s", stdout)
+		}
+	})
+}
+
+func TestPosixBackendTTYScreen(t *testing.T) {
+	runTest(t, func(t *testing.T, e *testEnv) {
+		base := t.TempDir()
+		env := map[string]string{
+			"SWASH_STATE_DIR":   filepath.Join(base, "state"),
+			"SWASH_RUNTIME_DIR": filepath.Join(base, "runtime"),
+		}
+
+		// Start a short-lived TTY session.
+		stdout, stderr, err := e.runSwashEnv(env, "--backend", "posix", "start", "--tty", "--rows", "10", "--cols", "50", "--", "sh", "-c", "echo POSIX_TTY_SCREEN")
+		if err != nil {
+			t.Fatalf("swash posix start --tty failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+		}
+
+		parts := strings.Fields(stdout)
+		if len(parts) == 0 {
+			t.Fatalf("no session ID in output: %q", stdout)
+		}
+		sessionID := parts[0]
+
+		// Wait for it to complete (ensures screen event persisted).
+		_, _, _ = e.runSwashEnv(env, "--backend", "posix", "follow", sessionID)
+
+		// Check screen output.
+		screenOut, screenErr, err := e.runSwashEnv(env, "--backend", "posix", "screen", sessionID)
+		if err != nil {
+			t.Fatalf("swash posix screen failed: %v\nstdout:\n%s\nstderr:\n%s", err, screenOut, screenErr)
+		}
+		if !strings.Contains(screenOut, "POSIX_TTY_SCREEN") {
+			t.Fatalf("expected marker in screen output, got:\n%s", screenOut)
 		}
 	})
 }

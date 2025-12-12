@@ -391,8 +391,49 @@ func (h *TTYHost) GetMode() (bool, error) {
 // The screen snapshot and stream are synchronized - no bytes are lost between them.
 func (h *TTYHost) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.UnixFD, rows, cols int32, screenANSI string, clientID string, err error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	outputRead, inputWrite, rows, cols, screenANSI, clientID, err := h.attachFilesLocked(clientRows, clientCols)
+	h.mu.Unlock()
+	if err != nil {
+		return 0, 0, 0, 0, "", "", err
+	}
 
+	// Close our copies of client fds after D-Bus sends them.
+	// (The receiver gets its own dup via D-Bus.)
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		h.mu.Lock()
+		if c, ok := h.attachedClients[clientID]; ok && c.clientFDs != nil {
+			for _, f := range c.clientFDs {
+				f.Close()
+			}
+			c.clientFDs = nil
+		}
+		h.mu.Unlock()
+	}()
+
+	return dbus.UnixFD(outputRead.Fd()), dbus.UnixFD(inputWrite.Fd()), rows, cols, screenANSI, clientID, nil
+}
+
+// AttachIO attaches a client and returns the read/write ends directly.
+//
+// This is intended for non-D-Bus transports (e.g. unix socket servers) that want
+// to bridge the PTY stream without FD passing. The returned files must be closed
+// by the caller when done.
+// AttachIO attaches a client and returns the read/write ends directly.
+//
+// This is intended for non-D-Bus transports (e.g. unix socket servers) that want
+// to bridge the PTY stream without FD passing. The returned files must be closed
+// by the caller when done.
+//
+// NOTE: this is a function (not a method) so it isn't exported over D-Bus when
+// TTYHost is exported via conn.ExportAll.
+func AttachIO(h *TTYHost, clientRows, clientCols int32) (output *os.File, input *os.File, rows, cols int32, screenANSI string, clientID string, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.attachFilesLocked(clientRows, clientCols)
+}
+
+func (h *TTYHost) attachFilesLocked(clientRows, clientCols int32) (outputRead, inputWrite *os.File, rows, cols int32, screenANSI string, clientID string, err error) {
 	// Default client size if not specified
 	if clientRows <= 0 {
 		clientRows = 24
@@ -413,7 +454,7 @@ func (h *TTYHost) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.U
 	} else {
 		// Subsequent clients: must have terminal >= current size
 		if int(clientRows) < h.rows || int(clientCols) < h.cols {
-			return 0, 0, 0, 0, "", "", fmt.Errorf(
+			return nil, nil, 0, 0, "", "", fmt.Errorf(
 				"terminal too small (need %dx%d, have %dx%d) - resize your terminal or wait for other clients to disconnect",
 				h.cols, h.rows, clientCols, clientRows)
 		}
@@ -422,7 +463,7 @@ func (h *TTYHost) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.U
 	// Create output pipe (PTY -> client)
 	outputRead, outputWrite, err := os.Pipe()
 	if err != nil {
-		return 0, 0, 0, 0, "", "", fmt.Errorf("creating output pipe: %w", err)
+		return nil, nil, 0, 0, "", "", fmt.Errorf("creating output pipe: %w", err)
 	}
 
 	// Create input pipe (client -> PTY)
@@ -430,7 +471,7 @@ func (h *TTYHost) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.U
 	if err != nil {
 		outputRead.Close()
 		outputWrite.Close()
-		return 0, 0, 0, 0, "", "", fmt.Errorf("creating input pipe: %w", err)
+		return nil, nil, 0, 0, "", "", fmt.Errorf("creating input pipe: %w", err)
 	}
 
 	// Generate unique client ID
@@ -459,20 +500,7 @@ func (h *TTYHost) Attach(clientRows, clientCols int32) (outputFD, inputFD dbus.U
 	// Start goroutine to forward input pipe -> PTY master
 	go h.forwardAttachedInput(clientID, inputRead)
 
-	// Close our copies of client fds after D-Bus sends them
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		h.mu.Lock()
-		if c, ok := h.attachedClients[clientID]; ok && c.clientFDs != nil {
-			for _, f := range c.clientFDs {
-				f.Close()
-			}
-			c.clientFDs = nil
-		}
-		h.mu.Unlock()
-	}()
-
-	return dbus.UnixFD(outputRead.Fd()), dbus.UnixFD(inputWrite.Fd()), rows, cols, screenANSI, clientID, nil
+	return outputRead, inputWrite, rows, cols, screenANSI, clientID, nil
 }
 
 // forwardAttachedInput reads from the input pipe and writes to PTY master.

@@ -1,9 +1,6 @@
-// Package exec provides a future portable ProcessBackend implementation.
+// Package exec provides a portable ProcessBackend implementation.
 //
-// Intended direction:
-//   - Start workloads using plain OS processes (os/exec) rather than systemd units.
-//   - Preserve the semantic ProcessBackend contract so higher layers (runtime/host)
-//     can remain unchanged.
-//
-// This package is a placeholder; implementation is intentionally deferred.
+// It starts workloads using plain OS processes (os/exec) rather than systemd units,
+// preserving the semantic process.ProcessBackend contract so higher layers can
+// remain unchanged.
 package exec

@@ -24,16 +24,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mbrock/swash/internal/backend"
+	_ "github.com/mbrock/swash/internal/backend/all"
 	"github.com/mbrock/swash/internal/host"
 	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
 	"github.com/mbrock/swash/internal/process"
 	"github.com/mbrock/swash/internal/protocol"
-	swrt "github.com/mbrock/swash/internal/runtime"
 	flag "github.com/spf13/pflag"
 )
 
 // Global flags
 var (
+	backendFlag           string
 	protocolFlag          string
 	tagFlags              []string
 	ttyFlag               bool
@@ -43,8 +45,8 @@ var (
 	detachAfterOutputFlag int
 )
 
-// Global runtime (initialized for commands that need it)
-var rt *swrt.Runtime
+// Global backend (initialized for commands that need it)
+var bk backend.Backend
 
 func main() {
 	// Handle "host" subcommand before flag parsing, since it has its own flags
@@ -61,6 +63,7 @@ func main() {
 	}
 
 	// Register flags
+	flag.StringVar(&backendFlag, "backend", os.Getenv("SWASH_BACKEND"), "Backend: systemd, posix (overrides SWASH_BACKEND)")
 	flag.StringVarP(&protocolFlag, "protocol", "p", "shell", "Protocol: shell, sse")
 	flag.StringArrayVarP(&tagFlags, "tag", "t", nil, "Add journal field KEY=VALUE (can be repeated)")
 	flag.BoolVar(&ttyFlag, "tty", false, "Use PTY mode with terminal emulation")
@@ -171,12 +174,19 @@ func fatal(format string, args ...any) {
 	os.Exit(1)
 }
 
-// initRuntime initializes the global runtime. Call this before using rt.
-func initRuntime() {
+// initBackend initializes the global backend. Call this before using bk.
+func initBackend() {
 	var err error
-	rt, err = swrt.DefaultRuntime(context.Background())
+	kind := backend.Kind(backendFlag)
+	if kind == "" {
+		kind = backend.KindSystemd
+	}
+	bk, err = backend.Open(context.Background(), backend.Config{
+		Kind:        kind,
+		HostCommand: findHostCommand(),
+	})
 	if err != nil {
-		fatal("initializing runtime: %v", err)
+		fatal("initializing backend: %v", err)
 	}
 }
 
@@ -263,10 +273,10 @@ func cmdNotifyExit() {
 }
 
 func cmdStatus() {
-	initRuntime()
-	defer rt.Close()
+	initBackend()
+	defer bk.Close()
 
-	sessions, err := rt.ListSessions(context.Background())
+	sessions, err := bk.ListSessions(context.Background())
 	if err != nil {
 		fatal("listing sessions: %v", err)
 	}
@@ -288,13 +298,11 @@ func cmdStatus() {
 }
 
 func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
-	initRuntime()
-	defer rt.Close()
-
-	hostCommand := findHostCommand()
+	initBackend()
+	defer bk.Close()
 
 	// Build session options from flags
-	opts := swrt.SessionOptions{
+	opts := backend.SessionOptions{
 		Protocol: protocol.Protocol(protocolFlag),
 		Tags:     parseTags(tagFlags),
 		TTY:      ttyFlag,
@@ -302,7 +310,7 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 		Cols:     colsFlag,
 	}
 
-	sessionID, err := rt.StartSessionWithOptions(context.Background(), command, hostCommand, opts)
+	sessionID, err := bk.StartSession(context.Background(), command, opts)
 	if err != nil {
 		fatal("starting session: %v", err)
 	}
@@ -323,42 +331,40 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 	go func() {
 		<-sigCh
 		// User pressed Ctrl+C - kill the background process
-		if err := rt.KillSession(sessionID); err != nil {
+		if err := bk.KillSession(context.Background(), sessionID); err != nil {
 			fmt.Fprintf(os.Stderr, "swash: failed to kill session: %v\n", err)
 		}
 		cancel()
 	}()
 
 	// Follow with timeout
-	exitCode, result := rt.FollowSession(ctx, sessionID, detachAfter, outputLimit)
+	exitCode, result := bk.FollowSession(ctx, sessionID, detachAfter, outputLimit)
 
 	switch result {
-	case swrt.FollowCompleted:
+	case backend.FollowCompleted:
 		os.Exit(exitCode)
-	case swrt.FollowTimedOut:
+	case backend.FollowTimedOut:
 		fmt.Fprintf(os.Stderr, "swash: still running after %s, detaching\n", detachAfter)
 		fmt.Fprintf(os.Stderr, "swash: session ID: %s\n", sessionID)
 		fmt.Fprintf(os.Stderr, "swash: swash follow %s\n", sessionID)
 		os.Exit(1)
-	case swrt.FollowOutputLimit:
+	case backend.FollowOutputLimit:
 		fmt.Fprintf(os.Stderr, "swash: output exceeded %d bytes, detaching\n", outputLimit)
 		fmt.Fprintf(os.Stderr, "swash: session ID: %s\n", sessionID)
 		fmt.Fprintf(os.Stderr, "swash: swash follow %s\n", sessionID)
 		os.Exit(1)
-	case swrt.FollowCancelled:
+	case backend.FollowCancelled:
 		fmt.Fprintf(os.Stderr, "swash: cancelled, killed session %s\n", sessionID)
 		os.Exit(130) // Standard exit code for SIGINT
 	}
 }
 
 func cmdRunTTY(command []string) {
-	initRuntime()
-	defer rt.Close()
-
-	hostCommand := findHostCommand()
+	initBackend()
+	defer bk.Close()
 
 	rows, cols := GetContentSize()
-	opts := swrt.SessionOptions{
+	opts := backend.SessionOptions{
 		Protocol: protocol.Protocol(protocolFlag),
 		Tags:     parseTags(tagFlags),
 		TTY:      true,
@@ -366,7 +372,7 @@ func cmdRunTTY(command []string) {
 		Cols:     cols,
 	}
 
-	sessionID, err := rt.StartSessionWithOptions(context.Background(), command, hostCommand, opts)
+	sessionID, err := bk.StartSession(context.Background(), command, opts)
 	if err != nil {
 		fatal("starting session: %v", err)
 	}
@@ -386,20 +392,20 @@ func parseTags(tags []string) map[string]string {
 }
 
 func cmdStop(sessionID string) {
-	initRuntime()
-	defer rt.Close()
+	initBackend()
+	defer bk.Close()
 
-	if err := rt.StopSession(context.Background(), sessionID); err != nil {
+	if err := bk.StopSession(context.Background(), sessionID); err != nil {
 		fatal("stopping session: %v", err)
 	}
 	fmt.Printf("%s stopped\n", sessionID)
 }
 
 func cmdPoll(sessionID string) {
-	initRuntime()
-	defer rt.Close()
+	initBackend()
+	defer bk.Close()
 
-	events, _, err := rt.PollSessionOutput(sessionID, "")
+	events, _, err := bk.PollSessionOutput(context.Background(), sessionID, "")
 	if err != nil {
 		fatal("polling journal: %v", err)
 	}
@@ -409,40 +415,40 @@ func cmdPoll(sessionID string) {
 }
 
 func cmdFollow(sessionID string) {
-	initRuntime()
-	defer rt.Close()
+	initBackend()
+	defer bk.Close()
 
-	exitCode, result := rt.FollowSession(context.Background(), sessionID, 0, 0)
-	if result == swrt.FollowCancelled {
+	exitCode, result := bk.FollowSession(context.Background(), sessionID, 0, 0)
+	if result == backend.FollowCancelled {
 		os.Exit(130)
 	}
 	os.Exit(exitCode)
 }
 
 func cmdSend(sessionID, input string) {
-	initRuntime()
-	defer rt.Close()
+	initBackend()
+	defer bk.Close()
 
-	if _, err := rt.SendInput(sessionID, input); err != nil {
+	if _, err := bk.SendInput(context.Background(), sessionID, input); err != nil {
 		fatal("sending input: %v", err)
 	}
 }
 
 func cmdKill(sessionID string) {
-	initRuntime()
-	defer rt.Close()
+	initBackend()
+	defer bk.Close()
 
-	if err := rt.KillSession(sessionID); err != nil {
+	if err := bk.KillSession(context.Background(), sessionID); err != nil {
 		fatal("killing: %v", err)
 	}
 	fmt.Printf("%s killed\n", sessionID)
 }
 
 func cmdScreen(sessionID string) {
-	initRuntime()
-	defer rt.Close()
+	initBackend()
+	defer bk.Close()
 
-	screen, err := rt.GetScreen(sessionID)
+	screen, err := bk.GetScreen(context.Background(), sessionID)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -450,10 +456,10 @@ func cmdScreen(sessionID string) {
 }
 
 func cmdHistory() {
-	initRuntime()
-	defer rt.Close()
+	initBackend()
+	defer bk.Close()
 
-	sessions, err := rt.ListHistory(context.Background())
+	sessions, err := bk.ListHistory(context.Background())
 	if err != nil {
 		fatal("listing history: %v", err)
 	}

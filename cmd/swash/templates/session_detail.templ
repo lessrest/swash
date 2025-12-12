@@ -3,10 +3,10 @@ package templates
 import (
 	"fmt"
 
-	swrt "github.com/mbrock/swash/internal/runtime"
+	swbk "github.com/mbrock/swash/internal/backend"
 )
 
-templ SessionDetailPage(session *swrt.Session) {
+templ SessionDetailPage(session *swbk.Session) {
 	@Layout(fmt.Sprintf("swash - %s", session.ID)) {
 		<nav><a href="/sessions">← All Sessions</a></nav>
 		<h1>Session { session.ID }</h1>
@@ -26,8 +26,12 @@ templ SessionDetailPage(session *swrt.Session) {
 				<dd>{ fmt.Sprintf("%d", session.PID) }</dd>
 				<dt>Started</dt>
 				<dd>{ session.Started }</dd>
-				<dt>Unit</dt>
-				<dd><code>{ session.Unit }</code></dd>
+				<dt>Backend</dt>
+				<dd><code>{ session.Backend }</code></dd>
+				if session.Handle != "" {
+					<dt>Handle</dt>
+					<dd><code>{ session.Handle }</code></dd>
+				}
 			</dl>
 		</div>
 		<div class="btn-group" style="margin-bottom: 1rem;">

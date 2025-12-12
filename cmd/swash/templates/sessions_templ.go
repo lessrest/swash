@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	swrt "github.com/mbrock/swash/internal/runtime"
+	swbk "github.com/mbrock/swash/internal/backend"
 )
 
 func parseStarted(s string) time.Time {
@@ -28,7 +28,7 @@ func formatTime(s string) string {
 	return started.Format("15:04:05")
 }
 
-func SessionsPage(sessions []swrt.Session) templ.Component {
+func SessionsPage(sessions []swbk.Session) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -83,7 +83,7 @@ func SessionsPage(sessions []swrt.Session) templ.Component {
 	})
 }
 
-func SessionsTable(sessions []swrt.Session) templ.Component {
+func SessionsTable(sessions []swbk.Session) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {

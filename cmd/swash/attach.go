@@ -491,10 +491,10 @@ func (s *attachSession) cleanup() {
 }
 
 func cmdAttach(sessionID string) {
-	initRuntime()
-	defer rt.Close()
+	initBackend()
+	defer bk.Close()
 
-	session, err := newAttachSession(sessionID, rt.Control.ConnectTTYSession)
+	session, err := newAttachSession(sessionID, bk.ConnectTTYSession)
 	if err != nil {
 		fatal("%v", err)
 	}

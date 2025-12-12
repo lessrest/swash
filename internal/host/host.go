@@ -14,9 +14,11 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/mbrock/swash/internal/eventlog"
+	eventlogfile "github.com/mbrock/swash/internal/eventlog/file"
 	journald "github.com/mbrock/swash/internal/platform/systemd/eventlog"
 	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
 	"github.com/mbrock/swash/internal/process"
+	procexec "github.com/mbrock/swash/internal/process/exec"
 	"github.com/mbrock/swash/internal/protocol"
 	"github.com/mbrock/swash/internal/session"
 	"github.com/mbrock/swash/internal/tty"
@@ -335,6 +337,8 @@ func RunHost() error {
 	ttyFlag := fs.Bool("tty", false, "Use PTY mode with terminal emulation")
 	rowsFlag := fs.Int("rows", 24, "Terminal rows (for --tty mode)")
 	colsFlag := fs.Int("cols", 80, "Terminal columns (for --tty mode)")
+	unixSocketFlag := fs.String("unix-socket", "", "Serve control plane over a unix socket (posix backend)")
+	eventlogPathFlag := fs.String("eventlog", "", "Event log file path (posix backend)")
 	// Skip "swash" (index 0) and "host" (index 1) to get to the flags
 	fs.Parse(os.Args[2:])
 
@@ -352,6 +356,74 @@ func RunHost() error {
 		if err := json.Unmarshal([]byte(*tagsJSONFlag), &tags); err != nil {
 			return fmt.Errorf("parsing tags: %w", err)
 		}
+	}
+
+	// POSIX (unix socket) mode: run without systemd/journald/D-Bus.
+	if *unixSocketFlag != "" {
+		if *eventlogPathFlag == "" {
+			return fmt.Errorf("missing --eventlog for --unix-socket mode")
+		}
+
+		processes := procexec.New()
+		defer processes.Close()
+
+		events, err := eventlogfile.Create(*eventlogPathFlag)
+		if err != nil {
+			return fmt.Errorf("opening event log: %w", err)
+		}
+		defer events.Close()
+
+		// Set up context that cancels on SIGTERM/SIGINT (like D-Bus mode).
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
+		go func() {
+			select {
+			case <-sigChan:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+
+		if *ttyFlag {
+			h := tty.NewTTYHost(tty.TTYHostConfig{
+				SessionID: *sessionIDFlag,
+				Command:   command,
+				Rows:      *rowsFlag,
+				Cols:      *colsFlag,
+				Tags:      tags,
+				Processes: processes,
+				Events:    events,
+			})
+			defer h.Close()
+
+			srv, err := ServeUnix(*unixSocketFlag, h, h)
+			if err != nil {
+				return err
+			}
+			defer srv.Close()
+
+			return h.RunTask(ctx)
+		}
+
+		h := NewHost(HostConfig{
+			SessionID: *sessionIDFlag,
+			Command:   command,
+			Protocol:  protocol.Protocol(*protocolFlag),
+			Tags:      tags,
+			Processes: processes,
+			Events:    events,
+		})
+
+		srv, err := ServeUnix(*unixSocketFlag, h, nil)
+		if err != nil {
+			return err
+		}
+		defer srv.Close()
+
+		return h.RunTask(ctx)
 	}
 
 	ctx := context.Background()

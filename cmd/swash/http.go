@@ -14,9 +14,8 @@ import (
 	"time"
 
 	"github.com/mbrock/swash/cmd/swash/templates"
-	"github.com/mbrock/swash/internal/eventlog"
+	"github.com/mbrock/swash/internal/backend"
 	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
-	swrt "github.com/mbrock/swash/internal/runtime"
 	"golang.org/x/net/websocket"
 )
 
@@ -171,12 +170,8 @@ func httpStatus() {
 // HTTP Server implementation (moved from cmd/swash-http/main.go)
 
 func runHTTPServer() {
-	var err error
-	rt, err = swrt.DefaultRuntime(context.Background())
-	if err != nil {
-		fatal("initializing runtime: %v", err)
-	}
-	defer rt.Close()
+	initBackend()
+	defer bk.Close()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /sessions", handleListSessions)
@@ -257,10 +252,9 @@ func handleStartSession(w http.ResponseWriter, r *http.Request) {
 		tty = req.TTY
 	}
 
-	hostCommand := findHostCommand()
-	opts := swrt.SessionOptions{TTY: tty}
+	opts := backend.SessionOptions{TTY: tty}
 
-	sessionID, err := rt.StartSessionWithOptions(r.Context(), command, hostCommand, opts)
+	sessionID, err := bk.StartSession(r.Context(), command, opts)
 	if err != nil {
 		http.Error(w, "starting session: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -305,7 +299,7 @@ func parseStarted(s string) time.Time {
 }
 
 func handleListSessions(w http.ResponseWriter, r *http.Request) {
-	sessions, err := rt.ListSessions(r.Context())
+	sessions, err := bk.ListSessions(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -343,8 +337,8 @@ func handleGetSession(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(session)
 }
 
-func getSessionByID(ctx context.Context, id string) (*swrt.Session, error) {
-	sessions, err := rt.ListSessions(ctx)
+func getSessionByID(ctx context.Context, id string) (*backend.Session, error) {
+	sessions, err := bk.ListSessions(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +352,7 @@ func getSessionByID(ctx context.Context, id string) (*swrt.Session, error) {
 
 func handleStopSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
-	if err := rt.StopSession(r.Context(), sessionID); err != nil {
+	if err := bk.StopSession(r.Context(), sessionID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -368,7 +362,7 @@ func handleStopSession(w http.ResponseWriter, r *http.Request) {
 
 func handleKillSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
-	if err := rt.KillSession(sessionID); err != nil {
+	if err := bk.KillSession(r.Context(), sessionID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -408,7 +402,7 @@ func handleSendInput(w http.ResponseWriter, r *http.Request) {
 		data = req.Data
 	}
 
-	n, err := rt.SendInput(sessionID, data)
+	n, err := bk.SendInput(r.Context(), sessionID, data)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -425,7 +419,7 @@ func handleSendInput(w http.ResponseWriter, r *http.Request) {
 
 func handleGetScreen(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
-	screen, err := rt.GetScreen(sessionID)
+	screen, err := bk.GetScreen(r.Context(), sessionID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -435,7 +429,7 @@ func handleGetScreen(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleHistory(w http.ResponseWriter, r *http.Request) {
-	sessions, err := rt.ListHistory(r.Context())
+	sessions, err := bk.ListHistory(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -464,24 +458,62 @@ func handleSessionOutput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filters := []eventlog.EventFilter{eventlog.FilterBySession(sessionID)}
+	cursor := ""
+	t := time.NewTicker(250 * time.Millisecond)
+	defer t.Stop()
 
-	for entry := range rt.Events.Follow(r.Context(), filters) {
-		if entry.Fields[eventlog.FieldEvent] == eventlog.EventExited {
-			fmt.Fprintf(w, "event: exit\ndata: %s\n\n", entry.Fields[eventlog.FieldExitCode])
+	for {
+		events, newCursor, err := bk.PollSessionOutput(r.Context(), sessionID, cursor)
+		if err == nil {
+			cursor = newCursor
+			for _, e := range events {
+				data, _ := json.Marshal(map[string]any{
+					"fd":   e.FD,
+					"text": e.Text,
+				})
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
+			}
+		}
+
+		// Exit detection: try live control-plane gist; if unavailable, fall back to history.
+		if code, ok := sessionExitCode(r.Context(), sessionID); ok {
+			fmt.Fprintf(w, "event: exit\ndata: %s\n\n", code)
 			flusher.Flush()
 			return
 		}
 
-		if entry.Fields["FD"] != "" && entry.Message != "" {
-			data, _ := json.Marshal(map[string]any{
-				"fd":   entry.Fields["FD"],
-				"text": entry.Message,
-			})
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-t.C:
 		}
 	}
+}
+
+func sessionExitCode(ctx context.Context, sessionID string) (string, bool) {
+	if client, err := bk.ConnectSession(sessionID); err == nil {
+		defer client.Close()
+		st, err := client.Gist()
+		if err == nil && !st.Running && st.ExitCode != nil {
+			return fmt.Sprintf("%d", *st.ExitCode), true
+		}
+	}
+
+	hist, err := bk.ListHistory(ctx)
+	if err != nil {
+		return "", false
+	}
+	for _, h := range hist {
+		if h.ID != sessionID {
+			continue
+		}
+		if h.ExitCode != nil {
+			return fmt.Sprintf("%d", *h.ExitCode), true
+		}
+		return "", true
+	}
+	return "", false
 }
 
 func handleTerminalPage(w http.ResponseWriter, r *http.Request) {
@@ -498,7 +530,7 @@ func handleAttach(ws *websocket.Conn) {
 	}
 	sessionID := parts[2]
 
-	client, err := rt.Control.ConnectTTYSession(sessionID)
+	client, err := bk.ConnectTTYSession(sessionID)
 	if err != nil {
 		return
 	}
