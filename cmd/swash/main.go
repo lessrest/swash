@@ -64,6 +64,12 @@ func main() {
 		return
 	}
 
+	// Handle "journald" subcommand (minimal journald daemon for posix backend)
+	if len(os.Args) >= 2 && os.Args[1] == "journald" {
+		cmdJournald()
+		return
+	}
+
 	// Register flags
 	flag.StringVar(&backendFlag, "backend", os.Getenv("SWASH_BACKEND"), "Backend: systemd, posix (overrides SWASH_BACKEND)")
 	flag.StringVarP(&protocolFlag, "protocol", "p", "shell", "Protocol: shell, sse")

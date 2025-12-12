@@ -157,18 +157,9 @@ func (e *testEnv) setupPosix() error {
 		return fmt.Errorf("creating runtime dir: %w", err)
 	}
 
-	// Build swash-journald (required for posix backend)
-	journaldBin := filepath.Join(e.tmpDir, "swash-journald")
-	cmd := exec.Command("go", "build", "-o", journaldBin, "./cmd/swash-journald/")
-	cmd.Dir = getProjectRoot()
-	cmd.Env = append(os.Environ(), "CGO_CFLAGS=-I"+filepath.Join(getProjectRoot(), "cvendor"))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("building swash-journald: %w\n%s", err, out)
-	}
-
-	// Start swash-journald daemon for the test suite
+	// Start "swash journald" daemon for the test suite (uses already-built swash binary)
 	journalPath := filepath.Join(e.stateDir, "swash.journal")
-	e.journaldCmd = exec.Command(journaldBin,
+	e.journaldCmd = exec.Command(e.swashBin, "journald",
 		"--socket", e.journalSocket,
 		"--journal", journalPath,
 	)
@@ -177,7 +168,7 @@ func (e *testEnv) setupPosix() error {
 	e.journaldCmd.Stderr = os.Stderr
 	e.journaldCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := e.journaldCmd.Start(); err != nil {
-		return fmt.Errorf("starting swash-journald: %w", err)
+		return fmt.Errorf("starting swash journald: %w", err)
 	}
 
 	// Wait for socket to appear
@@ -188,7 +179,7 @@ func (e *testEnv) setupPosix() error {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if _, err := os.Stat(e.journalSocket); err != nil {
-		return fmt.Errorf("swash-journald socket did not appear: %w", err)
+		return fmt.Errorf("swash journald socket did not appear: %w", err)
 	}
 
 	return nil
@@ -269,7 +260,7 @@ func (e *testEnv) cleanup() {
 			syscall.Kill(-e.dbusCmd.Process.Pid, syscall.SIGKILL)
 			e.dbusCmd.Wait()
 		}
-		// Kill swash-journald for posix mode
+		// Kill "swash journald" for posix mode
 		if e.journaldCmd != nil && e.journaldCmd.Process != nil {
 			syscall.Kill(-e.journaldCmd.Process.Pid, syscall.SIGKILL)
 			e.journaldCmd.Wait()
