@@ -25,6 +25,10 @@ func init() {
 
 type PosixBackend struct {
 	cfg backend.Config
+
+	// contextLog is a persistent writer for the context event journal.
+	// Lazily initialized on first context operation.
+	contextLog eventlog.EventLog
 }
 
 var _ backend.Backend = (*PosixBackend)(nil)
@@ -35,7 +39,31 @@ func Open(ctx context.Context, cfg backend.Config) (backend.Backend, error) {
 	return &PosixBackend{cfg: cfg}, nil
 }
 
-func (b *PosixBackend) Close() error { return nil }
+func (b *PosixBackend) Close() error {
+	if b.contextLog != nil {
+		return b.contextLog.Close()
+	}
+	return nil
+}
+
+// ensureContextLog lazily initializes the context event log writer.
+func (b *PosixBackend) ensureContextLog() (eventlog.EventLog, error) {
+	if b.contextLog != nil {
+		return b.contextLog, nil
+	}
+
+	path := b.contextEventLogPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("creating context log dir: %w", err)
+	}
+
+	el, err := eventlogfile.Create(path)
+	if err != nil {
+		return nil, fmt.Errorf("creating context event log: %w", err)
+	}
+	b.contextLog = el
+	return el, nil
+}
 
 // -----------------------------------------------------------------------------
 // Paths / metadata
@@ -540,11 +568,11 @@ func (b *PosixBackend) CreateContext(ctx context.Context) (string, string, error
 		return "", "", fmt.Errorf("creating context directory: %w", err)
 	}
 
-	el, err := eventlogfile.Open(b.contextEventLogPath())
+	el, err := b.ensureContextLog()
 	if err != nil {
 		return "", "", fmt.Errorf("opening context event log: %w", err)
 	}
-	defer el.Close()
+	// Don't close - kept open for future writes
 
 	if err := eventlog.EmitContextCreated(el, contextID, dir); err != nil {
 		return "", "", fmt.Errorf("emitting context-created event: %w", err)
@@ -620,11 +648,11 @@ func (b *PosixBackend) ListContextSessions(ctx context.Context, contextID string
 }
 
 func (b *PosixBackend) emitSessionContext(sessionID, contextID string) error {
-	el, err := eventlogfile.Open(b.contextEventLogPath())
+	el, err := b.ensureContextLog()
 	if err != nil {
 		return fmt.Errorf("opening context event log: %w", err)
 	}
-	defer el.Close()
+	// Don't close - kept open for future writes
 
 	return eventlog.EmitSessionContext(el, sessionID, contextID)
 }
