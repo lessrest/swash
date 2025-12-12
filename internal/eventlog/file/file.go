@@ -74,6 +74,43 @@ func Open(path string) (eventlog.EventLog, error) {
 	}, nil
 }
 
+// CreateOrOpen creates a new journal file or opens an existing one for appending.
+func CreateOrOpen(path string) (eventlog.EventLog, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("creating eventlog dir: %w", err)
+	}
+
+	var machineID, bootID journalfile.ID128
+	_, _ = rand.Read(machineID[:])
+	_, _ = rand.Read(bootID[:])
+
+	// Try to create new file first
+	w, err := journalfile.Create(path, machineID, bootID)
+	if err != nil {
+		// If file exists, open for appending
+		if os.IsExist(err) {
+			w, err = journalfile.OpenAppend(path)
+			if err != nil {
+				return nil, fmt.Errorf("opening existing journal: %w", err)
+			}
+		} else {
+			return nil, err
+		}
+	}
+
+	r, err := journalfile.OpenRead(path)
+	if err != nil {
+		_ = w.Close()
+		return nil, fmt.Errorf("opening journal reader: %w", err)
+	}
+
+	return &FileEventLog{
+		path:   path,
+		writer: w,
+		reader: r,
+	}, nil
+}
+
 // Close releases resources.
 func (l *FileEventLog) Close() error {
 	var firstErr error

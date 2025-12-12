@@ -53,13 +53,9 @@ func (b *PosixBackend) ensureContextLog() (eventlog.EventLog, error) {
 	}
 
 	path := b.contextEventLogPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("creating context log dir: %w", err)
-	}
-
-	el, err := eventlogfile.Create(path)
+	el, err := eventlogfile.CreateOrOpen(path)
 	if err != nil {
-		return nil, fmt.Errorf("creating context event log: %w", err)
+		return nil, fmt.Errorf("opening context event log: %w", err)
 	}
 	b.contextLog = el
 	return el, nil

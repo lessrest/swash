@@ -72,6 +72,75 @@ func Create(path string, machineID, bootID ID128) (*File, error) {
 	return jf, nil
 }
 
+// OpenAppend opens an existing journal file for appending new entries.
+func OpenAppend(path string) (*File, error) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0640)
+	if err != nil {
+		return nil, fmt.Errorf("open journal file: %w", err)
+	}
+
+	jf := &File{
+		f:          f,
+		path:       path,
+		dataCache:  make(map[uint64]uint64),
+		fieldCache: make(map[uint64]uint64),
+		dirty:      false,
+	}
+
+	// Read existing header
+	buf := make([]byte, HeaderSize)
+	if _, err := f.ReadAt(buf, 0); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("read header: %w", err)
+	}
+	if err := binary.Read(bytes.NewReader(buf), le, &jf.header); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("decode header: %w", err)
+	}
+	if jf.header.Signature != HeaderSignature {
+		f.Close()
+		return nil, fmt.Errorf("invalid journal signature")
+	}
+
+	// Copy machine ID from header, generate new boot ID for this session
+	jf.machineID = jf.header.MachineID
+	if _, err := rand.Read(jf.bootID[:]); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("generate boot ID: %w", err)
+	}
+
+	// Read hash tables
+	jf.dataHashTable = make([]HashItem, jf.header.DataHashTableSize/HashItemSize)
+	dataBuf := make([]byte, jf.header.DataHashTableSize)
+	if _, err := f.ReadAt(dataBuf, int64(jf.header.DataHashTableOffset)); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("read data hash table: %w", err)
+	}
+	if err := binary.Read(bytes.NewReader(dataBuf), le, jf.dataHashTable); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("decode data hash table: %w", err)
+	}
+
+	jf.fieldHashTable = make([]HashItem, jf.header.FieldHashTableSize/HashItemSize)
+	fieldBuf := make([]byte, jf.header.FieldHashTableSize)
+	if _, err := f.ReadAt(fieldBuf, int64(jf.header.FieldHashTableOffset)); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("read field hash table: %w", err)
+	}
+	if err := binary.Read(bytes.NewReader(fieldBuf), le, jf.fieldHashTable); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("decode field hash table: %w", err)
+	}
+
+	// Position at end of file for appending
+	if _, err := f.Seek(0, 2); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("seek to end: %w", err)
+	}
+
+	return jf, nil
+}
+
 func (jf *File) initialize() error {
 	// Generate unique file ID
 	var fileID ID128
