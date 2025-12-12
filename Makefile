@@ -23,7 +23,7 @@ endif
 export SWASH_TEST_MODE
 export SWASH_TEST_JOURNAL_READER
 
-.PHONY: all build test test-unit test-integration install clean generate
+.PHONY: all build test test-unit test-integration install clean generate oxigraph-wasm
 
 all: build
 
@@ -52,3 +52,13 @@ test-integration: build
 
 clean:
 	rm -rf bin/
+
+# Build oxigraph WASI module (compressed blob is embedded and decompressed at runtime)
+OXIGRAPH_WASM_ZST := cmd/oxigraph-poc/oxigraph.wasm.zst
+OXIGRAPH_SOURCES := oxigraph-wasi-ffi/src/lib.rs oxigraph-wasi-ffi/Cargo.toml
+
+oxigraph-wasm: $(OXIGRAPH_WASM_ZST)
+
+$(OXIGRAPH_WASM_ZST): $(OXIGRAPH_SOURCES)
+	cd oxigraph-wasi-ffi && cargo build --target wasm32-wasip1 --release
+	zstd -f oxigraph-wasi-ffi/target/wasm32-wasip1/release/oxigraph_wasi_ffi.wasm -o $@

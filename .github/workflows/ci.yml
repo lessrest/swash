@@ -112,6 +112,21 @@ jobs:
       - name: Run integration tests (posix backend)
         run: SWASH_TEST_MODE=posix make test-integration
 
+  oxigraph-poc:
+    runs-on: ubuntu-x64-1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build and run oxigraph-poc
+        run: |
+          go build ./cmd/oxigraph-poc
+          ./oxigraph-poc
+
   lint:
     runs-on: ubuntu-x64-1
     steps:

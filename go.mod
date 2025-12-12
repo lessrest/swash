@@ -21,6 +21,8 @@ require (
 	github.com/Velocidex/ordereddict v0.0.0-20230909174157-2aa49cc5d11d // indirect
 	github.com/Velocidex/yaml/v2 v2.2.8 // indirect
 	github.com/dchest/siphash v1.2.3 // indirect
+	github.com/klauspost/compress v1.18.2 // indirect
+	github.com/tetratelabs/wazero v1.10.1 // indirect
 )
 
 replace github.com/coreos/go-systemd/v22 => github.com/mbrock/go-systemd/v22 v22.6.1-swash

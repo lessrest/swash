@@ -1,0 +1,15 @@
+[package]
+name = "oxigraph-wasi-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "WASI FFI wrapper for oxigraph's in-memory RDF store"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+oxigraph = { git = "https://github.com/oxigraph/oxigraph", default-features = false }
+
+[profile.release]
+lto = true
+opt-level = "s"
