@@ -2,6 +2,7 @@ package journalfile
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 // Verify Reader implements JournalReader at compile time.
@@ -17,6 +20,7 @@ var _ JournalReader = (*Reader)(nil)
 // Reader reads entries from a journal file.
 type Reader struct {
 	f      *os.File
+	path   string
 	header Header
 
 	// Current position for iteration
@@ -24,6 +28,9 @@ type Reader struct {
 
 	// Filters (field=value pairs that must match)
 	matches []match
+
+	// File watcher for Wait() - lazily initialized
+	watcher *fsnotify.Watcher
 }
 
 type match struct {
@@ -38,7 +45,7 @@ func OpenRead(path string) (*Reader, error) {
 		return nil, fmt.Errorf("open journal file: %w", err)
 	}
 
-	r := &Reader{f: f}
+	r := &Reader{f: f, path: path}
 	if err := r.readHeader(); err != nil {
 		f.Close()
 		return nil, err
@@ -64,8 +71,12 @@ func (r *Reader) readHeader() error {
 	return nil
 }
 
-// Close closes the reader.
+// Close closes the reader and releases resources.
 func (r *Reader) Close() error {
+	if r.watcher != nil {
+		r.watcher.Close()
+		r.watcher = nil
+	}
 	return r.f.Close()
 }
 
@@ -308,4 +319,54 @@ func (r *Reader) Refresh() error {
 // TailSeqnum returns the sequence number of the last entry.
 func (r *Reader) TailSeqnum() uint64 {
 	return r.header.TailEntrySeqnum
+}
+
+// Wait blocks until the journal file is modified or the context is cancelled.
+// This uses fsnotify for efficient event-based waiting instead of polling.
+// After Wait returns nil, call Refresh() to pick up the new entries.
+//
+// Returns nil when the file changes, or ctx.Err() if the context is cancelled.
+// Returns an error if the watcher cannot be initialized.
+func (r *Reader) Wait(ctx context.Context) error {
+	// Lazily initialize the watcher
+	if r.watcher == nil {
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			return fmt.Errorf("creating file watcher: %w", err)
+		}
+		if err := watcher.Add(r.path); err != nil {
+			watcher.Close()
+			return fmt.Errorf("watching journal file: %w", err)
+		}
+		r.watcher = watcher
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case event, ok := <-r.watcher.Events:
+			if !ok {
+				return fmt.Errorf("watcher closed")
+			}
+			// Write or Chmod means new data might be available
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Chmod) {
+				return nil
+			}
+			// File removed or renamed - likely journal rotation
+			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+				return fmt.Errorf("journal file removed or renamed")
+			}
+		case err, ok := <-r.watcher.Errors:
+			if !ok {
+				return fmt.Errorf("watcher error channel closed")
+			}
+			return fmt.Errorf("watcher error: %w", err)
+		}
+	}
+}
+
+// Path returns the path to the journal file.
+func (r *Reader) Path() string {
+	return r.path
 }
