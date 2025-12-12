@@ -139,6 +139,20 @@ func pidAlive(pid int) bool {
 	return true
 }
 
+// hasJournalEntries checks if a journal file has any entries (not just header).
+// The host writes a "started" event after successfully binding the socket,
+// so NEntries > 0 indicates the host got past initialization.
+func hasJournalEntries(path string) bool {
+	r, err := eventlogfile.Open(path)
+	if err != nil {
+		return false
+	}
+	defer r.Close()
+	// Poll with no filters to check entry count
+	entries, _, err := r.Poll(context.Background(), nil, "")
+	return err == nil && len(entries) > 0
+}
+
 // -----------------------------------------------------------------------------
 // Backend methods
 // -----------------------------------------------------------------------------
@@ -356,12 +370,6 @@ func (b *PosixBackend) waitReady(ctx context.Context, sessionID string, pid int,
 			return fmt.Errorf("timeout waiting for host socket")
 		}
 
-		// Check if the host process died unexpectedly.
-		// This catches early failures like socket bind errors.
-		if !pidAlive(pid) {
-			return fmt.Errorf("host process exited unexpectedly (pid %d)", pid)
-		}
-
 		if _, err := os.Stat(socketPath); err == nil {
 			c, err := session.ConnectUnixSession(sessionID, socketPath)
 			if err == nil {
@@ -373,15 +381,18 @@ func (b *PosixBackend) waitReady(ctx context.Context, sessionID string, pid int,
 			}
 		}
 
-		// Treat existence of the event log file as readiness. This makes starting a
-		// short-lived session robust even if the unix socket is created/removed
-		// faster than the parent can observe it.
-		// But only if the process is still running - otherwise we'd miss startup errors.
-		if fi, err := os.Stat(eventLogPath); err == nil && fi.Size() > 0 {
-			// Double-check process is alive before declaring success
-			if pidAlive(pid) {
-				return nil
-			}
+		// Check if the journal has actual entries (not just the header).
+		// The host writes the "started" event after successfully binding the socket,
+		// so entries > 0 means startup succeeded. This handles both:
+		// - Fast commands that complete before we can connect to the socket
+		// - Startup failures where the host crashes before writing any events
+		if hasJournalEntries(eventLogPath) {
+			return nil
+		}
+
+		// If process died and journal has no entries, startup failed.
+		if !pidAlive(pid) {
+			return fmt.Errorf("host process exited before writing any events (pid %d) - check for startup errors", pid)
 		}
 
 		time.Sleep(25 * time.Millisecond)
