@@ -99,6 +99,7 @@ type Unit struct {
 	MainPID     uint32
 	WorkingDir  string
 	ExitStatus  int32
+	Slice       string // Parent slice name (e.g., "swash-ABC123.slice")
 }
 
 // TransientSpec defines properties for starting a transient unit.

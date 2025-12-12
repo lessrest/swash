@@ -2,6 +2,7 @@ package systemd
 
 import (
 	"context"
+	"strings"
 	"syscall"
 
 	"github.com/mbrock/swash/internal/process"
@@ -113,8 +114,18 @@ func (b *SystemdBackend) List(ctx context.Context, filter process.ProcessFilter)
 		return nil, err
 	}
 
+	// Only include units whose slice matches the current root slice prefix.
+	// This prevents test sessions (in swashtest*.slice) from appearing in
+	// normal listings (which expect swash-*.slice).
+	slicePrefix := rootSlicePrefix() + "-"
+
 	var result []process.ProcessStatus
 	for _, u := range units {
+		// Filter by slice - unit's slice should start with our root slice prefix
+		if !strings.HasPrefix(u.Slice, slicePrefix) {
+			continue
+		}
+
 		ref, ok := refFromUnit(u.Name)
 		if !ok {
 			continue

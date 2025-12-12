@@ -193,8 +193,9 @@ func (e *testEnv) setupMiniSystemd() error {
 func (e *testEnv) cleanup() {
 	withTimeout("cleanup", 5*time.Second, func() {
 		// Stop the test slice and all children (real systemd mode)
+		// Use SIGKILL because SIGTERM doesn't reliably terminate host processes
 		if e.mode == "real" && e.rootSlice != "" {
-			runCmd(3*time.Second, "systemctl", "--user", "kill", e.rootSlice+".slice")
+			runCmd(3*time.Second, "systemctl", "--user", "kill", "--signal=SIGKILL", e.rootSlice+".slice")
 			runCmd(3*time.Second, "systemctl", "--user", "reset-failed")
 		}
 

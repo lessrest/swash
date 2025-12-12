@@ -144,6 +144,10 @@ func (s *systemdConn) GetUnit(ctx context.Context, name UnitName) (*Unit, error)
 		if es, ok := serviceProps["ExecMainStatus"].(int32); ok {
 			unit.ExitStatus = es
 		}
+
+		if slice, ok := serviceProps["Slice"].(string); ok {
+			unit.Slice = slice
+		}
 	}
 
 	return unit, nil
