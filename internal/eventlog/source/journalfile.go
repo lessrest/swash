@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+
 	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/pkg/journalfile"
 )
@@ -82,9 +84,25 @@ func (s *JournalfileSource) Poll(ctx context.Context, filters []eventlog.EventFi
 }
 
 // Follow returns an iterator over entries matching filters.
+// Uses fsnotify for efficient file change detection instead of polling.
 func (s *JournalfileSource) Follow(ctx context.Context, filters []eventlog.EventFilter) iter.Seq[eventlog.EventRecord] {
 	return func(yield func(eventlog.EventRecord) bool) {
 		slog.Debug("JournalfileSource.Follow starting", "path", s.path, "filters", len(filters))
+
+		// Set up file watcher for efficient change detection
+		watcher, err := fsnotify.NewWatcher()
+		if err != nil {
+			slog.Debug("JournalfileSource.Follow failed to create watcher, falling back to polling", "error", err)
+			s.followWithPolling(ctx, filters, yield)
+			return
+		}
+		defer watcher.Close()
+
+		if err := watcher.Add(s.path); err != nil {
+			slog.Debug("JournalfileSource.Follow failed to watch file, falling back to polling", "error", err)
+			s.followWithPolling(ctx, filters, yield)
+			return
+		}
 
 		// Apply matches
 		s.reader.FlushMatches()
@@ -97,17 +115,15 @@ func (s *JournalfileSource) Follow(ctx context.Context, filters []eventlog.Event
 		for {
 			entry, err := s.reader.Next()
 			if err == io.EOF {
-				// No more entries, wait and refresh
-				select {
-				case <-ctx.Done():
+				// No more entries, wait for file changes
+				if !s.waitForChanges(ctx, watcher) {
 					return
-				case <-time.After(100 * time.Millisecond):
-					if err := s.reader.Refresh(); err != nil {
-						slog.Debug("JournalfileSource.Follow refresh error", "error", err)
-						return
-					}
-					continue
 				}
+				if err := s.reader.Refresh(); err != nil {
+					slog.Debug("JournalfileSource.Follow refresh error", "error", err)
+					return
+				}
+				continue
 			}
 			if err != nil {
 				slog.Debug("JournalfileSource.Follow read error", "error", err)
@@ -124,6 +140,75 @@ func (s *JournalfileSource) Follow(ctx context.Context, filters []eventlog.Event
 			if !yield(record) {
 				return
 			}
+		}
+	}
+}
+
+// waitForChanges blocks until the file is modified or context is cancelled.
+// Returns true if we should continue reading, false if we should stop.
+func (s *JournalfileSource) waitForChanges(ctx context.Context, watcher *fsnotify.Watcher) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return false
+			}
+			// We care about writes (new data) and chmod (journal might update metadata)
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Chmod) {
+				return true
+			}
+			// File was removed or renamed - journal rotation perhaps
+			if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
+				slog.Debug("JournalfileSource.Follow file removed/renamed", "event", event)
+				return false
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return false
+			}
+			slog.Debug("JournalfileSource.Follow watcher error", "error", err)
+			return false
+		}
+	}
+}
+
+// followWithPolling is the fallback when fsnotify isn't available.
+func (s *JournalfileSource) followWithPolling(ctx context.Context, filters []eventlog.EventFilter, yield func(eventlog.EventRecord) bool) {
+	s.reader.FlushMatches()
+	for _, f := range filters {
+		s.reader.AddMatch(f.Field, f.Value)
+	}
+
+	s.reader.SeekHead()
+
+	for {
+		entry, err := s.reader.Next()
+		if err == io.EOF {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+				if err := s.reader.Refresh(); err != nil {
+					return
+				}
+				continue
+			}
+		}
+		if err != nil {
+			return
+		}
+
+		record := eventlog.EventRecord{
+			Cursor:    journalfile.GetCursor(entry),
+			Timestamp: entry.Realtime,
+			Message:   entry.Fields["MESSAGE"],
+			Fields:    entry.Fields,
+		}
+
+		if !yield(record) {
+			return
 		}
 	}
 }

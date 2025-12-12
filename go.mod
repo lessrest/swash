@@ -18,4 +18,6 @@ require (
 	golang.org/x/term v0.37.0
 )
 
+require github.com/fsnotify/fsnotify v1.9.0
+
 replace github.com/coreos/go-systemd/v22 => github.com/mbrock/go-systemd/v22 v22.6.1-swash
