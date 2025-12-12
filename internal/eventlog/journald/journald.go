@@ -9,6 +9,7 @@ import (
 
 	"github.com/coreos/go-systemd/v22/journal"
 	"github.com/coreos/go-systemd/v22/sdjournal"
+
 	"github.com/mbrock/swash/internal/eventlog"
 )
 

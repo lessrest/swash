@@ -6,10 +6,26 @@ pre-commit:
       skip:
         - merge
         - rebase
+    imports:
+      run: |
+        go run golang.org/x/tools/cmd/goimports@latest -w -local github.com/mbrock/swash .
+        git add -u
+      skip:
+        - merge
+        - rebase
+    tidy:
+      run: |
+        go mod tidy
+        if ! git diff --quiet go.mod go.sum; then
+          echo "go.mod/go.sum not tidy - changes staged"
+          git add go.mod go.sum
+        fi
+    vulncheck:
+      run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
     vet:
       run: go vet ./...
     staticcheck:
-      run: staticcheck ./...
+      run: go run honnef.co/go/tools/cmd/staticcheck@latest ./...
     modernize:
       run: |
         go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...

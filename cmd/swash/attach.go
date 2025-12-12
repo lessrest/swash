@@ -8,9 +8,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"golang.org/x/term"
+
 	"github.com/mbrock/swash/internal/session"
 	"github.com/mbrock/swash/pkg/vterm"
-	"golang.org/x/term"
 )
 
 // GetContentSize returns the terminal size minus border (2 rows, 2 cols).

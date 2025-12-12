@@ -24,13 +24,14 @@ import (
 	"syscall"
 	"time"
 
+	flag "github.com/spf13/pflag"
+
 	"github.com/mbrock/swash/internal/backend"
 	_ "github.com/mbrock/swash/internal/backend/all"
 	"github.com/mbrock/swash/internal/host"
 	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
 	"github.com/mbrock/swash/internal/process"
 	"github.com/mbrock/swash/internal/protocol"
-	flag "github.com/spf13/pflag"
 )
 
 // Global flags

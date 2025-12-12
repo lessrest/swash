@@ -13,10 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/websocket"
+
 	"github.com/mbrock/swash/cmd/swash/templates"
 	"github.com/mbrock/swash/internal/backend"
 	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
-	"golang.org/x/net/websocket"
 )
 
 // cmdHTTP handles the "swash http" subcommand and its sub-subcommands.

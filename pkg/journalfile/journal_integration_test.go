@@ -86,9 +86,7 @@ func TestConcurrentOpenWhileWriting(t *testing.T) {
 	var wg sync.WaitGroup
 	done := make(chan struct{})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for i := range writes {
 			fields := map[string]string{
 				"MESSAGE":     fmt.Sprintf("entry-%d", i),
@@ -105,11 +103,9 @@ func TestConcurrentOpenWhileWriting(t *testing.T) {
 			}
 		}
 		close(done)
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-done:
@@ -143,7 +139,7 @@ func TestConcurrentOpenWhileWriting(t *testing.T) {
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
-	}()
+	})
 
 	var testErr error
 	select {

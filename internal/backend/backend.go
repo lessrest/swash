@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/godbus/dbus/v5"
+
 	"github.com/mbrock/swash/internal/session"
 )
 

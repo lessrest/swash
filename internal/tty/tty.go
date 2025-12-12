@@ -14,6 +14,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/godbus/dbus/v5"
+
 	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/internal/process"
 	"github.com/mbrock/swash/internal/session"

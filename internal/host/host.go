@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/godbus/dbus/v5"
+
 	"github.com/mbrock/swash/internal/eventlog"
 	eventlogfile "github.com/mbrock/swash/internal/eventlog/file"
 	journald "github.com/mbrock/swash/internal/platform/systemd/eventlog"
