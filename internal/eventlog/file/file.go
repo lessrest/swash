@@ -114,7 +114,13 @@ func (l *FileEventLog) Write(message string, fields map[string]string) error {
 	}
 	entry["MESSAGE"] = message
 
-	return l.writer.AppendEntry(entry)
+	if err := l.writer.AppendEntry(entry); err != nil {
+		return err
+	}
+
+	// Sync to make entry visible to readers immediately.
+	// This is important for Follow() to work correctly.
+	return l.writer.Sync()
 }
 
 // Poll reads entries matching filters since cursor.
