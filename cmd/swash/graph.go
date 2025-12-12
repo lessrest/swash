@@ -32,6 +32,8 @@ func cmdGraph(args []string) {
 		cmdGraphLoad(args[1:])
 	case "status":
 		cmdGraphStatus()
+	case "restart":
+		cmdGraphRestart()
 	case "install":
 		cmdGraphInstall()
 	case "uninstall":
@@ -248,6 +250,36 @@ func cmdGraphStatus() {
 	fmt.Printf("graph service: running\n")
 	fmt.Printf("socket: %s\n", cfg.SocketPath)
 	fmt.Printf("quads: %d\n", stats.Quads)
+}
+
+// cmdGraphRestart restarts the graph service to reload data from the journal.
+func cmdGraphRestart() {
+	ctx := context.Background()
+	cfg := graph.DefaultConfig()
+
+	// Try systemd restart first
+	sd, err := systemdproc.ConnectUserSystemd(ctx)
+	if err == nil {
+		defer sd.Close()
+
+		// Stop the service (socket stays active)
+		_ = sd.StopUnit(ctx, systemdproc.UnitName("swash-graph.service"))
+		fmt.Println("stopped swash-graph.service")
+
+		// Trigger restart by hitting the socket
+		client := graph.NewClient(cfg.SocketPath)
+		if err := client.Health(ctx); err != nil {
+			fatal("failed to restart: %v", err)
+		}
+
+		stats, _ := client.Stats(ctx)
+		fmt.Printf("restarted, loaded %d quads\n", stats.Quads)
+		return
+	}
+
+	// Non-systemd: just report that we can't restart
+	fmt.Println("restart requires systemd socket activation")
+	fmt.Println("stop the service manually and reconnect to restart")
 }
 
 // cmdGraphInstall installs the graph service as a socket-activated systemd user service.
