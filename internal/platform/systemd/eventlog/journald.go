@@ -55,9 +55,58 @@ func (jl *journaldEventLog) Close() error {
 	return jl.j.Close()
 }
 
-// Write sends a structured entry to the journal.
+// Write sends a structured entry to the journal and waits until it's readable.
+// This ensures that subsequent reads will see the entry.
 func (jl *journaldEventLog) Write(message string, fields map[string]string) error {
-	return journal.Send(message, journal.PriInfo, fields)
+	// Generate a unique nonce to identify this specific write
+	nonce := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+	fieldsWithNonce := make(map[string]string, len(fields)+1)
+	for k, v := range fields {
+		fieldsWithNonce[k] = v
+	}
+	fieldsWithNonce["SWASH_WRITE_NONCE"] = nonce
+
+	if err := journal.Send(message, journal.PriInfo, fieldsWithNonce); err != nil {
+		return err
+	}
+
+	// Wait until we can read back an entry with our nonce
+	return jl.waitForNonce(nonce)
+}
+
+// waitForNonce polls the journal until an entry with the given nonce is visible.
+func (jl *journaldEventLog) waitForNonce(nonce string) error {
+	deadline := time.Now().Add(5 * time.Second)
+
+	for time.Now().Before(deadline) {
+		// We need a fresh journal reader to see new entries
+		var reader *sdjournal.Journal
+		var err error
+		if JournalDir != "" {
+			reader, err = sdjournal.NewJournalFromDir(JournalDir)
+		} else {
+			reader, err = sdjournal.NewJournal()
+		}
+		if err != nil {
+			return fmt.Errorf("opening journal for sync: %w", err)
+		}
+
+		// Look for our nonce
+		reader.FlushMatches()
+		reader.AddMatch("SWASH_WRITE_NONCE=" + nonce)
+		reader.SeekTail()
+
+		n, err := reader.Previous()
+		reader.Close()
+
+		if err == nil && n > 0 {
+			return nil // Found it
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	return fmt.Errorf("timeout waiting for journal entry to be readable")
 }
 
 // Poll reads entries matching filters since cursor.
