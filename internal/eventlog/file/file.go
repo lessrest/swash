@@ -3,6 +3,7 @@ package file
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -88,7 +89,8 @@ func CreateOrOpen(path string) (eventlog.EventLog, error) {
 	w, err := journalfile.Create(path, machineID, bootID)
 	if err != nil {
 		// If file exists, open for appending
-		if os.IsExist(err) {
+		// Use errors.Is to check through wrapped errors
+		if errors.Is(err, os.ErrExist) {
 			w, err = journalfile.OpenAppend(path)
 			if err != nil {
 				return nil, fmt.Errorf("opening existing journal: %w", err)
