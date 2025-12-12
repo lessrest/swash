@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/godbus/dbus/v5"
 	"github.com/mbrock/swash/internal/session"
 )
 
@@ -90,31 +91,32 @@ func Open(ctx context.Context, cfg Config) (Backend, error) {
 }
 
 // DetectKind returns the appropriate backend based on environment.
-// Returns systemd if D-Bus session bus is available, otherwise posix.
+// Returns systemd if the systemd user service is available on D-Bus, otherwise posix.
 func DetectKind() Kind {
-	if hasDBusSessionBus() {
+	if hasSystemdUserService() {
 		return KindSystemd
 	}
 	return KindPosix
 }
 
-// hasDBusSessionBus checks if a D-Bus session bus is available.
-// It checks DBUS_SESSION_BUS_ADDRESS first, then looks for the standard
-// socket at /run/user/<uid>/bus (common on systemd systems even when
-// the environment variable isn't set).
-func hasDBusSessionBus() bool {
-	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") != "" {
-		return true
+// hasSystemdUserService checks if systemd user session is available.
+// It connects to the D-Bus session bus and checks if org.freedesktop.systemd1
+// is registered. This correctly handles non-systemd Linux systems that still
+// have D-Bus (e.g., systems using other init systems with a D-Bus daemon).
+func hasSystemdUserService() bool {
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return false
 	}
+	defer conn.Close()
 
-	// Check for standard systemd user bus socket
-	uid := os.Getuid()
-	socketPath := fmt.Sprintf("/run/user/%d/bus", uid)
-	if _, err := os.Stat(socketPath); err == nil {
-		return true
-	}
+	// Check if systemd is available by calling GetNameOwner
+	var owner string
+	err = conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus").
+		Call("org.freedesktop.DBus.GetNameOwner", 0, "org.freedesktop.systemd1").
+		Store(&owner)
 
-	return false
+	return err == nil && owner != ""
 }
 
 // Default constructs the backend selected by environment variable SWASH_BACKEND,

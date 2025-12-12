@@ -40,7 +40,7 @@ The `Backend` interface abstracts over two complete implementations:
 
 Both backends support all features (TTY mode, contexts, follow, etc.). The posix backend writes native systemd journal format files (via `pkg/journalfile`) that `journalctl --file=...` can read.
 
-Backend selection: `SWASH_BACKEND` env var, or auto-detect (checks `DBUS_SESSION_BUS_ADDRESS` and `/run/user/<uid>/bus`).
+Backend selection: `SWASH_BACKEND` env var, or auto-detect (probes D-Bus for `org.freedesktop.systemd1`).
 
 ### Key Internal Packages
 
