@@ -24,23 +24,23 @@ Two backends are available:
 ```mermaid
 flowchart TD
     CLI[swash CLI]
+    SYSTEMD[systemd --user]
+    JOURNAL[(systemd journal)]
 
-    CLI -->|D-Bus| SYSTEMD[systemd user]
-    CLI -->|D-Bus| HOST
+    CLI -->|"D-Bus: StartTransientUnit"| SYSTEMD
+    CLI -->|"D-Bus: SendInput, Kill"| HOST
 
-    subgraph HOST[swash-host-ABC123.service]
-        HOSTINNER[Host / TTYHost<br/>SendInput, Kill, Gist]
+    subgraph SLICE[swash.slice]
+        subgraph SESSION[swash-ABC123.slice]
+            HOST[swash-host-ABC123.service]
+            TASK[swash-task-ABC123.service]
+        end
     end
 
-    SYSTEMD -->|StartTransient| HOST
-    HOST -->|StartTransient| TASK
-
-    subgraph SLICE[swash-ABC123.slice]
-        TASK[swash-task-ABC123.service<br/>the actual command]
-    end
-
-    HOST -->|Write| JOURNAL[(systemd journal<br/>SWASH_SESSION=ABC123)]
+    SYSTEMD --> HOST
+    HOST -->|spawns| TASK
     TASK -.->|stdout/stderr| HOST
+    HOST -->|"SWASH_SESSION=ABC123"| JOURNAL
 ```
 
 When you run `swash run echo hello`, the CLI asks systemd to start a transient
@@ -61,7 +61,7 @@ The posix backend uses the same host process architecture but replaces
 systemd-specific components:
 
 - **Control**: Unix domain socket instead of D-Bus
-- **Output**: Per-session journal files in native systemd format (readable by `journalctl --file=...`)
+- **Output**: Single shared journal file via `swash minijournald` daemon (native systemd format, readable by `journalctl --file=...`)
 - **Process management**: Direct fork/exec with POSIX signals instead of transient units
 
 To use the posix backend explicitly: `SWASH_BACKEND=posix swash run ...`
@@ -210,11 +210,13 @@ The vterm package (`pkg/vterm`) provides Go bindings to libvterm. It tracks
 screen state, handles scrollback callbacks, and can render the screen back to
 ANSI escape sequences for the `swash screen` command.
 
-For testing without a real systemd, `cmd/mini-systemd` implements enough of the
+For testing without a real systemd, `swash minisystemd` implements enough of the
 systemd D-Bus interface to run sessions. It also implements the native journal
 socket protocol, using `pkg/journalfile` to write actual journal files that
-journalctl can read. This lets the integration tests run in isolation without
-root privileges.
+journalctl can read. Similarly, `swash minijournald` provides a minimal journald
+daemon for the posix backend. These are built into the main swash binary as
+subcommands, so no separate binaries are needed. This lets the integration tests
+run in isolation without root privileges.
 
 ## Building
 
@@ -253,11 +255,12 @@ The `SWASH_SESSION` field identifies the session. `SWASH_EVENT` marks lifecycle
 events (`started`, `exited`, `screen`). Regular output lines include `FD` (1 for
 stdout, 2 for stderr) and `MESSAGE` (the actual text).
 
-With the posix backend, output goes to `~/.local/state/swash/sessions/<ID>/events.journal`.
-These are native systemd journal files - you can query them directly with journalctl:
+With the posix backend, output goes to a single shared journal file at
+`~/.local/state/swash/swash.journal`. This is a native systemd journal file -
+you can query it directly with journalctl:
 
 ```bash
-journalctl --file=~/.local/state/swash/sessions/ABC123/events.journal
+journalctl --file=~/.local/state/swash/swash.journal SWASH_SESSION=ABC123
 ```
 
 Use `swash poll` and `swash follow` to query output regardless of backend.
