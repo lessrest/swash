@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -249,6 +251,53 @@ func TestHost_SendInput_NoProcess(t *testing.T) {
 	_, err := host.SendInput("hello")
 	if err == nil {
 		t.Error("expected error when sending input with no process")
+	}
+}
+
+func countOpenFDs(t *testing.T) int {
+	t.Helper()
+
+	// This test helper relies on procfs.
+	if runtime.GOOS != "linux" {
+		t.Skip("fd counting via /proc is linux-only")
+	}
+
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Skipf("unable to read /proc/self/fd: %v", err)
+	}
+	return len(ents)
+}
+
+func TestHost_StartTaskProcess_NoFDLeakOnStartError(t *testing.T) {
+	systemd, journal := processfake.NewTestFakes()
+
+	// Don't register the command; FakeSystemd will fail StartTransient with "executable not found".
+	host := NewHost(HostConfig{
+		SessionID: "TEST01",
+		Command:   []string{"missing-cmd"},
+		Protocol:  protocol.ProtocolShell,
+		Processes: systemd,
+		Events:    journal,
+	})
+
+	// Run once and then use that as baseline. This avoids false positives if the
+	// runtime opens any one-time fds during the first call.
+	_, err := host.startTaskProcess()
+	if err == nil {
+		t.Fatalf("expected startTaskProcess to fail, got nil error")
+	}
+
+	after1 := countOpenFDs(t)
+
+	_, err = host.startTaskProcess()
+	if err == nil {
+		t.Fatalf("expected startTaskProcess to fail, got nil error (second call)")
+	}
+
+	after2 := countOpenFDs(t)
+	if after2 != after1 {
+		t.Fatalf("fd leak on Start() error: after1=%d after2=%d", after1, after2)
 	}
 }
 

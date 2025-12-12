@@ -208,6 +208,15 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		return nil, fmt.Errorf("creating stderr pipe: %w", err)
 	}
 
+	closeAllPipes := func() {
+		_ = stdinRead.Close()
+		_ = stdinWrite.Close()
+		_ = stdoutRead.Close()
+		_ = stdoutWrite.Close()
+		_ = stderrRead.Close()
+		_ = stderrWrite.Close()
+	}
+
 	// Build environment (excluding underscore-prefixed vars)
 	env := make(map[string]string)
 	for _, e := range os.Environ() {
@@ -229,6 +238,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 	// Get self executable for ExecStopPost
 	selfExe, err := os.Executable()
 	if err != nil {
+		closeAllPipes()
 		return nil, fmt.Errorf("getting executable path: %w", err)
 	}
 
@@ -255,6 +265,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 	}
 
 	if err := srv.processes.Start(ctx, spec); err != nil {
+		closeAllPipes()
 		return nil, err
 	}
 
