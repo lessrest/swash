@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -153,8 +154,9 @@ func (e *testEnv) setupMiniSystemd() error {
 	}
 	e.miniSystemdBin = miniSystemdBin
 
-	// Start dbus-daemon
+	// Start dbus-daemon in its own process group so we can kill all children
 	e.dbusCmd = exec.Command("dbus-daemon", "--session", "--nofork", "--address=unix:path="+e.busSocket)
+	e.dbusCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := e.dbusCmd.Start(); err != nil {
 		return fmt.Errorf("starting dbus-daemon: %w", err)
 	}
@@ -167,11 +169,12 @@ func (e *testEnv) setupMiniSystemd() error {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Start mini-systemd with D-Bus address in env
+	// Start mini-systemd in its own process group so we can kill all children
 	e.miniSystemdCmd = exec.Command(miniSystemdBin, "--journal-dir="+e.journalDir, "--journal-socket="+e.journalSocket)
 	e.miniSystemdCmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS=unix:path="+e.busSocket)
 	e.miniSystemdCmd.Stdout = os.Stdout
 	e.miniSystemdCmd.Stderr = os.Stderr
+	e.miniSystemdCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := e.miniSystemdCmd.Start(); err != nil {
 		return fmt.Errorf("starting mini-systemd: %w", err)
 	}
@@ -199,12 +202,13 @@ func (e *testEnv) cleanup() {
 			runCmd(3*time.Second, "systemctl", "--user", "reset-failed")
 		}
 
+		// Kill process groups (negative PID) to ensure all children are terminated
 		if e.miniSystemdCmd != nil && e.miniSystemdCmd.Process != nil {
-			e.miniSystemdCmd.Process.Kill()
+			syscall.Kill(-e.miniSystemdCmd.Process.Pid, syscall.SIGKILL)
 			e.miniSystemdCmd.Wait()
 		}
 		if e.dbusCmd != nil && e.dbusCmd.Process != nil {
-			e.dbusCmd.Process.Kill()
+			syscall.Kill(-e.dbusCmd.Process.Pid, syscall.SIGKILL)
 			e.dbusCmd.Wait()
 		}
 		if e.tmpDir != "" {
