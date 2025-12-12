@@ -93,16 +93,13 @@ func cmdContextShell(contextID string) {
 		fatal("%v", err)
 	}
 
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/sh"
+	rcFile, err := createBashRcFile(contextID)
+	if err != nil {
+		fatal("creating rcfile: %v", err)
 	}
+	defer os.Remove(rcFile)
 
-	fmt.Fprintf(os.Stderr, "Entering context %s\n", contextID)
-	fmt.Fprintf(os.Stderr, "Working directory: %s\n", dir)
-	fmt.Fprintf(os.Stderr, "Exit shell to leave context\n")
-
-	cmd := exec.Command(shell)
+	cmd := exec.Command("bash", "--rcfile", rcFile)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "SWASH_CONTEXT="+contextID)
 	cmd.Stdin = os.Stdin
@@ -117,4 +114,49 @@ func cmdContextShell(contextID string) {
 		}
 		fatal("running shell: %v", err)
 	}
+}
+
+func cmdPrompt() {
+	contextID := os.Getenv("SWASH_CONTEXT")
+	if contextID == "" {
+		return
+	}
+
+	initBackend()
+	defer bk.Close()
+
+	runningCount := countRunningInContext(contextID)
+
+	// \001 and \002 are bash's \[ and \] for non-printing chars
+	dim := "\001\033[2m\002"
+	boldDim := "\001\033[1;2m\002"
+	reset := "\001\033[0m\002"
+
+	if runningCount == 0 {
+		fmt.Printf("\n%s[swash context %s%s%s]%s", dim, boldDim, contextID, reset+dim, reset)
+	} else {
+		fmt.Printf("\n%s[swash context %s%s%s; %d running]%s", dim, boldDim, contextID, reset+dim, runningCount, reset)
+	}
+}
+
+func createBashRcFile(contextID string) (string, error) {
+	_ = contextID // context is read from env by swash prompt
+	content := `# Swash context shell rcfile
+[[ -f ~/.bashrc ]] && source ~/.bashrc
+
+PROMPT_COMMAND=$'PS1="$(swash prompt)\n\\w\\$ "'
+`
+
+	f, err := os.CreateTemp("", "swash-rc-*.sh")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(content); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+
+	return f.Name(), nil
 }
