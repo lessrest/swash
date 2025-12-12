@@ -179,7 +179,7 @@ func initBackend() {
 	var err error
 	kind := backend.Kind(backendFlag)
 	if kind == "" {
-		kind = backend.KindSystemd
+		kind = backend.DetectKind()
 	}
 	bk, err = backend.Open(context.Background(), backend.Config{
 		Kind:        kind,

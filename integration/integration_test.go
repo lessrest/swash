@@ -88,8 +88,8 @@ func setupEnv() (*testEnv, error) {
 	if mode == "" {
 		mode = "mini" // default to mini-systemd (isolated, no side effects)
 	}
-	if mode != "mini" && mode != "real" {
-		return nil, fmt.Errorf("unknown SWASH_TEST_MODE: %s (use 'mini' or 'real')", mode)
+	if mode != "mini" && mode != "real" && mode != "posix" {
+		return nil, fmt.Errorf("unknown SWASH_TEST_MODE: %s (use 'mini', 'real', or 'posix')", mode)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "swash-integration-*")
@@ -116,15 +116,23 @@ func setupEnv() (*testEnv, error) {
 	}
 	env.swashBin = swashBin
 
-	if mode == "mini" {
+	switch mode {
+	case "mini":
 		if err := env.setupMiniSystemd(); err != nil {
 			return nil, err
 		}
-	} else {
+	case "real":
 		env.journalCmd = "journalctl --user"
+	case "posix":
+		env.setupPosix()
 	}
 
 	return env, nil
+}
+
+func (e *testEnv) setupPosix() {
+	// Posix backend uses file-based event logging stored in SWASH_STATE_DIR.
+	// No additional setup needed - env vars are set in getEnvVars().
 }
 
 func (e *testEnv) setupMiniSystemd() error {
@@ -271,26 +279,46 @@ func (e *testEnv) getEnvVars() []string {
 	env := os.Environ()
 	// Always set root slice for test isolation
 	env = append(env, "SWASH_ROOT_SLICE="+e.rootSlice)
-	if e.mode == "mini" {
+	switch e.mode {
+	case "mini":
 		env = append(env,
 			"DBUS_SESSION_BUS_ADDRESS=unix:path="+e.busSocket,
 			"SWASH_JOURNAL_SOCKET="+e.journalSocket,
 			"SWASH_JOURNAL_DIR="+e.journalDir,
 		)
+	case "posix":
+		env = append(env,
+			"SWASH_BACKEND=posix",
+			"SWASH_STATE_DIR="+filepath.Join(e.tmpDir, "state"),
+			"SWASH_RUNTIME_DIR="+filepath.Join(e.tmpDir, "runtime"),
+			// Clear DBUS_SESSION_BUS_ADDRESS to ensure posix backend is auto-detected
+			"DBUS_SESSION_BUS_ADDRESS=",
+		)
 	}
 	return env
 }
 
-// runJournalctl runs journalctl with the appropriate arguments for the mode
+// runJournalctl runs journalctl with the appropriate arguments for the mode.
 func (e *testEnv) runJournalctl(args ...string) (string, error) {
 	var baseArgs []string
-	if e.mode == "mini" {
+	switch e.mode {
+	case "mini":
 		files, _ := filepath.Glob(filepath.Join(e.journalDir, "*.journal"))
 		if len(files) == 0 {
 			return "", fmt.Errorf("no journal files found in %s", e.journalDir)
 		}
 		baseArgs = []string{"--file=" + files[0]}
-	} else {
+	case "posix":
+		// Posix backend stores per-session journal files in state/sessions/*/events.journal
+		files, _ := filepath.Glob(filepath.Join(e.tmpDir, "state", "sessions", "*", "events.journal"))
+		if len(files) == 0 {
+			return "", fmt.Errorf("no journal files found in %s", filepath.Join(e.tmpDir, "state", "sessions"))
+		}
+		// Pass all journal files to journalctl
+		for _, f := range files {
+			baseArgs = append(baseArgs, "--file="+f)
+		}
+	default:
 		baseArgs = []string{"--user"}
 	}
 	out, err := runCmd(5*time.Second, "journalctl", append(baseArgs, args...)...)
@@ -307,12 +335,17 @@ func TestMain(m *testing.M) {
 	switch mode {
 	case "mini":
 		fmt.Println("=== Running with mini-systemd (isolated) ===")
-		fmt.Println("    To test with real systemd: SWASH_TEST_MODE=real go test ./test/")
+		fmt.Println("    To test with real systemd: SWASH_TEST_MODE=real go test ./integration/")
+		fmt.Println("    To test with posix backend: SWASH_TEST_MODE=posix go test ./integration/")
 		fmt.Println()
 	case "real":
 		fmt.Println("=== Running with real systemd ===")
 		fmt.Println("    This will create transient units in your user systemd.")
-		fmt.Println("    To test with isolated mini-systemd: SWASH_TEST_MODE=mini go test ./test/")
+		fmt.Println("    To test with isolated mini-systemd: SWASH_TEST_MODE=mini go test ./integration/")
+		fmt.Println()
+	case "posix":
+		fmt.Println("=== Running with posix backend (no systemd) ===")
+		fmt.Println("    To test with mini-systemd: SWASH_TEST_MODE=mini go test ./integration/")
 		fmt.Println()
 	}
 

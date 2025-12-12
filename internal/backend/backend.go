@@ -83,19 +83,30 @@ func Open(ctx context.Context, cfg Config) (Backend, error) {
 	return o(ctx, cfg)
 }
 
+// DetectKind returns the appropriate backend based on environment.
+// If DBUS_SESSION_BUS_ADDRESS is set, returns systemd (assumes systemd user session).
+// Otherwise, returns posix.
+func DetectKind() Kind {
+	// Check for D-Bus session bus (indicates systemd user session is available)
+	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") != "" {
+		return KindSystemd
+	}
+	return KindPosix
+}
+
 // Default constructs the backend selected by environment variable SWASH_BACKEND,
-// defaulting to systemd.
+// or auto-detects based on environment if not set.
 func Default(ctx context.Context) (Backend, error) {
 	kind := Kind(os.Getenv("SWASH_BACKEND"))
 	if kind == "" {
-		kind = KindSystemd
+		kind = DetectKind()
 	}
 	return Open(ctx, Config{Kind: kind})
 }
 
 func withDefaults(cfg Config) Config {
 	if cfg.Kind == "" {
-		cfg.Kind = KindSystemd
+		cfg.Kind = DetectKind()
 	}
 	if cfg.StateDir == "" {
 		cfg.StateDir = defaultStateDir()

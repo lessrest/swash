@@ -89,6 +89,29 @@ jobs:
       - name: Run integration tests (real systemd)
         run: SWASH_TEST_MODE=real make test-integration
 
+  test-integration-posix:
+    runs-on: ubuntu-x64-1
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: bin/
+
+      - name: Make binaries executable
+        run: chmod +x bin/*
+
+      - name: Run integration tests (posix backend)
+        run: SWASH_TEST_MODE=posix make test-integration
+
   lint:
     runs-on: ubuntu-x64-1
     steps:
