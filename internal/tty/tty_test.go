@@ -597,8 +597,7 @@ func TestTTYHost_RunTask_SendInput(t *testing.T) {
 	})
 	defer host.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Run in goroutine
 	errChan := make(chan error, 1)
@@ -774,8 +773,7 @@ func TestTTYHost_Attach_StreamOutput(t *testing.T) {
 	})
 	defer host.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Start the task
 	errChan := make(chan error, 1)
@@ -892,8 +890,7 @@ func TestTTYHost_Attach_SendInput(t *testing.T) {
 	})
 	defer host.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Start the task
 	errChan := make(chan error, 1)

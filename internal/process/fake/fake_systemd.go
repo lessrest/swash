@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -458,12 +459,7 @@ func matchesStates(state UnitState, states []UnitState) bool {
 	if len(states) == 0 {
 		return true
 	}
-	for _, s := range states {
-		if state == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(states, state)
 }
 
 // SubscribeUnitExit returns a channel that receives when the specified unit exits.

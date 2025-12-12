@@ -40,7 +40,7 @@ func TestReadWhileWritingIsStable(t *testing.T) {
 	const writes = 200
 	maxSeen := 0
 
-	for i := 0; i < writes; i++ {
+	for i := range writes {
 		fields := map[string]string{
 			"MESSAGE":     fmt.Sprintf("entry-%d", i),
 			"_BOOT_ID":    fmt.Sprintf("%x", bootID),
@@ -89,7 +89,7 @@ func TestConcurrentOpenWhileWriting(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < writes; i++ {
+		for i := range writes {
 			fields := map[string]string{
 				"MESSAGE":     fmt.Sprintf("entry-%d", i),
 				"_BOOT_ID":    fmt.Sprintf("%x", bootID),

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -148,9 +149,7 @@ func (l *FileEventLog) Write(message string, fields map[string]string) error {
 
 	// Copy fields and always include MESSAGE like journald does.
 	entry := make(map[string]string, len(fields)+1)
-	for k, v := range fields {
-		entry[k] = v
-	}
+	maps.Copy(entry, fields)
 	entry["MESSAGE"] = message
 
 	if err := l.writer.AppendEntry(entry); err != nil {

@@ -123,9 +123,9 @@ func (p *ProtocolReader) emitSSEEvents() {
 func (p *ProtocolReader) parseSSEEvent(event string) {
 	var dataLines []string
 
-	for _, line := range strings.Split(event, "\n") {
-		if strings.HasPrefix(line, "data:") {
-			data := strings.TrimPrefix(line, "data:")
+	for line := range strings.SplitSeq(event, "\n") {
+		if after, ok := strings.CutPrefix(line, "data:"); ok {
+			data := after
 			data = strings.TrimPrefix(data, " ") // Optional space after colon
 			dataLines = append(dataLines, data)
 		}

@@ -37,7 +37,7 @@ func TestCreateJournalFile(t *testing.T) {
 	}
 
 	// Append some entries
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		err = jf.AppendEntry(map[string]string{
 			"MESSAGE":  "hello world",
 			"PRIORITY": "6",
@@ -432,7 +432,7 @@ func TestReaderCursor(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		jf.AppendEntry(map[string]string{"MESSAGE": string(rune('A' + i))})
 	}
 

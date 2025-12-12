@@ -10,6 +10,13 @@ pre-commit:
       run: go vet ./...
     staticcheck:
       run: staticcheck ./...
+    modernize:
+      run: |
+        go run golang.org/x/tools/gopls/internal/analysis/modernize/cmd/modernize@latest -fix -test ./...
+        if ! git diff --quiet; then
+          echo "modernize made changes - review and re-commit"
+          exit 1
+        fi
     test-unit:
       run: go test ./pkg/... ./internal/...
     test-integration:

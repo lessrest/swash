@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"maps"
 	"strconv"
 	"strings"
 	"time"
@@ -96,9 +97,7 @@ func WriteOutput(log EventLog, fd int, text string, extraFields map[string]strin
 	fields := map[string]string{
 		"FD": fmt.Sprintf("%d", fd),
 	}
-	for k, v := range extraFields {
-		fields[k] = v
-	}
+	maps.Copy(fields, extraFields)
 	return log.Write(text, fields)
 }
 

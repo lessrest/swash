@@ -104,7 +104,7 @@ func TestOnPushLine(t *testing.T) {
 	})
 
 	// Write enough lines to cause scrollback
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		vt.Write([]byte("Line\n"))
 	}
 

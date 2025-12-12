@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"strings"
@@ -209,9 +210,7 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 
 	// Merge session ID into tags so output lines can be filtered
 	tags := make(map[string]string)
-	for k, v := range cfg.Tags {
-		tags[k] = v
-	}
+	maps.Copy(tags, cfg.Tags)
 	tags[eventlog.FieldSession] = cfg.SessionID
 
 	h := &TTYHost{
@@ -350,10 +349,7 @@ func (h *TTYHost) GetScrollback(n int32) ([]string, error) {
 		return []string{}, nil
 	}
 
-	count := int(n)
-	if count > len(h.scrollback) {
-		count = len(h.scrollback)
-	}
+	count := min(int(n), len(h.scrollback))
 
 	return h.scrollback[len(h.scrollback)-count:], nil
 }

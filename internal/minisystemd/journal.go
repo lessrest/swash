@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -97,10 +98,10 @@ func makeCursor(machineID, bootID journalfile.ID128, seq int64, tsUsec int64) st
 }
 
 func parseCursor(cursor string) (int, error) {
-	parts := strings.Split(cursor, ";")
-	for _, p := range parts {
-		if strings.HasPrefix(p, "i=") {
-			v, err := strconv.ParseInt(strings.TrimPrefix(p, "i="), 10, 64)
+	parts := strings.SplitSeq(cursor, ";")
+	for p := range parts {
+		if after, ok := strings.CutPrefix(p, "i="); ok {
+			v, err := strconv.ParseInt(after, 10, 64)
 			if err != nil {
 				return 0, err
 			}
@@ -193,9 +194,7 @@ func (j *JournalService) Send(message string, fields map[string]string) *dbus.Er
 
 	// Copy fields and add MESSAGE
 	allFields := make(map[string]string)
-	for k, v := range fields {
-		allFields[k] = v
-	}
+	maps.Copy(allFields, fields)
 	allFields["MESSAGE"] = message
 	j.addIDs(allFields)
 
@@ -231,17 +230,17 @@ func (j *JournalService) Send(message string, fields map[string]string) *dbus.Er
 
 // Poll reads entries matching filters since cursor (D-Bus method)
 // Returns: entries (array of (timestamp, message, fields)), new cursor
-func (j *JournalService) Poll(matches map[string]string, cursor string) ([][]interface{}, string, *dbus.Error) {
+func (j *JournalService) Poll(matches map[string]string, cursor string) ([][]any, string, *dbus.Error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
-	var result [][]interface{}
+	var result [][]any
 
 	start := 0
 	if cursor != "" {
 		seq, err := parseCursor(cursor)
 		if err != nil {
-			return nil, "", dbus.NewError("sh.swa.MiniSystemd.Journal.InvalidCursor", []interface{}{err.Error()})
+			return nil, "", dbus.NewError("sh.swa.MiniSystemd.Journal.InvalidCursor", []any{err.Error()})
 		}
 		start = seq + 1 // next entry after the provided cursor
 	}
@@ -257,11 +256,9 @@ func (j *JournalService) Poll(matches map[string]string, cursor string) ([][]int
 
 		// Convert fields to D-Bus compatible format
 		fieldsMap := make(map[string]string)
-		for k, v := range entry.Fields {
-			fieldsMap[k] = v
-		}
+		maps.Copy(fieldsMap, entry.Fields)
 
-		result = append(result, []interface{}{
+		result = append(result, []any{
 			entry.Timestamp,
 			entry.Message,
 			fieldsMap,
@@ -278,17 +275,15 @@ func (j *JournalService) Poll(matches map[string]string, cursor string) ([][]int
 }
 
 // GetEntries returns all entries (for debugging)
-func (j *JournalService) GetEntries() ([][]interface{}, *dbus.Error) {
+func (j *JournalService) GetEntries() ([][]any, *dbus.Error) {
 	j.mu.RLock()
 	defer j.mu.RUnlock()
 
-	var result [][]interface{}
+	var result [][]any
 	for _, entry := range j.entries {
 		fieldsMap := make(map[string]string)
-		for k, v := range entry.Fields {
-			fieldsMap[k] = v
-		}
-		result = append(result, []interface{}{
+		maps.Copy(fieldsMap, entry.Fields)
+		result = append(result, []any{
 			entry.Timestamp,
 			entry.Message,
 			fieldsMap,
@@ -360,10 +355,7 @@ func (j *JournalService) SearchBySlice(sliceName string, cursor int64) ([]Journa
 
 	var result []JournalEntry
 
-	start := int(cursor)
-	if start < 0 {
-		start = 0
-	}
+	start := max(int(cursor), 0)
 
 	for i := start; i < len(j.entries); i++ {
 		entry := j.entries[i]

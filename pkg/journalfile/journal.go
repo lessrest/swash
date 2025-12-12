@@ -607,7 +607,7 @@ func (jf *File) appendToEntryArray(arrayOffset, entryOffset uint64) error {
 			return err
 		}
 
-		for i := uint64(0); i < itemCount; i++ {
+		for i := range itemCount {
 			if items[i] == 0 {
 				// Found free slot, write entry offset
 				slotOffset := itemsOffset + int64(i*8)

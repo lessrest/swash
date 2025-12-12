@@ -16,7 +16,7 @@ func main() {
 		panic(err)
 	}
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		err = jf.AppendEntry(map[string]string{
 			"MESSAGE":           fmt.Sprintf("Hello from Go journal writer #%d", i),
 			"PRIORITY":          "6",

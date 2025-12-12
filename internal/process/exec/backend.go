@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	osexec "os/exec"
+	"slices"
 	"sort"
 	"sync"
 	"syscall"
@@ -72,25 +73,13 @@ func (b *Backend) List(ctx context.Context, filter process.ProcessFilter) ([]pro
 	for ref, p := range b.procs {
 		// Filter by role/state if requested
 		if len(filter.Roles) > 0 {
-			ok := false
-			for _, r := range filter.Roles {
-				if ref.Role == r {
-					ok = true
-					break
-				}
-			}
+			ok := slices.Contains(filter.Roles, ref.Role)
 			if !ok {
 				continue
 			}
 		}
 		if len(filter.States) > 0 {
-			ok := false
-			for _, st := range filter.States {
-				if p.exitState == st {
-					ok = true
-					break
-				}
-			}
+			ok := slices.Contains(filter.States, p.exitState)
 			if !ok {
 				continue
 			}

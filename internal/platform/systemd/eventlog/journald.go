@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"maps"
 	"os"
 	"time"
 
@@ -61,9 +62,7 @@ func (jl *journaldEventLog) Write(message string, fields map[string]string) erro
 	// Generate a unique nonce to identify this specific write
 	nonce := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
 	fieldsWithNonce := make(map[string]string, len(fields)+1)
-	for k, v := range fields {
-		fieldsWithNonce[k] = v
-	}
+	maps.Copy(fieldsWithNonce, fields)
 	fieldsWithNonce["SWASH_WRITE_NONCE"] = nonce
 
 	if err := journal.Send(message, journal.PriInfo, fieldsWithNonce); err != nil {

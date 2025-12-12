@@ -105,7 +105,7 @@ func (r *terminalRenderer) render(vt *vterm.VTerm, clear bool, cursorVisible boo
 	contentTop := r.borderTop + 1
 	contentLeft := r.borderLeft + 1
 
-	for row := 0; row < rows; row++ {
+	for row := range rows {
 		fmt.Printf("\x1b[%d;%dH", contentTop+row+1, contentLeft+1)
 		fmt.Print(vt.RenderRowANSI(row))
 	}
@@ -127,10 +127,7 @@ func (r *terminalRenderer) drawBorder() {
 	// Top border with session info
 	info := fmt.Sprintf(" %s [%dx%d] ", r.sessionID, r.remoteCols, r.remoteRows)
 	topBorder := "┌"
-	infoStart := (r.remoteCols - len(info)) / 2
-	if infoStart < 0 {
-		infoStart = 0
-	}
+	infoStart := max((r.remoteCols-len(info))/2, 0)
 	for i := 0; i < r.remoteCols; i++ {
 		if i == infoStart {
 			topBorder += info
@@ -151,10 +148,7 @@ func (r *terminalRenderer) drawBorder() {
 	// Bottom border with hint
 	hint := " Ctrl+\\ to detach "
 	bottomBorder := "└"
-	hintStart := (r.remoteCols - len(hint)) / 2
-	if hintStart < 0 {
-		hintStart = 0
-	}
+	hintStart := max((r.remoteCols-len(hint))/2, 0)
 	for i := 0; i < r.remoteCols; i++ {
 		if i == hintStart {
 			bottomBorder += hint

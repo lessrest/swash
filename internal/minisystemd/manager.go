@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -70,7 +71,7 @@ func (u *UnitObject) Get(iface, prop string) (dbus.Variant, *dbus.Error) {
 
 	unit, ok := u.manager.units[u.name]
 	if !ok {
-		return dbus.Variant{}, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
+		return dbus.Variant{}, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []any{"unit not found"})
 	}
 
 	switch iface {
@@ -102,7 +103,7 @@ func (u *UnitObject) Get(iface, prop string) (dbus.Variant, *dbus.Error) {
 		}
 	}
 
-	return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", []interface{}{prop})
+	return dbus.Variant{}, dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", []any{prop})
 }
 
 // GetAll implements org.freedesktop.DBus.Properties.GetAll
@@ -112,7 +113,7 @@ func (u *UnitObject) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error)
 
 	unit, ok := u.manager.units[u.name]
 	if !ok {
-		return nil, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
+		return nil, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []any{"unit not found"})
 	}
 
 	switch iface {
@@ -137,7 +138,7 @@ func (u *UnitObject) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error)
 		}, nil
 	}
 
-	return nil, dbus.NewError("org.freedesktop.DBus.Error.UnknownInterface", []interface{}{iface})
+	return nil, dbus.NewError("org.freedesktop.DBus.Error.UnknownInterface", []any{iface})
 }
 
 // Set implements org.freedesktop.DBus.Properties.Set (not supported)
@@ -246,7 +247,7 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 		case "ExecStart":
 			// ExecStart is a(sasb) - array of (path, argv, ignore-failure)
 			val := prop.Value.Value()
-			if execList, ok := val.([][]interface{}); ok && len(execList) > 0 {
+			if execList, ok := val.([][]any); ok && len(execList) > 0 {
 				exec0 := execList[0]
 				if len(exec0) >= 2 {
 					if argv, ok := exec0[1].([]string); ok {
@@ -281,7 +282,7 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 		case "ExecStopPost":
 			// ExecStopPost is a(sasb) - array of (path, argv, ignore-failure)
 			val := prop.Value.Value()
-			if execList, ok := val.([][]interface{}); ok {
+			if execList, ok := val.([][]any); ok {
 				for _, exec0 := range execList {
 					if len(exec0) >= 2 {
 						if argv, ok := exec0[1].([]string); ok {
@@ -294,7 +295,7 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 	}
 
 	if len(unit.Command) == 0 {
-		return "", dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []interface{}{"no ExecStart provided"})
+		return "", dbus.NewError("org.freedesktop.DBus.Error.InvalidArgs", []any{"no ExecStart provided"})
 	}
 
 	// Start the process
@@ -317,7 +318,7 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 	} else {
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
-			return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []interface{}{err.Error()})
+			return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []any{err.Error()})
 		}
 		stdoutPipe = stdout
 	}
@@ -328,13 +329,13 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 	} else {
 		stderr, err := cmd.StderrPipe()
 		if err != nil {
-			return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []interface{}{err.Error()})
+			return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []any{err.Error()})
 		}
 		stderrPipe = stderr
 	}
 
 	if err := cmd.Start(); err != nil {
-		return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []interface{}{err.Error()})
+		return "", dbus.NewError("org.freedesktop.DBus.Error.Failed", []any{err.Error()})
 	}
 
 	// Close our copies of passed FDs - child has inherited them.
@@ -395,7 +396,7 @@ func (m *Manager) StopUnit(name string, mode string) (dbus.ObjectPath, *dbus.Err
 	m.mu.Unlock()
 
 	if !ok {
-		return "", dbus.NewError("org.freedesktop.DBus.Error.UnknownObject", []interface{}{"unit not found"})
+		return "", dbus.NewError("org.freedesktop.DBus.Error.UnknownObject", []any{"unit not found"})
 	}
 
 	if unit.Cmd != nil && unit.Cmd.Process != nil {
@@ -413,7 +414,7 @@ func (m *Manager) KillUnit(name string, who string, signal int32) *dbus.Error {
 	m.mu.Unlock()
 
 	if !ok {
-		return dbus.NewError("org.freedesktop.DBus.Error.UnknownObject", []interface{}{"unit not found"})
+		return dbus.NewError("org.freedesktop.DBus.Error.UnknownObject", []any{"unit not found"})
 	}
 
 	if unit.Cmd != nil && unit.Cmd.Process != nil {
@@ -424,11 +425,11 @@ func (m *Manager) KillUnit(name string, who string, signal int32) *dbus.Error {
 }
 
 // ListUnitsByPatterns returns units matching patterns (D-Bus method)
-func (m *Manager) ListUnitsByPatterns(states []string, patterns []string) ([][]interface{}, *dbus.Error) {
+func (m *Manager) ListUnitsByPatterns(states []string, patterns []string) ([][]any, *dbus.Error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var result [][]interface{}
+	var result [][]any
 	for name, unit := range m.units {
 		// Check pattern match
 		matched := false
@@ -455,7 +456,7 @@ func (m *Manager) ListUnitsByPatterns(states []string, patterns []string) ([][]i
 		}
 
 		// Return in systemd's format: (ssssssouso)
-		result = append(result, []interface{}{
+		result = append(result, []any{
 			name,             // name
 			unit.Description, // description
 			"loaded",         // load state
@@ -479,7 +480,7 @@ func (m *Manager) GetUnit(name string) (dbus.ObjectPath, *dbus.Error) {
 	m.mu.RUnlock()
 
 	if !ok {
-		return "", dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
+		return "", dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []any{"unit not found"})
 	}
 
 	path := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/systemd1/unit/%s", strings.ReplaceAll(name, ".", "_")))
@@ -493,7 +494,7 @@ func (m *Manager) GetUnitProperties(name string) (map[string]dbus.Variant, *dbus
 
 	unit, ok := m.units[name]
 	if !ok {
-		return nil, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
+		return nil, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []any{"unit not found"})
 	}
 
 	activeState := "active"
@@ -516,7 +517,7 @@ func (m *Manager) GetServiceProperties(name string) (map[string]dbus.Variant, *d
 
 	unit, ok := m.units[name]
 	if !ok {
-		return nil, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []interface{}{"unit not found"})
+		return nil, dbus.NewError("org.freedesktop.systemd1.NoSuchUnit", []any{"unit not found"})
 	}
 
 	slog.Debug("GetServiceProperties", "unit", name, "state", unit.State, "exitStatus", unit.ExitStatus)
@@ -528,33 +529,30 @@ func (m *Manager) GetServiceProperties(name string) (map[string]dbus.Variant, *d
 }
 
 // ReadLogs returns logs for a unit (custom method on sh.swa.MiniSystemd.Logs)
-func (m *Manager) ReadLogs(unitName string, cursor int64) ([][]interface{}, int64, *dbus.Error) {
+func (m *Manager) ReadLogs(unitName string, cursor int64) ([][]any, int64, *dbus.Error) {
 	m.mu.RLock()
 	unit, ok := m.units[unitName]
 	m.mu.RUnlock()
 
 	if !ok {
-		return nil, 0, dbus.NewError("org.freedesktop.DBus.Error.UnknownObject", []interface{}{"unit not found"})
+		return nil, 0, dbus.NewError("org.freedesktop.DBus.Error.UnknownObject", []any{"unit not found"})
 	}
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var logs [][]interface{}
+	var logs [][]any
 	allLogs := append(unit.Stdout, unit.Stderr...)
 
 	// Sort by timestamp would be nice, but for simplicity just concat
-	start := int(cursor)
-	if start < 0 {
-		start = 0
-	}
+	start := max(int(cursor), 0)
 	if start >= len(allLogs) {
 		return logs, int64(len(allLogs)), nil
 	}
 
 	for i := start; i < len(allLogs); i++ {
 		entry := allLogs[i]
-		logs = append(logs, []interface{}{
+		logs = append(logs, []any{
 			entry.Timestamp.UnixMicro(),
 			entry.Stream,
 			entry.Data,
@@ -677,11 +675,8 @@ func (m *Manager) stopDependentUnits(stoppedUnit string) {
 	var dependents []string
 	for name, unit := range m.units {
 		if unit.State == "running" {
-			for _, dep := range unit.BindsTo {
-				if dep == stoppedUnit {
-					dependents = append(dependents, name)
-					break
-				}
+			if slices.Contains(unit.BindsTo, stoppedUnit) {
+				dependents = append(dependents, name)
 			}
 		}
 	}

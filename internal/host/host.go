@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
 	"strings"
@@ -54,9 +55,7 @@ type HostConfig struct {
 func NewHost(cfg HostConfig) *Host {
 	// Merge session ID into tags so output lines can be filtered
 	tags := make(map[string]string)
-	for k, v := range cfg.Tags {
-		tags[k] = v
-	}
+	maps.Copy(tags, cfg.Tags)
 	tags[eventlog.FieldSession] = cfg.SessionID
 
 	return &Host{

@@ -30,7 +30,7 @@ func GenSessionID() string {
 	rand.Read(b)
 
 	id := make([]byte, 6)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		id[i] = letters[int(b[i])%len(letters)]
 	}
 	for i := 3; i < 6; i++ {

@@ -165,7 +165,7 @@ func (e *testEnv) setupMiniSystemd() error {
 	}
 
 	// Wait for dbus socket
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		if _, err := os.Stat(e.busSocket); err == nil {
 			break
 		}
@@ -183,7 +183,7 @@ func (e *testEnv) setupMiniSystemd() error {
 	}
 
 	// Wait for journal socket
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		if _, err := os.Stat(e.journalSocket); err == nil {
 			break
 		}
@@ -618,7 +618,7 @@ func TestRunTimeoutDetach(t *testing.T) {
 		// Clean up any lingering session
 		if strings.Contains(combined, "session ID:") {
 			// Extract and kill
-			for _, line := range strings.Split(combined, "\n") {
+			for line := range strings.SplitSeq(combined, "\n") {
 				if strings.Contains(line, "session ID:") {
 					parts := strings.Fields(line)
 					if len(parts) >= 3 {

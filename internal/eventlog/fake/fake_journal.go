@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"maps"
 	"strconv"
 	"sync"
 	"time"
@@ -186,9 +187,7 @@ func copyFields(fields map[string]string) map[string]string {
 		return nil
 	}
 	result := make(map[string]string, len(fields))
-	for k, v := range fields {
-		result[k] = v
-	}
+	maps.Copy(result, fields)
 	return result
 }
 

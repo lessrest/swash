@@ -140,7 +140,7 @@ func decodeSolution(data []byte) (Solution, error) {
 	}
 
 	bindings := make(map[string]Term, numBindings)
-	for i := 0; i < numBindings; i++ {
+	for range numBindings {
 		varLen, err := d.readVarint()
 		if err != nil {
 			return Solution{}, err

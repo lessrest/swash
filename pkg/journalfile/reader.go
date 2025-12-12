@@ -103,9 +103,9 @@ func formatCursor(seqnum uint64, bootID ID128) string {
 
 func parseCursor(cursor string) (uint64, error) {
 	// Parse "s=<seqnum>" or "s=<seqnum>;..."
-	for _, part := range strings.Split(cursor, ";") {
-		if strings.HasPrefix(part, "s=") {
-			seqStr := strings.TrimPrefix(part, "s=")
+	for part := range strings.SplitSeq(cursor, ";") {
+		if after, ok := strings.CutPrefix(part, "s="); ok {
+			seqStr := after
 			seqnum, err := strconv.ParseUint(seqStr, 10, 64)
 			if err != nil {
 				return 0, fmt.Errorf("invalid cursor seqnum: %w", err)
