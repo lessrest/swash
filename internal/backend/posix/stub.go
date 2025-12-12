@@ -301,7 +301,8 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	if devNull != nil {
 		cmd.Stdin = devNull
 		cmd.Stdout = devNull
-		cmd.Stderr = devNull
+		// Keep stderr for debugging
+		cmd.Stderr = os.Stderr
 	}
 
 	if err := cmd.Start(); err != nil {
