@@ -286,6 +286,11 @@ func (e *testEnv) getEnvVars() []string {
 			"SWASH_JOURNAL_SOCKET="+e.journalSocket,
 			"SWASH_JOURNAL_DIR="+e.journalDir,
 		)
+	case "real":
+		// Explicitly request systemd backend in case DBUS_SESSION_BUS_ADDRESS
+		// isn't set in the CI environment (which would cause auto-detection
+		// to choose posix instead).
+		env = append(env, "SWASH_BACKEND=systemd")
 	case "posix":
 		env = append(env,
 			"SWASH_BACKEND=posix",
@@ -467,11 +472,15 @@ func TestTTYAttach(t *testing.T) {
 		exec.Command("tmux", "new-session", "-d", "-s", tmuxSession, "-x", "60", "-y", "15").Run()
 		defer exec.Command("tmux", "kill-session", "-t", tmuxSession).Run()
 
-		// Build command with env vars for mini-systemd mode
+		// Build command with env vars for the test mode
 		attachCmd := e.swashBin + " attach " + sessionID
-		if e.mode == "mini" {
+		switch e.mode {
+		case "mini":
 			attachCmd = fmt.Sprintf("DBUS_SESSION_BUS_ADDRESS=unix:path=%s SWASH_JOURNAL_SOCKET=%s %s",
 				e.busSocket, e.journalSocket, attachCmd)
+		case "posix":
+			attachCmd = fmt.Sprintf("SWASH_BACKEND=posix SWASH_STATE_DIR=%s SWASH_RUNTIME_DIR=%s DBUS_SESSION_BUS_ADDRESS= %s",
+				filepath.Join(e.tmpDir, "state"), filepath.Join(e.tmpDir, "runtime"), attachCmd)
 		}
 		exec.Command("tmux", "send-keys", "-t", tmuxSession, attachCmd, "Enter").Run()
 		time.Sleep(300 * time.Millisecond)
