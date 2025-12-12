@@ -478,8 +478,11 @@ func TestTTYAttach(t *testing.T) {
 		case "mini":
 			attachCmd = fmt.Sprintf("DBUS_SESSION_BUS_ADDRESS=unix:path=%s SWASH_JOURNAL_SOCKET=%s %s",
 				e.busSocket, e.journalSocket, attachCmd)
+		case "real":
+			// Explicitly set backend in case DBUS_SESSION_BUS_ADDRESS isn't in tmux env
+			attachCmd = fmt.Sprintf("SWASH_BACKEND=systemd %s", attachCmd)
 		case "posix":
-			attachCmd = fmt.Sprintf("SWASH_BACKEND=posix SWASH_STATE_DIR=%s SWASH_RUNTIME_DIR=%s DBUS_SESSION_BUS_ADDRESS= %s",
+			attachCmd = fmt.Sprintf("env SWASH_BACKEND=posix SWASH_STATE_DIR=%s SWASH_RUNTIME_DIR=%s %s",
 				filepath.Join(e.tmpDir, "state"), filepath.Join(e.tmpDir, "runtime"), attachCmd)
 		}
 		exec.Command("tmux", "send-keys", "-t", tmuxSession, attachCmd, "Enter").Run()
