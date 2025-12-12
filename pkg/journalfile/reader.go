@@ -272,12 +272,12 @@ func (r *Reader) readDataObject(offset uint64) (string, string, error) {
 	}
 
 	// Parse field=value
-	eqIdx := bytes.IndexByte(payload, '=')
-	if eqIdx < 0 {
+	before, after, ok := bytes.Cut(payload, []byte{'='})
+	if !ok {
 		return "", "", fmt.Errorf("invalid data: no = found")
 	}
 
-	return string(payload[:eqIdx]), string(payload[eqIdx+1:]), nil
+	return string(before), string(after), nil
 }
 
 func (r *Reader) readAt(offset int64, v any) error {

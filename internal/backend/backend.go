@@ -10,6 +10,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
+	"github.com/mbrock/swash/internal/dirs"
 	"github.com/mbrock/swash/internal/session"
 )
 
@@ -149,26 +150,11 @@ func withDefaults(cfg Config) Config {
 }
 
 func defaultStateDir() string {
-	if v := os.Getenv("SWASH_STATE_DIR"); v != "" {
-		return v
-	}
-	if base := os.Getenv("XDG_STATE_HOME"); base != "" {
-		return filepath.Join(base, "swash")
-	}
-	if home := os.Getenv("HOME"); home != "" {
-		return filepath.Join(home, ".local", "state", "swash")
-	}
-	return filepath.Join(os.TempDir(), "swash-state")
+	return dirs.StateDir()
 }
 
 func defaultRuntimeDir() string {
-	if v := os.Getenv("SWASH_RUNTIME_DIR"); v != "" {
-		return v
-	}
-	if base := os.Getenv("XDG_RUNTIME_DIR"); base != "" {
-		return filepath.Join(base, "swash")
-	}
-	return filepath.Join(os.TempDir(), "swash")
+	return dirs.RuntimeDir()
 }
 
 // ValidateHostCommand returns a user-facing error if HostCommand is unusable.

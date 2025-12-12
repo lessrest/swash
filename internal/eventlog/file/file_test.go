@@ -2,37 +2,49 @@ package file
 
 import (
 	"context"
+	"crypto/rand"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/mbrock/swash/internal/eventlog"
+	"github.com/mbrock/swash/pkg/journalfile"
 )
 
 func TestFileEventLog_PollCursorAndFilters(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "events.journal")
 
-	w, err := Create(path)
+	// Create journal file directly for test setup
+	var machineID, bootID journalfile.ID128
+	rand.Read(machineID[:])
+	rand.Read(bootID[:])
+	jf, err := journalfile.Create(path, machineID, bootID)
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("journalfile.Create: %v", err)
 	}
 
 	sessionID := "TEST01"
 
-	// Write a couple of semantic events.
-	if err := eventlog.EmitStarted(w, sessionID, []string{"echo", "hello"}); err != nil {
-		t.Fatalf("EmitStarted: %v", err)
-	}
-	if err := eventlog.WriteOutput(w, 1, "hello", map[string]string{eventlog.FieldSession: sessionID}); err != nil {
-		t.Fatalf("WriteOutput: %v", err)
-	}
-	if err := eventlog.EmitExited(w, sessionID, 0, []string{"echo", "hello"}); err != nil {
-		t.Fatalf("EmitExited: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close(writer): %v", err)
-	}
+	// Write test entries directly to journal file
+	jf.AppendEntry(map[string]string{
+		"MESSAGE":             "Session started",
+		eventlog.FieldSession: sessionID,
+		eventlog.FieldEvent:   eventlog.EventStarted,
+	})
+	jf.AppendEntry(map[string]string{
+		"MESSAGE":             "hello",
+		eventlog.FieldSession: sessionID,
+		"FD":                  "1",
+	})
+	jf.AppendEntry(map[string]string{
+		"MESSAGE":              "Session exited",
+		eventlog.FieldSession:  sessionID,
+		eventlog.FieldEvent:    eventlog.EventExited,
+		eventlog.FieldExitCode: "0",
+	})
+	jf.Sync()
+	jf.Close()
 
 	r, err := Open(path)
 	if err != nil {

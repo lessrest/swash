@@ -16,6 +16,8 @@ import (
 	"github.com/mbrock/swash/internal/backend"
 	"github.com/mbrock/swash/internal/eventlog"
 	eventlogfile "github.com/mbrock/swash/internal/eventlog/file"
+	eventlogsocket "github.com/mbrock/swash/internal/eventlog/socket"
+	"github.com/mbrock/swash/internal/journald"
 	"github.com/mbrock/swash/internal/session"
 )
 
@@ -26,9 +28,12 @@ func init() {
 type PosixBackend struct {
 	cfg backend.Config
 
-	// contextLog is a persistent writer for the context event journal.
-	// Lazily initialized on first context operation.
-	contextLog eventlog.EventLog
+	// journaldConfig holds the socket and journal paths for swash-journald.
+	journaldConfig journald.Config
+
+	// sharedLog is the socket-based eventlog for writing to the shared journal.
+	// Lazily initialized on first use.
+	sharedLog eventlog.EventLog
 }
 
 var _ backend.Backend = (*PosixBackend)(nil)
@@ -36,28 +41,107 @@ var _ backend.Backend = (*PosixBackend)(nil)
 // Open constructs the posix backend.
 func Open(ctx context.Context, cfg backend.Config) (backend.Backend, error) {
 	_ = ctx
-	return &PosixBackend{cfg: cfg}, nil
+
+	// Configure journald paths:
+	// - Socket in RuntimeDir (ephemeral, cleared on reboot)
+	// - Journal file in StateDir (persistent)
+	jcfg := journald.Config{
+		SocketPath:  filepath.Join(cfg.RuntimeDir, "journal.socket"),
+		JournalPath: filepath.Join(cfg.StateDir, "swash.journal"),
+	}
+
+	return &PosixBackend{
+		cfg:            cfg,
+		journaldConfig: jcfg,
+	}, nil
 }
 
 func (b *PosixBackend) Close() error {
-	if b.contextLog != nil {
-		return b.contextLog.Close()
+	if b.sharedLog != nil {
+		return b.sharedLog.Close()
 	}
 	return nil
 }
 
-// ensureContextLog lazily initializes the context event log writer.
-func (b *PosixBackend) ensureContextLog() (eventlog.EventLog, error) {
-	if b.contextLog != nil {
-		return b.contextLog, nil
+// ensureJournald starts swash-journald if it's not already running.
+// It returns when the daemon is ready to accept connections.
+func (b *PosixBackend) ensureJournald(ctx context.Context) error {
+	socketPath := b.journaldConfig.SocketPath
+
+	// Check if socket already exists and is accepting connections
+	if _, err := os.Stat(socketPath); err == nil {
+		// Socket exists, assume daemon is running
+		return nil
 	}
 
-	path := b.contextEventLogPath()
-	el, err := eventlogfile.CreateOrOpen(path)
-	if err != nil {
-		return nil, fmt.Errorf("opening context event log: %w", err)
+	// Need to start the daemon
+	journaldBin := filepath.Join(filepath.Dir(b.cfg.HostCommand[0]), "swash-journald")
+	if _, err := os.Stat(journaldBin); os.IsNotExist(err) {
+		// Try to find it in PATH
+		journaldBin = "swash-journald"
 	}
-	b.contextLog = el
+
+	cmd := osexec.CommandContext(ctx, journaldBin,
+		"--socket", socketPath,
+		"--journal", b.journaldConfig.JournalPath,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	// Redirect output to /dev/null - daemon logs to stderr
+	devNull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if devNull != nil {
+		cmd.Stdin = devNull
+		cmd.Stdout = devNull
+		cmd.Stderr = os.Stderr // Let daemon errors show
+	}
+
+	if err := cmd.Start(); err != nil {
+		if devNull != nil {
+			devNull.Close()
+		}
+		return fmt.Errorf("starting swash-journald: %w", err)
+	}
+	if devNull != nil {
+		devNull.Close()
+	}
+
+	// Wait for socket to appear
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for swash-journald socket")
+		}
+		if _, err := os.Stat(socketPath); err == nil {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// ensureSharedLog lazily initializes the socket-based eventlog for writing
+// to the shared journal (used for context events and other backend operations).
+func (b *PosixBackend) ensureSharedLog(ctx context.Context) (eventlog.EventLog, error) {
+	if b.sharedLog != nil {
+		return b.sharedLog, nil
+	}
+
+	// Make sure swash-journald is running
+	if err := b.ensureJournald(ctx); err != nil {
+		return nil, fmt.Errorf("ensuring journald: %w", err)
+	}
+
+	cfg := eventlogsocket.Config{
+		SocketPath:  b.journaldConfig.SocketPath,
+		JournalPath: b.journaldConfig.JournalPath,
+	}
+	el, err := eventlogsocket.Open(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("opening socket eventlog: %w", err)
+	}
+	b.sharedLog = el
 	return el, nil
 }
 
@@ -76,27 +160,20 @@ type meta struct {
 	Rows int  `json:"rows,omitempty"`
 	Cols int  `json:"cols,omitempty"`
 
-	SocketPath   string `json:"socket_path"`
-	EventLogPath string `json:"eventlog_path"`
+	SocketPath string `json:"socket_path"`
 }
 
+// sessionDir returns the runtime directory for a session (ephemeral, sockets + metadata).
 func (b *PosixBackend) sessionDir(sessionID string) string {
-	return filepath.Join(b.cfg.StateDir, "sessions", sessionID)
+	return filepath.Join(b.cfg.RuntimeDir, "sessions", sessionID)
 }
 
 func (b *PosixBackend) metaPath(sessionID string) string {
 	return filepath.Join(b.sessionDir(sessionID), "meta.json")
 }
 
-func (b *PosixBackend) eventLogPath(sessionID string) string {
-	return filepath.Join(b.sessionDir(sessionID), "events.journal")
-}
-
 func (b *PosixBackend) socketPath(sessionID string) string {
-	// Unix socket paths have length limits: 104 bytes on macOS/BSD, 108 on Linux.
-	// Use /tmp for sockets to avoid path length issues with deep temp directories.
-	// The session ID is unique enough to avoid conflicts.
-	return filepath.Join(os.TempDir(), "swash-"+sessionID+".sock")
+	return filepath.Join(b.sessionDir(sessionID), "control.sock")
 }
 
 func (b *PosixBackend) readMeta(sessionID string) (*meta, error) {
@@ -133,20 +210,6 @@ func pidAlive(pid int) bool {
 		return false
 	}
 	return true
-}
-
-// hasJournalEntries checks if a journal file has any entries (not just header).
-// The host writes a "started" event after successfully binding the socket,
-// so NEntries > 0 indicates the host got past initialization.
-func hasJournalEntries(path string) bool {
-	r, err := eventlogfile.Open(path)
-	if err != nil {
-		return false
-	}
-	defer r.Close()
-	// Poll with no filters to check entry count
-	entries, _, err := r.Poll(context.Background(), nil, "")
-	return err == nil && len(entries) > 0
 }
 
 // -----------------------------------------------------------------------------
@@ -197,13 +260,34 @@ func (b *PosixBackend) ListSessions(ctx context.Context) ([]backend.Session, err
 
 func (b *PosixBackend) ListHistory(ctx context.Context) ([]backend.HistorySession, error) {
 	_ = ctx
-	root := filepath.Join(b.cfg.StateDir, "sessions")
-	entries, err := os.ReadDir(root)
+
+	// Open shared journal and query all exited events
+	el, err := eventlogfile.Open(b.journaldConfig.JournalPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
 		return nil, err
+	}
+	defer el.Close()
+
+	filters := []eventlog.EventFilter{
+		eventlog.FilterByEvent(eventlog.EventExited),
+	}
+	recs, _, err := el.Poll(context.Background(), filters, "")
+	if err != nil {
+		return nil, err
+	}
+
+	// Group by session ID, keeping only the most recent exit per session
+	bySession := make(map[string]eventlog.EventRecord)
+	for _, rec := range recs {
+		sid := rec.Fields[eventlog.FieldSession]
+		if sid == "" {
+			continue
+		}
+		// Later records overwrite earlier ones
+		bySession[sid] = rec
 	}
 
 	type histItem struct {
@@ -212,31 +296,7 @@ func (b *PosixBackend) ListHistory(ctx context.Context) ([]backend.HistorySessio
 	}
 	var items []histItem
 
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		sessionID := e.Name()
-
-		evPath := b.eventLogPath(sessionID)
-		el, err := eventlogfile.Open(evPath)
-		if err != nil {
-			continue
-		}
-
-		filters := []eventlog.EventFilter{
-			eventlog.FilterByEvent(eventlog.EventExited),
-			eventlog.FilterBySession(sessionID),
-		}
-		recs, _, err := el.Poll(context.Background(), filters, "")
-		_ = el.Close()
-		if err != nil || len(recs) == 0 {
-			continue
-		}
-
-		// Take the most recent exit event (last).
-		rec := recs[len(recs)-1]
-
+	for sessionID, rec := range bySession {
 		var exitCode *int
 		if s := rec.Fields[eventlog.FieldExitCode]; s != "" {
 			if code, err := strconv.Atoi(s); err == nil {
@@ -265,6 +325,11 @@ func (b *PosixBackend) ListHistory(ctx context.Context) ([]backend.HistorySessio
 }
 
 func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts backend.SessionOptions) (string, error) {
+	// Ensure swash-journald is running
+	if err := b.ensureJournald(ctx); err != nil {
+		return "", fmt.Errorf("ensuring journald: %w", err)
+	}
+
 	sessionID := session.GenSessionID()
 
 	sessionDir := b.sessionDir(sessionID)
@@ -276,15 +341,13 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	}
 
 	socketPath := b.socketPath(sessionID)
-	eventLogPath := b.eventLogPath(sessionID)
 
-	// Build host command line.
+	// Build host command line (no longer passing --eventlog, using socket instead).
 	args := append([]string{}, b.cfg.HostCommand...)
 	args = append(args,
 		"--session", sessionID,
 		"--command-json", session.MustJSON(command),
 		"--unix-socket", socketPath,
-		"--eventlog", eventLogPath,
 	)
 
 	// Protocol only matters for non-TTY; keep behavior consistent with systemd backend.
@@ -310,6 +373,12 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		cmd.Dir = opts.WorkingDir
 	}
 
+	// Pass journal socket path to host via environment
+	cmd.Env = append(os.Environ(),
+		"SWASH_JOURNAL_SOCKET="+b.journaldConfig.SocketPath,
+		"SWASH_JOURNAL_PATH="+b.journaldConfig.JournalPath,
+	)
+
 	devNull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if devNull != nil {
 		cmd.Stdin = devNull
@@ -328,26 +397,26 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	}
 
 	m := meta{
-		ID:           sessionID,
-		Command:      command,
-		Started:      time.Now().Format("Mon 2006-01-02 15:04:05 MST"),
-		PID:          cmd.Process.Pid,
-		TTY:          opts.TTY,
-		Rows:         opts.Rows,
-		Cols:         opts.Cols,
-		SocketPath:   socketPath,
-		EventLogPath: eventLogPath,
+		ID:         sessionID,
+		Command:    command,
+		Started:    time.Now().Format("Mon 2006-01-02 15:04:05 MST"),
+		PID:        cmd.Process.Pid,
+		TTY:        opts.TTY,
+		Rows:       opts.Rows,
+		Cols:       opts.Cols,
+		SocketPath: socketPath,
+		// EventLogPath removed - now using shared journal
 	}
 	_ = b.writeMeta(m)
 
 	// Wait for the control socket to appear and respond.
-	if err := b.waitReady(ctx, sessionID, cmd.Process.Pid, socketPath, eventLogPath); err != nil {
+	if err := b.waitReady(ctx, sessionID, cmd.Process.Pid, socketPath); err != nil {
 		return "", err
 	}
 
 	// Emit session-context relation if context is set
 	if opts.ContextID != "" {
-		if err := b.emitSessionContext(sessionID, opts.ContextID); err != nil {
+		if err := b.emitSessionContext(ctx, sessionID, opts.ContextID); err != nil {
 			// Log but don't fail - session already started
 			fmt.Fprintf(os.Stderr, "warning: failed to emit session-context: %v\n", err)
 		}
@@ -356,7 +425,7 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	return sessionID, nil
 }
 
-func (b *PosixBackend) waitReady(ctx context.Context, sessionID string, pid int, socketPath, eventLogPath string) error {
+func (b *PosixBackend) waitReady(ctx context.Context, sessionID string, pid int, socketPath string) error {
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		if ctx.Err() != nil {
@@ -377,22 +446,37 @@ func (b *PosixBackend) waitReady(ctx context.Context, sessionID string, pid int,
 			}
 		}
 
-		// Check if the journal has actual entries (not just the header).
+		// Check if session has started event in shared journal.
 		// The host writes the "started" event after successfully binding the socket,
-		// so entries > 0 means startup succeeded. This handles both:
-		// - Fast commands that complete before we can connect to the socket
-		// - Startup failures where the host crashes before writing any events
-		if hasJournalEntries(eventLogPath) {
+		// so finding it means startup succeeded. This handles fast commands that
+		// complete before we can connect to the socket.
+		if b.hasSessionStarted(sessionID) {
 			return nil
 		}
 
-		// If process died and journal has no entries, startup failed.
+		// If process died and no started event, startup failed.
 		if !pidAlive(pid) {
 			return fmt.Errorf("host process exited before writing any events (pid %d) - check for startup errors", pid)
 		}
 
 		time.Sleep(25 * time.Millisecond)
 	}
+}
+
+// hasSessionStarted checks if a session has a "started" event in the shared journal.
+func (b *PosixBackend) hasSessionStarted(sessionID string) bool {
+	el, err := eventlogfile.Open(b.journaldConfig.JournalPath)
+	if err != nil {
+		return false
+	}
+	defer el.Close()
+
+	filters := []eventlog.EventFilter{
+		eventlog.FilterBySession(sessionID),
+		eventlog.FilterByEvent(eventlog.EventStarted),
+	}
+	entries, _, err := el.Poll(context.Background(), filters, "")
+	return err == nil && len(entries) > 0
 }
 
 func (b *PosixBackend) StopSession(ctx context.Context, sessionID string) error {
@@ -435,8 +519,7 @@ func (b *PosixBackend) SendInput(ctx context.Context, sessionID, input string) (
 }
 
 func (b *PosixBackend) PollSessionOutput(ctx context.Context, sessionID, cursor string) ([]backend.Event, string, error) {
-	evPath := b.eventLogPath(sessionID)
-	el, err := eventlogfile.Open(evPath)
+	el, err := eventlogfile.Open(b.journaldConfig.JournalPath)
 	if err != nil {
 		return nil, "", err
 	}
@@ -475,8 +558,7 @@ func (b *PosixBackend) PollSessionOutput(ctx context.Context, sessionID, cursor 
 }
 
 func (b *PosixBackend) FollowSession(ctx context.Context, sessionID string, timeout time.Duration, outputLimit int) (int, backend.FollowResult) {
-	evPath := b.eventLogPath(sessionID)
-	el, err := eventlogfile.Open(evPath)
+	el, err := eventlogfile.Open(b.journaldConfig.JournalPath)
 	if err != nil {
 		return 0, backend.FollowCancelled
 	}
@@ -529,9 +611,8 @@ func (b *PosixBackend) GetScreen(ctx context.Context, sessionID string) (string,
 		}
 	}
 
-	// Fall back to saved screen event.
-	evPath := b.eventLogPath(sessionID)
-	el, err := eventlogfile.Open(evPath)
+	// Fall back to saved screen event in shared journal.
+	el, err := eventlogfile.Open(b.journaldConfig.JournalPath)
 	if err != nil {
 		return "", err
 	}
@@ -575,12 +656,7 @@ func (b *PosixBackend) contextDir(contextID string) string {
 	return filepath.Join(b.cfg.StateDir, "contexts", contextID)
 }
 
-func (b *PosixBackend) contextEventLogPath() string {
-	return filepath.Join(b.cfg.StateDir, "contexts.journal")
-}
-
 func (b *PosixBackend) CreateContext(ctx context.Context) (string, string, error) {
-	_ = ctx
 	contextID := session.GenSessionID()
 	dir := b.contextDir(contextID)
 
@@ -588,9 +664,9 @@ func (b *PosixBackend) CreateContext(ctx context.Context) (string, string, error
 		return "", "", fmt.Errorf("creating context directory: %w", err)
 	}
 
-	el, err := b.ensureContextLog()
+	el, err := b.ensureSharedLog(ctx)
 	if err != nil {
-		return "", "", fmt.Errorf("opening context event log: %w", err)
+		return "", "", fmt.Errorf("opening shared event log: %w", err)
 	}
 	// Don't close - kept open for future writes
 
@@ -602,18 +678,14 @@ func (b *PosixBackend) CreateContext(ctx context.Context) (string, string, error
 }
 
 func (b *PosixBackend) ListContexts(ctx context.Context) ([]backend.Context, error) {
-	_ = ctx
-	el, err := eventlogfile.Open(b.contextEventLogPath())
+	el, err := b.ensureSharedLog(ctx)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("opening context event log: %w", err)
+		return nil, fmt.Errorf("opening shared event log: %w", err)
 	}
-	defer el.Close()
+	// Don't close - kept open
 
 	filters := []eventlog.EventFilter{eventlog.FilterByEvent(eventlog.EventContextCreated)}
-	entries, _, err := el.Poll(context.Background(), filters, "")
+	entries, _, err := el.Poll(ctx, filters, "")
 	if err != nil {
 		return nil, err
 	}
@@ -639,21 +711,17 @@ func (b *PosixBackend) GetContextDir(ctx context.Context, contextID string) (str
 }
 
 func (b *PosixBackend) ListContextSessions(ctx context.Context, contextID string) ([]string, error) {
-	_ = ctx
-	el, err := eventlogfile.Open(b.contextEventLogPath())
+	el, err := b.ensureSharedLog(ctx)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("opening context event log: %w", err)
+		return nil, fmt.Errorf("opening shared event log: %w", err)
 	}
-	defer el.Close()
+	// Don't close - kept open
 
 	filters := []eventlog.EventFilter{
 		eventlog.FilterByEvent(eventlog.EventSessionContext),
 		eventlog.FilterByContext(contextID),
 	}
-	entries, _, err := el.Poll(context.Background(), filters, "")
+	entries, _, err := el.Poll(ctx, filters, "")
 	if err != nil {
 		return nil, err
 	}
@@ -667,10 +735,10 @@ func (b *PosixBackend) ListContextSessions(ctx context.Context, contextID string
 	return sessionIDs, nil
 }
 
-func (b *PosixBackend) emitSessionContext(sessionID, contextID string) error {
-	el, err := b.ensureContextLog()
+func (b *PosixBackend) emitSessionContext(ctx context.Context, sessionID, contextID string) error {
+	el, err := b.ensureSharedLog(ctx)
 	if err != nil {
-		return fmt.Errorf("opening context event log: %w", err)
+		return fmt.Errorf("opening shared event log: %w", err)
 	}
 	// Don't close - kept open for future writes
 

@@ -57,9 +57,15 @@ func (jl *journaldEventLog) Close() error {
 	return jl.j.Close()
 }
 
-// Write sends a structured entry to the journal and waits until it's readable.
-// This ensures that subsequent reads will see the entry.
+// Write sends a structured entry to the journal (fire-and-forget).
+// Use for high-volume streaming data like process output.
 func (jl *journaldEventLog) Write(message string, fields map[string]string) error {
+	return journal.Send(message, journal.PriInfo, fields)
+}
+
+// WriteSync sends a structured entry to the journal and waits until it's readable.
+// Use for lifecycle events that need read-after-write consistency.
+func (jl *journaldEventLog) WriteSync(message string, fields map[string]string) error {
 	// Generate a unique nonce to identify this specific write
 	nonce := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
 	fieldsWithNonce := make(map[string]string, len(fields)+1)

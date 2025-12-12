@@ -106,14 +106,14 @@ func (p *ProtocolReader) processSSE(r io.Reader) {
 func (p *ProtocolReader) emitSSEEvents() {
 	for {
 		chunk := p.buf.String()
-		idx := strings.Index(chunk, "\n\n")
-		if idx < 0 {
+		before, after, ok := strings.Cut(chunk, "\n\n")
+		if !ok {
 			return
 		}
 
-		event := chunk[:idx]
+		event := before
 		p.buf.Reset()
-		p.buf.WriteString(chunk[idx+2:])
+		p.buf.WriteString(after)
 
 		p.parseSSEEvent(event)
 	}

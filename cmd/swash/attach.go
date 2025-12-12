@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"golang.org/x/term"
@@ -127,18 +128,19 @@ func (r *terminalRenderer) render(vt *vterm.VTerm, clear bool, cursorVisible boo
 func (r *terminalRenderer) drawBorder() {
 	// Top border with session info
 	info := fmt.Sprintf(" %s [%dx%d] ", r.sessionID, r.remoteCols, r.remoteRows)
-	topBorder := "┌"
+	var topBorder strings.Builder
+	topBorder.WriteString("┌")
 	infoStart := max((r.remoteCols-len(info))/2, 0)
 	for i := 0; i < r.remoteCols; i++ {
 		if i == infoStart {
-			topBorder += info
+			topBorder.WriteString(info)
 			i += len(info) - 1
 		} else {
-			topBorder += "─"
+			topBorder.WriteString("─")
 		}
 	}
-	topBorder += "┐"
-	fmt.Printf("\x1b[%d;%dH%s", r.borderTop+1, r.borderLeft+1, topBorder)
+	topBorder.WriteString("┐")
+	fmt.Printf("\x1b[%d;%dH%s", r.borderTop+1, r.borderLeft+1, topBorder.String())
 
 	// Side borders
 	for row := 0; row < r.remoteRows; row++ {
@@ -148,18 +150,19 @@ func (r *terminalRenderer) drawBorder() {
 
 	// Bottom border with hint
 	hint := " Ctrl+\\ to detach "
-	bottomBorder := "└"
+	var bottomBorder strings.Builder
+	bottomBorder.WriteString("└")
 	hintStart := max((r.remoteCols-len(hint))/2, 0)
 	for i := 0; i < r.remoteCols; i++ {
 		if i == hintStart {
-			bottomBorder += hint
+			bottomBorder.WriteString(hint)
 			i += len(hint) - 1
 		} else {
-			bottomBorder += "─"
+			bottomBorder.WriteString("─")
 		}
 	}
-	bottomBorder += "┘"
-	fmt.Printf("\x1b[%d;%dH%s", r.borderTop+r.remoteRows+2, r.borderLeft+1, bottomBorder)
+	bottomBorder.WriteString("┘")
+	fmt.Printf("\x1b[%d;%dH%s", r.borderTop+r.remoteRows+2, r.borderLeft+1, bottomBorder.String())
 }
 
 // runVtermOwner runs the goroutine that owns the vterm

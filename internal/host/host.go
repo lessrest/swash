@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -16,7 +17,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/mbrock/swash/internal/eventlog"
-	eventlogfile "github.com/mbrock/swash/internal/eventlog/file"
+	eventlogsocket "github.com/mbrock/swash/internal/eventlog/socket"
 	journald "github.com/mbrock/swash/internal/platform/systemd/eventlog"
 	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
 	"github.com/mbrock/swash/internal/process"
@@ -349,7 +350,6 @@ func RunHost() error {
 	rowsFlag := fs.Int("rows", 24, "Terminal rows (for --tty mode)")
 	colsFlag := fs.Int("cols", 80, "Terminal columns (for --tty mode)")
 	unixSocketFlag := fs.String("unix-socket", "", "Serve control plane over a unix socket (posix backend)")
-	eventlogPathFlag := fs.String("eventlog", "", "Event log file path (posix backend)")
 	// Skip "swash" (index 0) and "host" (index 1) to get to the flags
 	fs.Parse(os.Args[2:])
 
@@ -371,14 +371,22 @@ func RunHost() error {
 
 	// POSIX (unix socket) mode: run without systemd/journald/D-Bus.
 	if *unixSocketFlag != "" {
-		if *eventlogPathFlag == "" {
-			return fmt.Errorf("missing --eventlog for --unix-socket mode")
-		}
-
 		processes := procexec.New()
 		defer processes.Close()
 
-		events, err := eventlogfile.Create(*eventlogPathFlag)
+		// Use socket-based eventlog via SWASH_JOURNAL_SOCKET.
+		socketPath := os.Getenv("SWASH_JOURNAL_SOCKET")
+		if socketPath == "" {
+			return fmt.Errorf("missing SWASH_JOURNAL_SOCKET for --unix-socket mode")
+		}
+		journalPath := os.Getenv("SWASH_JOURNAL_PATH")
+		if journalPath == "" {
+			journalPath = filepath.Join(filepath.Dir(socketPath), "swash.journal")
+		}
+		events, err := eventlogsocket.Open(eventlogsocket.Config{
+			SocketPath:  socketPath,
+			JournalPath: journalPath,
+		})
 		if err != nil {
 			return fmt.Errorf("opening event log: %w", err)
 		}

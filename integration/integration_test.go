@@ -69,6 +69,11 @@ type testEnv struct {
 	dbusCmd        *exec.Cmd
 	busSocket      string
 	journalSocket  string
+
+	// posix-specific
+	journaldCmd *exec.Cmd
+	stateDir    string
+	runtimeDir  string
 }
 
 var (
@@ -128,15 +133,65 @@ func setupEnv() (*testEnv, error) {
 	case "real":
 		env.journalCmd = "journalctl --user"
 	case "posix":
-		env.setupPosix()
+		if err := env.setupPosix(); err != nil {
+			return nil, err
+		}
 	}
 
 	return env, nil
 }
 
-func (e *testEnv) setupPosix() {
-	// Posix backend uses file-based event logging stored in SWASH_STATE_DIR.
-	// No additional setup needed - env vars are set in getEnvVars().
+func (e *testEnv) setupPosix() error {
+	// Set up shared directories for posix mode
+	// - stateDir: persistent data (journal files)
+	// - runtimeDir: ephemeral data (sockets, session metadata)
+	e.stateDir = filepath.Join(e.tmpDir, "state")
+	e.runtimeDir = filepath.Join(e.tmpDir, "runtime")
+	e.journalSocket = filepath.Join(e.runtimeDir, "journal.socket")
+	e.journalDir = e.stateDir // journal file goes here
+
+	if err := os.MkdirAll(e.stateDir, 0755); err != nil {
+		return fmt.Errorf("creating state dir: %w", err)
+	}
+	if err := os.MkdirAll(e.runtimeDir, 0755); err != nil {
+		return fmt.Errorf("creating runtime dir: %w", err)
+	}
+
+	// Build swash-journald (required for posix backend)
+	journaldBin := filepath.Join(e.tmpDir, "swash-journald")
+	cmd := exec.Command("go", "build", "-o", journaldBin, "./cmd/swash-journald/")
+	cmd.Dir = getProjectRoot()
+	cmd.Env = append(os.Environ(), "CGO_CFLAGS=-I"+filepath.Join(getProjectRoot(), "cvendor"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("building swash-journald: %w\n%s", err, out)
+	}
+
+	// Start swash-journald daemon for the test suite
+	journalPath := filepath.Join(e.stateDir, "swash.journal")
+	e.journaldCmd = exec.Command(journaldBin,
+		"--socket", e.journalSocket,
+		"--journal", journalPath,
+	)
+	e.journaldCmd.Env = os.Environ()
+	e.journaldCmd.Stdout = os.Stdout
+	e.journaldCmd.Stderr = os.Stderr
+	e.journaldCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := e.journaldCmd.Start(); err != nil {
+		return fmt.Errorf("starting swash-journald: %w", err)
+	}
+
+	// Wait for socket to appear
+	for range 50 {
+		if _, err := os.Stat(e.journalSocket); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(e.journalSocket); err != nil {
+		return fmt.Errorf("swash-journald socket did not appear: %w", err)
+	}
+
+	return nil
 }
 
 func (e *testEnv) setupMiniSystemd() error {
@@ -213,6 +268,11 @@ func (e *testEnv) cleanup() {
 		if e.dbusCmd != nil && e.dbusCmd.Process != nil {
 			syscall.Kill(-e.dbusCmd.Process.Pid, syscall.SIGKILL)
 			e.dbusCmd.Wait()
+		}
+		// Kill swash-journald for posix mode
+		if e.journaldCmd != nil && e.journaldCmd.Process != nil {
+			syscall.Kill(-e.journaldCmd.Process.Pid, syscall.SIGKILL)
+			e.journaldCmd.Wait()
 		}
 		if e.tmpDir != "" {
 			os.RemoveAll(e.tmpDir)
@@ -302,8 +362,8 @@ func (e *testEnv) getEnvVars() []string {
 	case "posix":
 		env = append(env,
 			"SWASH_BACKEND=posix",
-			"SWASH_STATE_DIR="+filepath.Join(e.tmpDir, "state"),
-			"SWASH_RUNTIME_DIR="+filepath.Join(e.tmpDir, "runtime"),
+			"SWASH_STATE_DIR="+e.stateDir,
+			"SWASH_RUNTIME_DIR="+e.runtimeDir,
 			// Clear DBUS_SESSION_BUS_ADDRESS to ensure posix backend is auto-detected
 			"DBUS_SESSION_BUS_ADDRESS=",
 		)
@@ -347,11 +407,12 @@ func (e *testEnv) runJournalctl(args ...string) (string, error) {
 		}
 		journalFiles = files
 	case "posix":
-		files, _ := filepath.Glob(filepath.Join(e.tmpDir, "state", "sessions", "*", "events.journal"))
-		if len(files) == 0 {
-			return "", fmt.Errorf("no journal files found in %s", filepath.Join(e.tmpDir, "state", "sessions"))
+		// Posix mode now uses a single shared journal file
+		sharedJournal := filepath.Join(e.tmpDir, "state", "swash.journal")
+		if _, err := os.Stat(sharedJournal); err != nil {
+			return "", fmt.Errorf("shared journal file not found: %s", sharedJournal)
 		}
-		journalFiles = files
+		journalFiles = []string{sharedJournal}
 	}
 
 	if readerMode == "native" && len(journalFiles) > 0 {
@@ -487,9 +548,9 @@ func TestSwashStart(t *testing.T) {
 
 func TestSwashRun(t *testing.T) {
 	runTest(t, func(t *testing.T, e *testEnv) {
-		stdout, _, err := e.runSwash("run", "echo", "hello world")
+		stdout, stderr, err := e.runSwash("run", "echo", "hello world")
 		if err != nil {
-			t.Fatalf("swash run failed: %v", err)
+			t.Fatalf("swash run failed: %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
 		}
 
 		if !strings.Contains(stdout, "hello world") {
@@ -785,58 +846,6 @@ func TestTTYScreenEvent(t *testing.T) {
 
 		if !strings.Contains(journalOut, "SCREEN_CAPTURE_TEST") {
 			t.Errorf("expected 'SCREEN_CAPTURE_TEST' in screen event, got: %s", journalOut)
-		}
-	})
-}
-
-func TestPosixBackendRun(t *testing.T) {
-	runTest(t, func(t *testing.T, e *testEnv) {
-		base := t.TempDir()
-		env := map[string]string{
-			"SWASH_STATE_DIR":   filepath.Join(base, "state"),
-			"SWASH_RUNTIME_DIR": filepath.Join(base, "runtime"),
-		}
-
-		stdout, stderr, err := e.runSwashEnv(env, "--backend", "posix", "run", "--", "sh", "-c", "echo POSIX_BACKEND_OK")
-		if err != nil {
-			t.Fatalf("swash posix run failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
-		}
-		if !strings.Contains(stdout, "POSIX_BACKEND_OK") {
-			t.Fatalf("expected marker in stdout, got:\n%s", stdout)
-		}
-	})
-}
-
-func TestPosixBackendTTYScreen(t *testing.T) {
-	runTest(t, func(t *testing.T, e *testEnv) {
-		base := t.TempDir()
-		env := map[string]string{
-			"SWASH_STATE_DIR":   filepath.Join(base, "state"),
-			"SWASH_RUNTIME_DIR": filepath.Join(base, "runtime"),
-		}
-
-		// Start a short-lived TTY session.
-		stdout, stderr, err := e.runSwashEnv(env, "--backend", "posix", "start", "--tty", "--rows", "10", "--cols", "50", "--", "sh", "-c", "echo POSIX_TTY_SCREEN")
-		if err != nil {
-			t.Fatalf("swash posix start --tty failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
-		}
-
-		parts := strings.Fields(stdout)
-		if len(parts) == 0 {
-			t.Fatalf("no session ID in output: %q", stdout)
-		}
-		sessionID := parts[0]
-
-		// Wait for it to complete (ensures screen event persisted).
-		_, _, _ = e.runSwashEnv(env, "--backend", "posix", "follow", sessionID)
-
-		// Check screen output.
-		screenOut, screenErr, err := e.runSwashEnv(env, "--backend", "posix", "screen", sessionID)
-		if err != nil {
-			t.Fatalf("swash posix screen failed: %v\nstdout:\n%s\nstderr:\n%s", err, screenOut, screenErr)
-		}
-		if !strings.Contains(screenOut, "POSIX_TTY_SCREEN") {
-			t.Fatalf("expected marker in screen output, got:\n%s", screenOut)
 		}
 	})
 }

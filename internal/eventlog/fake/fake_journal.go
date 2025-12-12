@@ -27,6 +27,15 @@ func NewFakeJournal() *FakeJournal {
 
 // Write sends a structured entry to the journal.
 func (f *FakeJournal) Write(message string, fields map[string]string) error {
+	return f.writeEntry(message, fields)
+}
+
+// WriteSync sends a structured entry to the journal (same as Write for in-memory storage).
+func (f *FakeJournal) WriteSync(message string, fields map[string]string) error {
+	return f.writeEntry(message, fields)
+}
+
+func (f *FakeJournal) writeEntry(message string, fields map[string]string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 

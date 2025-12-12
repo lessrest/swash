@@ -38,8 +38,13 @@ func FilterByEvent(kind string) EventFilter {
 // The default implementation is backed by systemd-journald, but callers only
 // see domain concepts.
 type EventLog interface {
-	// Write sends a structured entry to the backing store.
+	// Write sends a structured entry to the backing store (fire-and-forget).
+	// Use for high-volume streaming data like process output.
 	Write(message string, fields map[string]string) error
+
+	// WriteSync sends a structured entry and waits until it is readable.
+	// Use for lifecycle events that need read-after-write consistency.
+	WriteSync(message string, fields map[string]string) error
 
 	// Poll reads entries matching filters since cursor.
 	Poll(ctx context.Context, filters []EventFilter, cursor string) ([]EventRecord, string, error)
@@ -75,7 +80,7 @@ const (
 
 // EmitStarted writes a session started event to the log.
 func EmitStarted(log EventLog, sessionID string, command []string) error {
-	return log.Write("Session started", map[string]string{
+	return log.WriteSync("Session started", map[string]string{
 		FieldEvent:   EventStarted,
 		FieldSession: sessionID,
 		FieldCommand: strings.Join(command, " "),
@@ -84,7 +89,7 @@ func EmitStarted(log EventLog, sessionID string, command []string) error {
 
 // EmitExited writes a session exited event to the log.
 func EmitExited(log EventLog, sessionID string, exitCode int, command []string) error {
-	return log.Write("Session exited", map[string]string{
+	return log.WriteSync("Session exited", map[string]string{
 		FieldEvent:    EventExited,
 		FieldSession:  sessionID,
 		FieldExitCode: strconv.Itoa(exitCode),
@@ -114,7 +119,7 @@ func EmitScreen(log EventLog, sessionID string, screenText string, rows, cols in
 
 // EmitContextCreated writes a context creation event to the log.
 func EmitContextCreated(log EventLog, contextID string, dir string) error {
-	return log.Write("Context created", map[string]string{
+	return log.WriteSync("Context created", map[string]string{
 		FieldEvent:   EventContextCreated,
 		FieldContext: contextID,
 		"DIR":        dir,
@@ -123,7 +128,7 @@ func EmitContextCreated(log EventLog, contextID string, dir string) error {
 
 // EmitSessionContext writes a session-to-context relation event.
 func EmitSessionContext(log EventLog, sessionID, contextID string) error {
-	return log.Write("Session belongs to context", map[string]string{
+	return log.WriteSync("Session belongs to context", map[string]string{
 		FieldEvent:   EventSessionContext,
 		FieldSession: sessionID,
 		FieldContext: contextID,

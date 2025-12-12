@@ -343,11 +343,11 @@ func (jf *File) beginWrite() error {
 
 func (jf *File) appendData(data []byte, hash uint64) (uint64, error) {
 	// Find the field name (everything before =)
-	eqIdx := bytes.IndexByte(data, '=')
-	if eqIdx < 0 {
+	before, _, ok := bytes.Cut(data, []byte{'='})
+	if !ok {
 		return 0, fmt.Errorf("invalid data: no = found")
 	}
-	fieldName := data[:eqIdx]
+	fieldName := before
 
 	// First, ensure field object exists (use siphash24 keyed by file_id)
 	fieldHash := SipHash24(fieldName, jf.header.FileID)
