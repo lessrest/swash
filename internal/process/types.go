@@ -92,13 +92,6 @@ type ProcessFilter struct {
 	States []ProcessState
 }
 
-// ProcessExit describes an observed workload exit.
-type ProcessExit struct {
-	Ref      ProcessRef
-	ExitCode int
-	Result   string
-}
-
 // ProcessBackend is a semantic interface for running swash workloads.
 // Concrete backends can be backed by systemd, a fake, or anything else.
 type ProcessBackend interface {
@@ -108,9 +101,7 @@ type ProcessBackend interface {
 	Start(ctx context.Context, spec ProcessSpec) error
 	Stop(ctx context.Context, ref ProcessRef) error
 	Kill(ctx context.Context, ref ProcessRef, signal syscall.Signal) error
-
-	SubscribeExit(ctx context.Context, ref ProcessRef) (<-chan ProcessExit, error)
-	EmitExit(ctx context.Context, ref ProcessRef, exitCode int, result string) error
+	ResetFailed(ctx context.Context, ref ProcessRef) error
 
 	Close() error
 }

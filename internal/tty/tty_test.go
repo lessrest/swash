@@ -10,24 +10,24 @@ import (
 	"time"
 
 	eventlogfake "github.com/mbrock/swash/internal/eventlog/fake"
-	processfake "github.com/mbrock/swash/internal/process/fake"
+	"github.com/mbrock/swash/internal/executor"
 )
 
-type FakeSystemd = processfake.FakeSystemd
 type FakeJournal = eventlogfake.FakeJournal
-type FakeCommand = processfake.FakeCommand
+type FakeCommand = executor.FakeCommand
 
-func NewTestFakes() (*FakeSystemd, *FakeJournal) { return processfake.NewTestFakes() }
+func NewTestFakes() (*executor.FakeExecutor, *FakeJournal) {
+	return executor.NewFakeExecutor(), eventlogfake.NewFakeJournal()
+}
 
 func TestTTYHost_NewTTYHost(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -49,14 +49,13 @@ func TestTTYHost_NewTTYHost(t *testing.T) {
 }
 
 func TestTTYHost_SessionID(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "ABC123",
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -71,7 +70,7 @@ func TestTTYHost_SessionID(t *testing.T) {
 }
 
 func TestTTYHost_DefaultSize(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	// Test with zero values - should default to 24x80
 	host := NewTTYHost(TTYHostConfig{
@@ -79,7 +78,6 @@ func TestTTYHost_DefaultSize(t *testing.T) {
 		Command:   []string{"bash"},
 		Rows:      0,
 		Cols:      0,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -98,14 +96,13 @@ func TestTTYHost_DefaultSize(t *testing.T) {
 }
 
 func TestTTYHost_GetScreenText(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      5,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -124,14 +121,13 @@ func TestTTYHost_GetScreenText(t *testing.T) {
 }
 
 func TestTTYHost_GetScreenANSI(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      5,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -154,14 +150,13 @@ func TestTTYHost_GetScreenANSI(t *testing.T) {
 }
 
 func TestTTYHost_GetCursor(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -188,14 +183,13 @@ func TestTTYHost_GetCursor(t *testing.T) {
 }
 
 func TestTTYHost_Resize(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -224,14 +218,13 @@ func TestTTYHost_Resize(t *testing.T) {
 }
 
 func TestTTYHost_GetTitle(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -258,14 +251,13 @@ func TestTTYHost_GetTitle(t *testing.T) {
 }
 
 func TestTTYHost_GetMode(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -303,14 +295,13 @@ func TestTTYHost_GetMode(t *testing.T) {
 }
 
 func TestTTYHost_GetScrollback(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      3, // Small screen to trigger scrollback
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -333,14 +324,13 @@ func TestTTYHost_GetScrollback(t *testing.T) {
 }
 
 func TestTTYHost_SendInput_NoProcess(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
 		Cols:      80,
-		Processes: systemd,
 		Events:    journal,
 	})
 	defer host.Close()
@@ -353,10 +343,10 @@ func TestTTYHost_SendInput_NoProcess(t *testing.T) {
 }
 
 func TestTTYHost_RunTask_WithFakePTY(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	exec, journal := NewTestFakes()
 
 	// Register a simple echo command
-	systemd.RegisterCommand("echo", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	exec.RegisterCommand("echo", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		// Write output - this goes to the slave side which feeds the master
 		if len(args) > 1 {
 			fmt.Fprintln(stdout, args[1])
@@ -369,8 +359,8 @@ func TestTTYHost_RunTask_WithFakePTY(t *testing.T) {
 		Command:   []string{"echo", "Hello from TTY"},
 		Rows:      10,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
+		Executor:  exec,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -424,10 +414,10 @@ func TestTTYHost_RunTask_WithFakePTY(t *testing.T) {
 }
 
 func TestTTYHost_RunTask_ColoredOutput(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	exec, journal := NewTestFakes()
 
 	// Register a command that outputs ANSI colors
-	systemd.RegisterCommand("colortest", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	exec.RegisterCommand("colortest", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		fmt.Fprint(stdout, "\x1b[31mRed\x1b[0m \x1b[32mGreen\x1b[0m")
 		return 0
 	})
@@ -437,8 +427,8 @@ func TestTTYHost_RunTask_ColoredOutput(t *testing.T) {
 		Command:   []string{"colortest"},
 		Rows:      5,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
+		Executor:  exec,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -463,10 +453,10 @@ func TestTTYHost_RunTask_ColoredOutput(t *testing.T) {
 }
 
 func TestTTYHost_RunTask_Scrollback(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	exec, journal := NewTestFakes()
 
 	// Register a command that outputs many lines
-	systemd.RegisterCommand("manylines", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	exec.RegisterCommand("manylines", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		for i := 1; i <= 20; i++ {
 			fmt.Fprintf(stdout, "Line %d\r\n", i)
 		}
@@ -478,8 +468,8 @@ func TestTTYHost_RunTask_Scrollback(t *testing.T) {
 		Command:   []string{"manylines"},
 		Rows:      5, // Small screen to trigger scrollback
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
+		Executor:  exec,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -510,12 +500,12 @@ func TestTTYHost_RunTask_Scrollback(t *testing.T) {
 }
 
 func TestTTYHost_RunTask_Cancel(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	exec, journal := NewTestFakes()
 
 	started := make(chan struct{})
 
 	// Register a long-running command
-	systemd.RegisterCommand("sleep", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	exec.RegisterCommand("sleep", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		close(started)
 		<-ctx.Done() // Wait for cancellation
 		return 137   // Typical killed exit code
@@ -526,8 +516,8 @@ func TestTTYHost_RunTask_Cancel(t *testing.T) {
 		Command:   []string{"sleep"},
 		Rows:      5,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
+		Executor:  exec,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -566,13 +556,13 @@ func TestTTYHost_RunTask_Cancel(t *testing.T) {
 }
 
 func TestTTYHost_RunTask_SendInput(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	exec, journal := NewTestFakes()
 
 	ready := make(chan struct{})
 	gotInput := make(chan string, 1)
 
 	// Register a command that reads from stdin and echoes it
-	systemd.RegisterCommand("cat", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	exec.RegisterCommand("cat", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		close(ready)
 		buf := make([]byte, 1024)
 		n, err := stdin.Read(buf)
@@ -591,8 +581,8 @@ func TestTTYHost_RunTask_SendInput(t *testing.T) {
 		Command:   []string{"cat"},
 		Rows:      5,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
+		Executor:  exec,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -642,14 +632,13 @@ func TestTTYHost_RunTask_SendInput(t *testing.T) {
 }
 
 func TestTTYHost_Attach_Basic(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "ATTACH1",
 		Command:   []string{"bash"},
 		Rows:      5,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
@@ -680,14 +669,13 @@ func TestTTYHost_Attach_Basic(t *testing.T) {
 }
 
 func TestTTYHost_Attach_MultiClient(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "ATTACH2",
 		Command:   []string{"bash"},
 		Rows:      5,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
@@ -749,13 +737,13 @@ func TestTTYHost_Attach_MultiClient(t *testing.T) {
 }
 
 func TestTTYHost_Attach_StreamOutput(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	exec, journal := NewTestFakes()
 
 	ready := make(chan struct{})
 	done := make(chan struct{})
 
 	// Register a command that outputs some text after a signal
-	systemd.RegisterCommand("outputter", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	exec.RegisterCommand("outputter", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		close(ready)
 		<-done
 		fmt.Fprint(stdout, "STREAMED_OUTPUT")
@@ -767,8 +755,8 @@ func TestTTYHost_Attach_StreamOutput(t *testing.T) {
 		Command:   []string{"outputter"},
 		Rows:      5,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
+		Executor:  exec,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()
@@ -818,14 +806,13 @@ func TestTTYHost_Attach_StreamOutput(t *testing.T) {
 }
 
 func TestTTYHost_Attach_ReattachAfterDisconnect(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	_, journal := NewTestFakes()
 
 	host := NewTTYHost(TTYHostConfig{
 		SessionID: "ATTACH5",
 		Command:   []string{"bash"},
 		Rows:      5,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
 		OpenPTY:   OpenFakePTY,
 	})
@@ -863,13 +850,13 @@ func TestTTYHost_Attach_ReattachAfterDisconnect(t *testing.T) {
 }
 
 func TestTTYHost_Attach_SendInput(t *testing.T) {
-	systemd, journal := NewTestFakes()
+	exec, journal := NewTestFakes()
 
 	ready := make(chan struct{})
 	gotInput := make(chan string, 1)
 
 	// Register a command that reads from stdin
-	systemd.RegisterCommand("reader", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	exec.RegisterCommand("reader", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		close(ready)
 		buf := make([]byte, 1024)
 		n, _ := stdin.Read(buf)
@@ -884,8 +871,8 @@ func TestTTYHost_Attach_SendInput(t *testing.T) {
 		Command:   []string{"reader"},
 		Rows:      5,
 		Cols:      40,
-		Processes: systemd,
 		Events:    journal,
+		Executor:  exec,
 		OpenPTY:   OpenFakePTY,
 	})
 	defer host.Close()

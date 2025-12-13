@@ -134,6 +134,13 @@ func (s *Service) Query(sparql string) ([]oxigraph.Solution, error) {
 	return results, nil
 }
 
+// QueryResults executes a SPARQL query and returns results serialized in the given format.
+func (s *Service) QueryResults(sparql string, format oxigraph.ResultsFormat) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.store.QueryResults(sparql, format)
+}
+
 // Quads returns quads matching the given pattern.
 func (s *Service) Quads(pattern oxigraph.Pattern) []oxigraph.Quad {
 	s.mu.RLock()
@@ -187,4 +194,24 @@ func (s *Service) AddEvent(e eventlog.EventRecord) (int, error) {
 		return 0, err
 	}
 	return len(quads), nil
+}
+
+// Reset clears the store and creates a fresh one.
+// This is used for soft restart (SIGHUP) to reload data.
+func (s *Service) Reset() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Close existing store
+	if s.store != nil {
+		s.store.Close()
+	}
+
+	// Create new store
+	store, err := s.runtime.NewStore()
+	if err != nil {
+		return fmt.Errorf("create new store: %w", err)
+	}
+	s.store = store
+	return nil
 }

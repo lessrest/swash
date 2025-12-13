@@ -67,6 +67,10 @@ type SessionController interface {
 	// Kill sends SIGKILL to the process.
 	Kill() error
 
+	// Restart kills the task and spawns a new one with the same command.
+	// The session stays alive; only the task process is replaced.
+	Restart() error
+
 	// Gist returns session status.
 	Gist() (HostStatus, error)
 
@@ -128,6 +132,10 @@ func (c *sessionClientDBus) SendInput(input string) (int, error) {
 
 func (c *sessionClientDBus) Kill() error {
 	return c.obj.Call(DBusNamePrefix+".Kill", 0).Err
+}
+
+func (c *sessionClientDBus) Restart() error {
+	return c.obj.Call(DBusNamePrefix+".Restart", 0).Err
 }
 
 func (c *sessionClientDBus) Gist() (HostStatus, error) {

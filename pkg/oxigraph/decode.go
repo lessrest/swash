@@ -139,6 +139,7 @@ func decodeSolution(data []byte) (Solution, error) {
 		return Solution{}, err
 	}
 
+	vars := make([]string, 0, numBindings)
 	bindings := make(map[string]Term, numBindings)
 	for range numBindings {
 		varLen, err := d.readVarint()
@@ -153,10 +154,12 @@ func decodeSolution(data []byte) (Solution, error) {
 		if err != nil {
 			return Solution{}, err
 		}
-		bindings[string(varName)] = term
+		name := string(varName)
+		vars = append(vars, name)
+		bindings[name] = term
 	}
 
-	return Solution{bindings: bindings}, nil
+	return NewOrderedSolution(vars, bindings), nil
 }
 
 func decodeQuad(data []byte) (Quad, error) {

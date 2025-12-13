@@ -96,6 +96,10 @@ func (c *unixSessionClient) Kill() error {
 	return c.doJSON(context.Background(), http.MethodPost, "/kill", nil, nil)
 }
 
+func (c *unixSessionClient) Restart() error {
+	return c.doJSON(context.Background(), http.MethodPost, "/restart", nil, nil)
+}
+
 func (c *unixSessionClient) SendInput(input string) (int, error) {
 	req, err := c.newRequest(context.Background(), http.MethodPost, "/input", strings.NewReader(input))
 	if err != nil {

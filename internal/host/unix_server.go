@@ -20,6 +20,7 @@ type basicSession interface {
 	Gist() (HostStatus, error)
 	SendInput(data string) (int, error)
 	Kill() error
+	Restart() error
 	SessionID() (string, error)
 }
 
@@ -70,6 +71,15 @@ func ServeUnix(socketPath string, sess basicSession, ttyHost *tty.TTYHost) (*Uni
 	mux.HandleFunc("POST /kill", func(w http.ResponseWriter, r *http.Request) {
 		_ = r
 		if err := sess.Kill(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mux.HandleFunc("POST /restart", func(w http.ResponseWriter, r *http.Request) {
+		_ = r
+		if err := sess.Restart(); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

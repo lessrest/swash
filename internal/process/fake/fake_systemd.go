@@ -28,7 +28,6 @@ type ProcessSpec = process.ProcessSpec
 type ProcessRef = process.ProcessRef
 type ProcessFilter = process.ProcessFilter
 type ProcessStatus = process.ProcessStatus
-type ProcessExit = process.ProcessExit
 
 const (
 	UnitStateActive   = systemdapi.UnitStateActive
@@ -57,9 +56,6 @@ type FakeSystemd struct {
 	commands  map[string]FakeCommand // command name -> handler
 	processes map[UnitName]*fakeProcess
 	journal   *FakeJournal // Optional: for writing systemd-style exit events
-
-	// Exit notification subscriptions
-	exitSubs map[UnitName][]chan ExitNotification
 }
 
 // NewFakeSystemd creates a new FakeSystemd with empty state.
@@ -68,34 +64,14 @@ func NewFakeSystemd() *FakeSystemd {
 		units:     make(map[UnitName]*Unit),
 		commands:  make(map[string]FakeCommand),
 		processes: make(map[UnitName]*fakeProcess),
-		exitSubs:  make(map[UnitName][]chan ExitNotification),
 	}
 }
 
 // NewTestFakes creates a connected FakeSystemd and FakeJournal for testing.
-// It also registers a handler for the test binary to handle notify-exit subcommand.
 func NewTestFakes() (*FakeSystemd, *FakeJournal) {
 	systemd := NewFakeSystemd()
 	journal := eventlogfake.NewFakeJournal()
 	systemd.journal = journal
-
-	// Register handler for the test binary (used by ExecStopPost)
-	// When ExecStopPost runs "{selfExe} notify-exit {sessionID} {exitCode} {result}",
-	// this handler parses the args and calls EmitUnitExit.
-	selfExe, _ := os.Executable()
-	systemd.RegisterCommand(selfExe, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
-		// args = ["/path/to/test.binary", "notify-exit", sessionID, exitStatus, serviceResult]
-		if len(args) >= 5 && args[1] == "notify-exit" {
-			sessionID := args[2]
-			exitStatus := 0
-			fmt.Sscanf(args[3], "%d", &exitStatus)
-			serviceResult := args[4]
-			taskUnit := TaskUnit(sessionID)
-			systemd.EmitUnitExit(context.Background(), taskUnit, exitStatus, serviceResult)
-		}
-		return 0
-	})
-
 	return systemd, journal
 }
 
@@ -462,55 +438,6 @@ func matchesStates(state UnitState, states []UnitState) bool {
 	return slices.Contains(states, state)
 }
 
-// SubscribeUnitExit returns a channel that receives when the specified unit exits.
-func (f *FakeSystemd) SubscribeUnitExit(ctx context.Context, unit UnitName) (<-chan ExitNotification, error) {
-	ch := make(chan ExitNotification, 1)
-
-	f.mu.Lock()
-	f.exitSubs[unit] = append(f.exitSubs[unit], ch)
-	f.mu.Unlock()
-
-	// Clean up subscription when context is cancelled
-	go func() {
-		<-ctx.Done()
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		subs := f.exitSubs[unit]
-		for i, sub := range subs {
-			if sub == ch {
-				f.exitSubs[unit] = append(subs[:i], subs[i+1:]...)
-				break
-			}
-		}
-		close(ch)
-	}()
-
-	return ch, nil
-}
-
-// EmitUnitExit sends an exit notification for a unit to all subscribers.
-func (f *FakeSystemd) EmitUnitExit(ctx context.Context, unit UnitName, exitCode int, serviceResult string) error {
-	f.mu.Lock()
-	subs := f.exitSubs[unit]
-	f.mu.Unlock()
-
-	notification := ExitNotification{
-		Unit:          unit,
-		ExitCode:      exitCode,
-		ServiceResult: serviceResult,
-	}
-
-	for _, ch := range subs {
-		select {
-		case ch <- notification:
-		default:
-			// Channel full, skip
-		}
-	}
-
-	return nil
-}
-
 // --- ProcessBackend implementation (semantic wrapper) ---
 
 // Start launches a workload described by ProcessSpec.
@@ -609,29 +536,4 @@ func (f *FakeSystemd) Describe(ctx context.Context, ref ProcessRef) (*ProcessSta
 		WorkingDir:  unit.WorkingDir,
 		ExitStatus:  unit.ExitStatus,
 	}, nil
-}
-
-// SubscribeExit subscribes to workload exit notifications.
-func (f *FakeSystemd) SubscribeExit(ctx context.Context, ref ProcessRef) (<-chan ProcessExit, error) {
-	unitCh, err := f.SubscribeUnitExit(ctx, unitNameForRef(ref))
-	if err != nil {
-		return nil, err
-	}
-	out := make(chan ProcessExit, 1)
-	go func() {
-		defer close(out)
-		for n := range unitCh {
-			out <- ProcessExit{
-				Ref:      ref,
-				ExitCode: n.ExitCode,
-				Result:   n.ServiceResult,
-			}
-		}
-	}()
-	return out, nil
-}
-
-// EmitExit emits an exit notification for a workload.
-func (f *FakeSystemd) EmitExit(ctx context.Context, ref ProcessRef, exitCode int, result string) error {
-	return f.EmitUnitExit(ctx, unitNameForRef(ref), exitCode, result)
 }

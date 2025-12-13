@@ -11,24 +11,24 @@ import (
 
 	"github.com/mbrock/swash/internal/eventlog"
 	eventlogfake "github.com/mbrock/swash/internal/eventlog/fake"
-	systemdapi "github.com/mbrock/swash/internal/platform/systemd/process"
-	processfake "github.com/mbrock/swash/internal/process/fake"
+	"github.com/mbrock/swash/internal/executor"
 	"github.com/mbrock/swash/internal/protocol"
 )
 
-// runTestTask sets up fakes, runs a task to completion, and returns the fakes for assertions.
-func runTestTask(t *testing.T, cmd processfake.FakeCommand, proto protocol.Protocol) (*eventlogfake.FakeJournal, *processfake.FakeSystemd) {
+// runTestTask sets up fakes, runs a task to completion, and returns the journal for assertions.
+func runTestTask(t *testing.T, cmd executor.FakeCommand, proto protocol.Protocol) *eventlogfake.FakeJournal {
 	t.Helper()
 
-	systemd, journal := processfake.NewTestFakes()
-	systemd.RegisterCommand("test-cmd", cmd)
+	exec := executor.NewFakeExecutor()
+	journal := eventlogfake.NewFakeJournal()
+	exec.RegisterCommand("test-cmd", cmd)
 
 	host := NewHost(HostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"test-cmd"},
 		Protocol:  proto,
-		Processes: systemd,
 		Events:    journal,
+		Executor:  exec,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -38,22 +38,22 @@ func runTestTask(t *testing.T, cmd processfake.FakeCommand, proto protocol.Proto
 		t.Fatalf("RunTask failed: %v", err)
 	}
 
-	return journal, systemd
+	return journal
 }
 
 // startTestTask starts a task in a goroutine and returns the Host for interaction.
 // The caller must wait on the done channel for task completion.
-func startTestTask(t *testing.T, systemd *processfake.FakeSystemd, journal *eventlogfake.FakeJournal, cmd processfake.FakeCommand, proto protocol.Protocol) (*Host, <-chan error) {
+func startTestTask(t *testing.T, exec *executor.FakeExecutor, journal *eventlogfake.FakeJournal, cmd executor.FakeCommand, proto protocol.Protocol) (*Host, <-chan error) {
 	t.Helper()
 
-	systemd.RegisterCommand("test-cmd", cmd)
+	exec.RegisterCommand("test-cmd", cmd)
 
 	host := NewHost(HostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"test-cmd"},
 		Protocol:  proto,
-		Processes: systemd,
 		Events:    journal,
+		Executor:  exec,
 	})
 
 	done := make(chan error, 1)
@@ -67,7 +67,7 @@ func startTestTask(t *testing.T, systemd *processfake.FakeSystemd, journal *even
 }
 
 func TestHost_OutputCapture(t *testing.T) {
-	journal, _ := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	journal := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		fmt.Fprintln(stdout, "hello")
 		return 0
 	}, protocol.ProtocolShell)
@@ -89,7 +89,7 @@ func TestHost_OutputCapture(t *testing.T) {
 }
 
 func TestHost_StderrCapture(t *testing.T) {
-	journal, _ := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	journal := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		fmt.Fprintln(stderr, "error message")
 		return 0
 	}, protocol.ProtocolShell)
@@ -110,19 +110,9 @@ func TestHost_StderrCapture(t *testing.T) {
 }
 
 func TestHost_ExitCode(t *testing.T) {
-	journal, systemd := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	journal := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		return 42
 	}, protocol.ProtocolShell)
-
-	// Check unit exit status
-	ctx := context.Background()
-	unit, err := systemd.GetUnit(ctx, systemdapi.TaskUnit("TEST01"))
-	if err != nil {
-		t.Fatalf("GetUnit failed: %v", err)
-	}
-	if unit.ExitStatus != 42 {
-		t.Errorf("expected unit.ExitStatus=42, got %d", unit.ExitStatus)
-	}
 
 	// Check journal exited event
 	entries := journal.Entries()
@@ -139,7 +129,7 @@ func TestHost_ExitCode(t *testing.T) {
 }
 
 func TestHost_LifecycleEvents(t *testing.T) {
-	journal, _ := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	journal := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		return 0
 	}, protocol.ProtocolShell)
 
@@ -170,11 +160,12 @@ func TestHost_LifecycleEvents(t *testing.T) {
 }
 
 func TestHost_SendInput(t *testing.T) {
-	systemd, journal := processfake.NewTestFakes()
+	exec := executor.NewFakeExecutor()
+	journal := eventlogfake.NewFakeJournal()
 
 	// Command that reads from stdin and echoes to stdout
 	inputReceived := make(chan string, 1)
-	host, done := startTestTask(t, systemd, journal, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	host, done := startTestTask(t, exec, journal, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		buf := make([]byte, 100)
 		n, err := stdin.Read(buf)
 		if err != nil && err != io.EOF {
@@ -237,13 +228,12 @@ func TestHost_SendInput(t *testing.T) {
 }
 
 func TestHost_SendInput_NoProcess(t *testing.T) {
-	systemd, journal := processfake.NewTestFakes()
+	journal := eventlogfake.NewFakeJournal()
 
 	host := NewHost(HostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"test-cmd"},
 		Protocol:  protocol.ProtocolShell,
-		Processes: systemd,
 		Events:    journal,
 	})
 
@@ -270,15 +260,16 @@ func countOpenFDs(t *testing.T) int {
 }
 
 func TestHost_StartTaskProcess_NoFDLeakOnStartError(t *testing.T) {
-	systemd, journal := processfake.NewTestFakes()
+	journal := eventlogfake.NewFakeJournal()
+	exec := executor.NewFakeExecutor()
+	// Don't register the command; FakeExecutor will fail with "executable not found".
 
-	// Don't register the command; FakeSystemd will fail StartTransient with "executable not found".
 	host := NewHost(HostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"missing-cmd"},
 		Protocol:  protocol.ProtocolShell,
-		Processes: systemd,
 		Events:    journal,
+		Executor:  exec,
 	})
 
 	// Run once and then use that as baseline. This avoids false positives if the
@@ -302,10 +293,11 @@ func TestHost_StartTaskProcess_NoFDLeakOnStartError(t *testing.T) {
 }
 
 func TestHost_Kill(t *testing.T) {
-	systemd, journal := processfake.NewTestFakes()
+	exec := executor.NewFakeExecutor()
+	journal := eventlogfake.NewFakeJournal()
 
 	// Command that blocks until context is cancelled
-	host, done := startTestTask(t, systemd, journal, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	host, done := startTestTask(t, exec, journal, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		<-ctx.Done()
 		return 0
 	}, protocol.ProtocolShell)
@@ -322,23 +314,23 @@ func TestHost_Kill(t *testing.T) {
 	// Wait for task to complete
 	<-done
 
-	// Verify unit state
-	ctx := context.Background()
-	unit, err := systemd.GetUnit(ctx, systemdapi.TaskUnit("TEST01"))
+	// Verify the host reports not running
+	status, err := host.Gist()
 	if err != nil {
-		t.Fatalf("GetUnit failed: %v", err)
+		t.Fatalf("Gist failed: %v", err)
 	}
-	if unit.State != systemdapi.UnitStateFailed && unit.State != systemdapi.UnitStateInactive {
-		t.Errorf("expected unit state failed or inactive, got %s", unit.State)
+	if status.Running {
+		t.Error("expected Running=false after kill")
 	}
 }
 
 func TestHost_Gist(t *testing.T) {
-	systemd, journal := processfake.NewTestFakes()
+	exec := executor.NewFakeExecutor()
+	journal := eventlogfake.NewFakeJournal()
 
 	// Command that blocks until context is cancelled
 	blocked := make(chan struct{})
-	host, done := startTestTask(t, systemd, journal, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	host, done := startTestTask(t, exec, journal, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		close(blocked)
 		<-ctx.Done()
 		return 42

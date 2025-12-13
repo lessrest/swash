@@ -43,6 +43,7 @@ func NewServer(service *Service, socketPath string) *Server {
 }
 
 // Run starts the server and blocks until stopped.
+// It handles SIGTERM/SIGINT for graceful shutdown.
 func (s *Server) Run(ctx context.Context) error {
 	listener, err := s.getListener()
 	if err != nil {
@@ -52,7 +53,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	slog.Info("graph server starting", "socket", s.socketPath)
 
-	// Handle shutdown signals
+	// Handle signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
@@ -129,6 +130,8 @@ func socketDir(socketPath string) string {
 // handleSPARQL executes a SPARQL query.
 // POST: query in body
 // GET: query in ?query= param
+// Accept header determines format: application/sparql-results+json (default),
+// application/sparql-results+xml, text/csv, text/tab-separated-values
 func (s *Server) handleSPARQL(w http.ResponseWriter, r *http.Request) {
 	var query string
 
@@ -148,28 +151,31 @@ func (s *Server) handleSPARQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := s.service.Query(query)
+	// Determine output format from Accept header
+	format := oxigraph.ResultsJSON
+	contentType := "application/sparql-results+json"
+
+	accept := r.Header.Get("Accept")
+	switch accept {
+	case "application/sparql-results+xml":
+		format = oxigraph.ResultsXML
+		contentType = "application/sparql-results+xml"
+	case "text/csv":
+		format = oxigraph.ResultsCSV
+		contentType = "text/csv"
+	case "text/tab-separated-values":
+		format = oxigraph.ResultsTSV
+		contentType = "text/tab-separated-values"
+	}
+
+	data, err := s.service.QueryResults(query, format)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("query failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Convert to JSON-friendly format
-	jsonResults := make([]map[string]TermJSON, len(results))
-	for i, sol := range results {
-		row := make(map[string]TermJSON)
-		for _, v := range sol.Variables() {
-			if term, ok := sol.Get(v); ok {
-				row[v] = termToJSON(term)
-			}
-		}
-		jsonResults[i] = row
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"results": jsonResults,
-	})
+	w.Header().Set("Content-Type", contentType)
+	w.Write(data)
 }
 
 // handleQuads returns quads matching a pattern in N-Quads or TriG format.
@@ -275,33 +281,6 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]any{
 		"quads": count,
 	})
-}
-
-// TermJSON is a JSON representation of an RDF term.
-type TermJSON struct {
-	Type     string `json:"type"`               // "iri", "bnode", "literal"
-	Value    string `json:"value"`              // The term value
-	Language string `json:"language,omitempty"` // For language-tagged literals
-	Datatype string `json:"datatype,omitempty"` // For typed literals
-}
-
-func termToJSON(t oxigraph.Term) TermJSON {
-	switch v := t.(type) {
-	case oxigraph.NamedNode:
-		return TermJSON{Type: "iri", Value: v.IRI}
-	case oxigraph.BlankNode:
-		return TermJSON{Type: "bnode", Value: v.ID}
-	case oxigraph.Literal:
-		tj := TermJSON{Type: "literal", Value: v.Val}
-		if v.Language != "" {
-			tj.Language = v.Language
-		} else if v.Datatype != "" {
-			tj.Datatype = v.Datatype
-		}
-		return tj
-	default:
-		return TermJSON{Type: "unknown", Value: t.Value()}
-	}
 }
 
 // parseTermParam parses a term from a query parameter.

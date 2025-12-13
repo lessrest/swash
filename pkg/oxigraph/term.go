@@ -100,12 +100,23 @@ func (q Quad) String() string {
 
 // Solution is a single row of bindings from a SELECT query.
 type Solution struct {
+	vars     []string // preserves order from query
 	bindings map[string]Term
 }
 
 // NewSolution creates a new solution from a map of bindings.
+// Note: variable order will be arbitrary. Use NewOrderedSolution to preserve order.
 func NewSolution(bindings map[string]Term) Solution {
-	return Solution{bindings: bindings}
+	vars := make([]string, 0, len(bindings))
+	for v := range bindings {
+		vars = append(vars, v)
+	}
+	return Solution{vars: vars, bindings: bindings}
+}
+
+// NewOrderedSolution creates a solution with explicit variable ordering.
+func NewOrderedSolution(vars []string, bindings map[string]Term) Solution {
+	return Solution{vars: vars, bindings: bindings}
 }
 
 // Get returns the term bound to a variable.
@@ -114,11 +125,7 @@ func (s Solution) Get(variable string) (Term, bool) {
 	return t, ok
 }
 
-// Variables returns all variable names in this solution.
+// Variables returns all variable names in this solution, in query order.
 func (s Solution) Variables() []string {
-	vars := make([]string, 0, len(s.bindings))
-	for v := range s.bindings {
-		vars = append(vars, v)
-	}
-	return vars
+	return s.vars
 }

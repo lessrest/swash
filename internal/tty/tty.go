@@ -7,7 +7,6 @@ import (
 	"maps"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -16,7 +15,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/mbrock/swash/internal/eventlog"
-	"github.com/mbrock/swash/internal/process"
+	"github.com/mbrock/swash/internal/executor"
 	"github.com/mbrock/swash/internal/session"
 	"github.com/mbrock/swash/pkg/vterm"
 )
@@ -159,10 +158,11 @@ type TTYHost struct {
 	rows, cols int
 	tags       map[string]string
 
-	processes process.ProcessBackend
-	events    eventlog.EventLog
+	events   eventlog.EventLog
+	executor executor.Executor
 
 	mu              sync.Mutex
+	proc            executor.Process // the running task process
 	vt              *vterm.VTerm
 	ptyPair         PTYPair // PTY pair (for Resize access)
 	running         bool
@@ -178,6 +178,10 @@ type TTYHost struct {
 	// Multi-client attach support
 	attachedClients map[string]*attachedClient // clientID -> client
 	nextClientID    int                        // counter for generating unique client IDs
+
+	// Restart support
+	restartCh chan struct{}
+	doneCh    chan struct{}
 }
 
 // TTYHostConfig holds the configuration for creating a TTYHost.
@@ -186,8 +190,8 @@ type TTYHostConfig struct {
 	Command    []string
 	Rows, Cols int
 	Tags       map[string]string
-	Processes  process.ProcessBackend
 	Events     eventlog.EventLog
+	Executor   executor.Executor // Optional; defaults to ExecExecutor if nil
 
 	// OpenPTY is optional; defaults to OpenRealPTY if nil.
 	// Provide a custom implementation for testing.
@@ -209,6 +213,11 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 		openPTY = OpenRealPTY
 	}
 
+	execImpl := cfg.Executor
+	if execImpl == nil {
+		execImpl = executor.Default()
+	}
+
 	// Merge session ID into tags so output lines can be filtered
 	tags := make(map[string]string)
 	maps.Copy(tags, cfg.Tags)
@@ -220,8 +229,8 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 		rows:            rows,
 		cols:            cols,
 		tags:            tags,
-		processes:       cfg.Processes,
 		events:          cfg.Events,
+		executor:        execImpl,
 		maxScrollback:   10000,
 		openPTY:         openPTY,
 		attachedClients: make(map[string]*attachedClient),
@@ -298,8 +307,46 @@ func (h *TTYHost) SendInput(data string) (int, error) {
 
 // Kill sends SIGKILL to the task process.
 func (h *TTYHost) Kill() error {
-	ctx := context.Background()
-	return h.processes.Kill(ctx, process.TaskProcess(h.sessionID), syscall.SIGKILL)
+	h.mu.Lock()
+	proc := h.proc
+	h.mu.Unlock()
+	if proc == nil {
+		return fmt.Errorf("no process running")
+	}
+	return proc.Kill()
+}
+
+// closePTYMaster closes the PTY master to unblock any readers.
+func (h *TTYHost) closePTYMaster() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.ptyPair != nil {
+		h.ptyPair.Close()
+		h.ptyPair = nil
+	}
+}
+
+// Restart kills the current task and spawns a new one with the same command.
+func (h *TTYHost) Restart() error {
+	h.mu.Lock()
+	if !h.running {
+		h.mu.Unlock()
+		return fmt.Errorf("no task running")
+	}
+	restartCh := h.restartCh
+	h.mu.Unlock()
+
+	if restartCh == nil {
+		return fmt.Errorf("restart not supported")
+	}
+
+	// Signal the restart request
+	select {
+	case restartCh <- struct{}{}:
+		return nil
+	default:
+		return fmt.Errorf("restart already in progress")
+	}
 }
 
 // Terminal-specific methods
@@ -563,37 +610,51 @@ func (h *TTYHost) GetAttachedClients() (count int32, masterRows, masterCols int3
 
 // RunTask starts the task process and waits for it to complete.
 func (h *TTYHost) RunTask(ctx context.Context) error {
-	doneChan, err := h.startTTYProcess()
-	if err != nil {
-		return fmt.Errorf("starting process: %w", err)
-	}
+	// Create restart channel
+	h.mu.Lock()
+	h.restartCh = make(chan struct{}, 1)
+	h.mu.Unlock()
 
-	// Emit lifecycle event
-	if err := eventlog.EmitStarted(h.events, h.sessionID, h.command); err != nil {
-		return fmt.Errorf("emitting started event: %w", err)
-	}
+	for {
+		doneChan, err := h.startTTYProcess()
+		if err != nil {
+			return fmt.Errorf("starting process: %w", err)
+		}
 
-	select {
-	case <-doneChan:
-		return nil
-	case <-ctx.Done():
-		h.processes.Kill(context.Background(), process.TaskProcess(h.sessionID), syscall.SIGKILL)
-		<-doneChan
-		return ctx.Err()
+		h.mu.Lock()
+		h.doneCh = doneChan
+		h.mu.Unlock()
+
+		// Emit lifecycle event
+		if err := eventlog.EmitStarted(h.events, h.sessionID, h.command); err != nil {
+			return fmt.Errorf("emitting started event: %w", err)
+		}
+
+		select {
+		case <-doneChan:
+			// Task exited normally
+			return nil
+		case <-h.restartCh:
+			// Restart requested - kill current task and loop
+			fmt.Fprintf(os.Stderr, "Restart requested, killing task\n")
+			h.Kill()
+			// Close PTY to unblock reader
+			h.closePTYMaster()
+			<-doneChan // Wait for task to actually exit
+			fmt.Fprintf(os.Stderr, "Starting new task\n")
+			// Loop continues to start new task
+		case <-ctx.Done():
+			h.Kill()
+			// Close PTY to unblock reader
+			h.closePTYMaster()
+			<-doneChan
+			return ctx.Err()
+		}
 	}
 }
 
-// startTTYProcess starts the task subprocess with PTY via the process backend.
+// startTTYProcess starts the task subprocess with PTY via the executor.
 func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
-	ctx := context.Background()
-
-	// Subscribe to exit notifications before starting the task
-	taskRef := process.TaskProcess(h.sessionID)
-	exitCh, err := h.processes.SubscribeExit(ctx, taskRef)
-	if err != nil {
-		return nil, fmt.Errorf("subscribing to exit notifications: %w", err)
-	}
-
 	// Create PTY pair using the injected opener
 	ptyPair, err := h.openPTY()
 	if err != nil {
@@ -606,64 +667,22 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		return nil, fmt.Errorf("setting pty size: %w", err)
 	}
 
-	// Build environment
-	env := make(map[string]string)
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "_") {
-			continue
-		}
-		if idx := strings.Index(e, "="); idx > 0 {
-			env[e[:idx]] = e[idx+1:]
-		}
-	}
-	// Set TERM for proper terminal support
-	env["TERM"] = "xterm-256color"
+	// Get the slave file for the executor
+	slave := os.NewFile(uintptr(ptyPair.SlaveFd()), "pty-slave")
 
-	cwd, _ := os.Getwd()
-
-	// Pass the PTY slave FD for all three stdio streams
-	slaveFd := ptyPair.SlaveFd()
-
-	// Get self executable for ExecStopPost
-	selfExe, err := os.Executable()
+	// Start the process using the executor
+	proc, err := h.executor.StartPTY(h.command, slave)
 	if err != nil {
 		ptyPair.Close()
-		return nil, fmt.Errorf("getting executable path: %w", err)
+		return nil, fmt.Errorf("starting process: %w", err)
 	}
 
-	hostRef := process.HostProcess(h.sessionID)
-
-	spec := process.ProcessSpec{
-		Ref:         taskRef,
-		WorkingDir:  cwd,
-		Description: strings.Join(h.command, " "),
-		Environment: env,
-		Command:     h.command,
-		Collect:     false, // Keep workload around long enough to query exit status
-		IO: process.IODescriptor{
-			Stdin:  &slaveFd,
-			Stdout: &slaveFd,
-			Stderr: &slaveFd,
-		},
-		TTYPath:      ptyPair.SlavePath(), // e.g., /dev/pts/5 (or empty for fakes)
-		Dependencies: []process.ProcessRef{hostRef},
-		// Notify via EmitUnitExit when task exits (args passed directly, not via env)
-		PostStop: [][]string{
-			{selfExe, "notify-exit", h.sessionID, "$EXIT_STATUS", "$SERVICE_RESULT"},
-		},
-		LaunchKind: process.LaunchKindExec,
-	}
-
-	if err := h.processes.Start(ctx, spec); err != nil {
-		ptyPair.Close()
-		return nil, err
-	}
-
-	// Close the slave side - backend now owns it
+	// Close the slave side - child now owns it
 	ptyPair.CloseSlave()
 
-	// Store ptyPair for SendInput, Resize, and reading
+	// Store proc and ptyPair for SendInput, Resize, Kill
 	h.mu.Lock()
+	h.proc = proc
 	h.ptyPair = ptyPair
 	h.running = true
 	h.mu.Unlock()
@@ -697,10 +716,11 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 			}
 		}
 
-		// Wait for exit notification via SubscribeUnitExit
-		notification := <-exitCh
+		// Wait for process to exit and get exit code
+		exitCode, _ := proc.Wait()
+
 		h.mu.Lock()
-		h.exitCode = &notification.ExitCode
+		h.exitCode = &exitCode
 		h.mu.Unlock()
 
 		// Persist final screen state to the event log (with ANSI codes for colors)
@@ -715,12 +735,13 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		}
 
 		// Emit lifecycle event
-		if err := eventlog.EmitExited(h.events, h.sessionID, notification.ExitCode, h.command); err != nil {
+		if err := eventlog.EmitExited(h.events, h.sessionID, exitCode, h.command); err != nil {
 			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
 		}
 
 		h.mu.Lock()
 		h.running = false
+		h.proc = nil
 		if h.ptyPair != nil {
 			h.ptyPair.Close()
 		}

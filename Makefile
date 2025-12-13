@@ -23,7 +23,7 @@ endif
 export SWASH_TEST_MODE
 export SWASH_TEST_JOURNAL_READER
 
-.PHONY: all build test test-unit test-integration install clean generate oxigraph-wasm
+.PHONY: all build test test-unit test-integration test-all-backends install clean generate oxigraph-wasm
 
 all: build
 
@@ -46,6 +46,18 @@ test-unit:
 test-integration: build
 	@echo "Test mode: $(SWASH_TEST_MODE), journal reader: $(SWASH_TEST_JOURNAL_READER)"
 	go test ./integration/... -v -timeout 120s
+
+test-all-backends: build
+	@echo "=== Testing with mini-systemd backend ==="
+	SWASH_TEST_MODE=mini go test ./integration/... -v -timeout 120s
+	@echo ""
+	@echo "=== Testing with posix backend ==="
+	SWASH_TEST_MODE=posix go test ./integration/... -v -timeout 120s
+	@echo ""
+	@echo "=== Testing with real systemd backend ==="
+	SWASH_TEST_MODE=real go test ./integration/... -v -timeout 120s
+	@echo ""
+	@echo "=== All backends passed! ==="
 
 clean:
 	rm -rf bin/

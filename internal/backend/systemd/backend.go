@@ -11,8 +11,6 @@ import (
 	"time"
 
 	"github.com/mbrock/swash/internal/backend"
-	"github.com/mbrock/swash/internal/control"
-	controldbus "github.com/mbrock/swash/internal/control/dbus"
 	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/internal/graph"
 	journald "github.com/mbrock/swash/internal/platform/systemd/eventlog"
@@ -31,7 +29,6 @@ func init() {
 type SystemdBackend struct {
 	processes   process.ProcessBackend
 	events      eventlog.EventLog
-	control     control.ControlPlane
 	hostCommand []string
 }
 
@@ -58,7 +55,6 @@ func Open(ctx context.Context, cfg backend.Config) (backend.Backend, error) {
 	return &SystemdBackend{
 		processes:   proc,
 		events:      j,
-		control:     controldbus.NewDBusControlPlane(),
 		hostCommand: cfg.HostCommand,
 	}, nil
 }
@@ -114,16 +110,14 @@ func (b *SystemdBackend) ListSessions(ctx context.Context) ([]backend.Session, e
 // Tries D-Bus first (for running sessions), then falls back to journal (for finished sessions).
 func (b *SystemdBackend) GetScreen(ctx context.Context, sessionID string) (string, error) {
 	// Try D-Bus for live session
-	if b.control != nil {
-		client, err := b.control.ConnectTTYSession(sessionID)
+	client, err := b.ConnectTTYSession(sessionID)
+	if err == nil {
+		defer client.Close()
+		screen, err := client.GetScreenANSI()
 		if err == nil {
-			defer client.Close()
-			screen, err := client.GetScreenANSI()
-			if err == nil {
-				return screen, nil
-			}
-			// D-Bus call failed - session probably ended, try journal
+			return screen, nil
 		}
+		// D-Bus call failed - session probably ended, try journal
 	}
 
 	// Fall back to journal for saved screen
@@ -225,6 +219,13 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 		}
 	}
 
+	// Emit service type if set
+	if opts.ServiceType != "" {
+		if err := eventlog.EmitServiceType(b.events, sessionID, opts.ServiceType); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to emit service-type: %v\n", err)
+		}
+	}
+
 	return sessionID, nil
 }
 
@@ -235,7 +236,7 @@ func (b *SystemdBackend) StopSession(ctx context.Context, sessionID string) erro
 
 // KillSession sends SIGKILL to the process in a session.
 func (b *SystemdBackend) KillSession(ctx context.Context, sessionID string) error {
-	client, err := b.control.ConnectSession(sessionID)
+	client, err := b.ConnectSession(sessionID)
 	if err != nil {
 		return err
 	}
@@ -246,7 +247,7 @@ func (b *SystemdBackend) KillSession(ctx context.Context, sessionID string) erro
 // SendInput sends input to the process via the swash control plane.
 func (b *SystemdBackend) SendInput(ctx context.Context, sessionID, input string) (int, error) {
 	_ = ctx
-	client, err := b.control.ConnectSession(sessionID)
+	client, err := b.ConnectSession(sessionID)
 	if err != nil {
 		return 0, err
 	}
@@ -377,11 +378,11 @@ func (b *SystemdBackend) ListHistory(ctx context.Context) ([]backend.HistorySess
 }
 
 func (b *SystemdBackend) ConnectSession(sessionID string) (session.SessionClient, error) {
-	return b.control.ConnectSession(sessionID)
+	return session.ConnectSession(sessionID)
 }
 
 func (b *SystemdBackend) ConnectTTYSession(sessionID string) (session.TTYClient, error) {
-	return b.control.ConnectTTYSession(sessionID)
+	return session.ConnectTTYSession(sessionID)
 }
 
 func unitNameStringForRef(ref process.ProcessRef) string {
@@ -487,16 +488,42 @@ func (b *SystemdBackend) graphClient() *graph.Client {
 	return graph.NewClient(cfg.SocketPath)
 }
 
-// ensureGraph checks that the graph service is available.
-// With systemd socket activation, connecting to the socket starts the service.
+// ensureGraph starts the graph service if it's not already running.
 func (b *SystemdBackend) ensureGraph(ctx context.Context) error {
 	client := b.graphClient()
 
-	// Try health check - this will trigger socket activation if installed
-	if err := client.Health(ctx); err != nil {
-		return fmt.Errorf("graph service not available (run 'swash graph install' to enable): %w", err)
+	// Check if already running
+	if err := client.Health(ctx); err == nil {
+		return nil
 	}
-	return nil
+
+	// Start the graph service as a swash session
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("finding executable: %w", err)
+	}
+
+	_, err = b.StartSession(ctx, []string{exe, "graph", "serve"}, backend.SessionOptions{
+		ServiceType: "graph",
+	})
+	if err != nil {
+		return fmt.Errorf("starting graph service: %w", err)
+	}
+
+	// Wait for health check to pass
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for graph service to start")
+		}
+		if err := client.Health(ctx); err == nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func (b *SystemdBackend) GraphQuery(ctx context.Context, sparql string) ([]oxigraph.Solution, error) {
@@ -505,17 +532,7 @@ func (b *SystemdBackend) GraphQuery(ctx context.Context, sparql string) ([]oxigr
 	}
 
 	client := b.graphClient()
-	results, err := client.Query(ctx, sparql)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert from JSON representation back to oxigraph.Solution
-	solutions := make([]oxigraph.Solution, len(results))
-	for i, row := range results {
-		solutions[i] = graph.JSONToSolution(row)
-	}
-	return solutions, nil
+	return client.Query(ctx, sparql)
 }
 
 func (b *SystemdBackend) GraphSerialize(ctx context.Context, pattern oxigraph.Pattern, format oxigraph.Format) ([]byte, error) {
@@ -532,6 +549,15 @@ func (b *SystemdBackend) GraphSerialize(ctx context.Context, pattern oxigraph.Pa
 	}
 
 	return client.Quads(ctx, pattern, formatStr)
+}
+
+func (b *SystemdBackend) GraphLoad(ctx context.Context, data []byte, format oxigraph.Format) error {
+	if err := b.ensureGraph(ctx); err != nil {
+		return err
+	}
+
+	client := b.graphClient()
+	return client.Load(ctx, data, format)
 }
 
 // -----------------------------------------------------------------------------

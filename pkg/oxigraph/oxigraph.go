@@ -25,6 +25,25 @@ var (
 	ErrQueryFailed = errors.New("query failed")
 )
 
+// Cached runtime for parsing operations
+var (
+	parserRuntime     *Runtime
+	parserRuntimeOnce sync.Once
+	parserRuntimeErr  error
+)
+
+// ParseResults parses SPARQL query results from bytes into solutions.
+// Uses a cached runtime internally - safe to call concurrently.
+func ParseResults(data []byte, format ResultsFormat) ([]Solution, error) {
+	parserRuntimeOnce.Do(func() {
+		parserRuntime, parserRuntimeErr = NewRuntime(context.Background())
+	})
+	if parserRuntimeErr != nil {
+		return nil, parserRuntimeErr
+	}
+	return parserRuntime.ParseResults(data, format)
+}
+
 // Runtime manages the WASM runtime and module instance.
 type Runtime struct {
 	ctx     context.Context
@@ -50,6 +69,11 @@ type Runtime struct {
 	serializeBufLen   api.Function
 	serializeBufPtr   api.Function
 	serializeBufFree  api.Function
+	queryResults      api.Function
+	bufferLen         api.Function
+	bufferPtr         api.Function
+	bufferFree        api.Function
+	parseResults      api.Function
 	alloc             api.Function
 	dealloc           api.Function
 }
@@ -97,6 +121,11 @@ func NewRuntime(ctx context.Context) (*Runtime, error) {
 		serializeBufLen:   mod.ExportedFunction("serialize_buf_len"),
 		serializeBufPtr:   mod.ExportedFunction("serialize_buf_ptr"),
 		serializeBufFree:  mod.ExportedFunction("serialize_buf_free"),
+		queryResults:      mod.ExportedFunction("query_results"),
+		bufferLen:         mod.ExportedFunction("buffer_len"),
+		bufferPtr:         mod.ExportedFunction("buffer_ptr"),
+		bufferFree:        mod.ExportedFunction("buffer_free"),
+		parseResults:      mod.ExportedFunction("parse_results"),
 		alloc:             mod.ExportedFunction("alloc"),
 		dealloc:           mod.ExportedFunction("dealloc"),
 	}
@@ -107,6 +136,71 @@ func NewRuntime(ctx context.Context) (*Runtime, error) {
 // Close releases all resources.
 func (r *Runtime) Close() error {
 	return r.runtime.Close(r.ctx)
+}
+
+// ParseResults parses SPARQL query results from bytes into solutions.
+// This is useful for parsing responses from a SPARQL endpoint.
+func (r *Runtime) ParseResults(data []byte, format ResultsFormat) ([]Solution, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Allocate memory and write data
+	res, err := r.alloc.Call(r.ctx, uint64(len(data)))
+	if err != nil {
+		return nil, err
+	}
+	ptr := uint32(res[0])
+	defer r.dealloc.Call(r.ctx, uint64(ptr), uint64(len(data)))
+
+	if !r.mod.Memory().Write(ptr, data) {
+		return nil, errors.New("failed to write to wasm memory")
+	}
+
+	// Call parse_results
+	res, err = r.parseResults.Call(r.ctx, uint64(format), uint64(ptr), uint64(len(data)))
+	if err != nil {
+		return nil, err
+	}
+	iterHandle := int32(res[0])
+	if iterHandle < 0 {
+		return nil, errors.New("failed to parse results")
+	}
+	defer r.queryFree.Call(r.ctx, uint64(iterHandle))
+
+	// Iterate and collect solutions
+	var solutions []Solution
+	for {
+		res, err := r.queryNext.Call(r.ctx, uint64(iterHandle))
+		if err != nil {
+			return nil, err
+		}
+		length := int32(res[0])
+		if length == 0 {
+			break // Done
+		}
+		if length < 0 {
+			return nil, errors.New("iteration error")
+		}
+
+		res, err = r.queryResultPtr.Call(r.ctx, uint64(iterHandle))
+		if err != nil {
+			return nil, err
+		}
+		resultPtr := uint32(res[0])
+
+		resultData, ok := r.mod.Memory().Read(resultPtr, uint32(length))
+		if !ok {
+			return nil, errors.New("failed to read result from wasm memory")
+		}
+
+		sol, err := decodeSolution(resultData)
+		if err != nil {
+			return nil, err
+		}
+		solutions = append(solutions, sol)
+	}
+
+	return solutions, nil
 }
 
 // NewStore creates a new in-memory RDF store.
@@ -182,6 +276,16 @@ const (
 	formatTriG     = 1
 	formatNTriples = 2
 	formatTurtle   = 3
+)
+
+// ResultsFormat represents a SPARQL results serialization format.
+type ResultsFormat int
+
+const (
+	ResultsJSON ResultsFormat = 0 // application/sparql-results+json
+	ResultsXML  ResultsFormat = 1 // application/sparql-results+xml
+	ResultsCSV  ResultsFormat = 2 // text/csv
+	ResultsTSV  ResultsFormat = 3 // text/tab-separated-values
 )
 
 // Load parses and inserts RDF data from a reader.
@@ -331,6 +435,65 @@ func (s *Store) Query(sparql string) iter.Seq2[Solution, error] {
 			}
 		}
 	}
+}
+
+// QueryResults executes a SPARQL query and returns results serialized in the given format.
+// Supports SELECT and ASK queries. Returns the raw bytes of the serialized results.
+func (s *Store) QueryResults(sparql string, format ResultsFormat) ([]byte, error) {
+	if s.closed {
+		return nil, ErrStoreClosed
+	}
+
+	s.runtime.mu.Lock()
+	defer s.runtime.mu.Unlock()
+
+	ptr, err := s.writeToWasm([]byte(sparql))
+	if err != nil {
+		return nil, err
+	}
+	defer s.freeWasm(ptr, len(sparql))
+
+	res, err := s.runtime.queryResults.Call(s.runtime.ctx,
+		uint64(s.handle), uint64(ptr), uint64(len(sparql)), uint64(format))
+	if err != nil {
+		return nil, err
+	}
+	bufHandle := int32(res[0])
+	if bufHandle < 0 {
+		return nil, ErrQueryFailed
+	}
+	defer s.runtime.bufferFree.Call(s.runtime.ctx, uint64(bufHandle))
+
+	// Get buffer length
+	res, err = s.runtime.bufferLen.Call(s.runtime.ctx, uint64(bufHandle))
+	if err != nil {
+		return nil, err
+	}
+	length := int32(res[0])
+	if length < 0 {
+		return nil, errors.New("failed to get buffer length")
+	}
+	if length == 0 {
+		return []byte{}, nil
+	}
+
+	// Get buffer pointer and read data
+	res, err = s.runtime.bufferPtr.Call(s.runtime.ctx, uint64(bufHandle))
+	if err != nil {
+		return nil, err
+	}
+	bufPtr := uint32(res[0])
+
+	data, ok := s.runtime.mod.Memory().Read(bufPtr, uint32(length))
+	if !ok {
+		return nil, errors.New("failed to read result data from wasm memory")
+	}
+
+	// Make a copy since the buffer will be freed
+	result := make([]byte, len(data))
+	copy(result, data)
+
+	return result, nil
 }
 
 // Pattern specifies which quads to match. Nil means "any".

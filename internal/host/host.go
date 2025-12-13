@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 
@@ -19,10 +18,8 @@ import (
 	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/internal/eventlog/sink"
 	"github.com/mbrock/swash/internal/eventlog/source"
+	"github.com/mbrock/swash/internal/executor"
 	journald "github.com/mbrock/swash/internal/platform/systemd/eventlog"
-	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
-	"github.com/mbrock/swash/internal/process"
-	procexec "github.com/mbrock/swash/internal/process/exec"
 	"github.com/mbrock/swash/internal/protocol"
 	"github.com/mbrock/swash/internal/session"
 	"github.com/mbrock/swash/internal/tty"
@@ -35,13 +32,20 @@ type Host struct {
 	protocol  protocol.Protocol
 	tags      map[string]string
 
-	processes process.ProcessBackend
-	events    eventlog.EventLog
+	events   eventlog.EventLog
+	executor executor.Executor
 
-	mu       sync.Mutex
-	stdin    io.WriteCloser
-	running  bool
-	exitCode *int
+	mu        sync.Mutex
+	proc      executor.Process // the running task process
+	stdin     io.WriteCloser
+	running   bool
+	exitCode  *int
+	restartCh chan struct{} // signals a restart request
+	doneCh    chan struct{} // current task's done channel
+
+	// Pipe read ends - kept so we can close them to unblock readers on shutdown
+	stdoutRead *os.File
+	stderrRead *os.File
 }
 
 // HostConfig holds the configuration for creating a Host.
@@ -50,8 +54,8 @@ type HostConfig struct {
 	Command   []string
 	Protocol  protocol.Protocol
 	Tags      map[string]string
-	Processes process.ProcessBackend
 	Events    eventlog.EventLog
+	Executor  executor.Executor // Optional; defaults to ExecExecutor if nil
 }
 
 // NewHost creates a new Host with the given configuration.
@@ -61,13 +65,18 @@ func NewHost(cfg HostConfig) *Host {
 	maps.Copy(tags, cfg.Tags)
 	tags[eventlog.FieldSession] = cfg.SessionID
 
+	execImpl := cfg.Executor
+	if execImpl == nil {
+		execImpl = executor.Default()
+	}
+
 	return &Host{
 		sessionID: cfg.SessionID,
 		command:   cfg.Command,
 		protocol:  cfg.Protocol,
 		tags:      tags,
-		processes: cfg.Processes,
 		events:    cfg.Events,
+		executor:  execImpl,
 	}
 }
 
@@ -107,8 +116,50 @@ func (h *Host) SendInput(data string) (int, error) {
 
 // Kill sends SIGKILL to the task process.
 func (h *Host) Kill() error {
-	ctx := context.Background()
-	return h.processes.Kill(ctx, process.TaskProcess(h.sessionID), syscall.SIGKILL)
+	h.mu.Lock()
+	proc := h.proc
+	h.mu.Unlock()
+	if proc == nil {
+		return fmt.Errorf("no process running")
+	}
+	return proc.Kill()
+}
+
+// closePipes closes the pipe read ends to unblock any readers.
+func (h *Host) closePipes() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stdoutRead != nil {
+		h.stdoutRead.Close()
+		h.stdoutRead = nil
+	}
+	if h.stderrRead != nil {
+		h.stderrRead.Close()
+		h.stderrRead = nil
+	}
+}
+
+// Restart kills the current task and spawns a new one with the same command.
+func (h *Host) Restart() error {
+	h.mu.Lock()
+	if !h.running {
+		h.mu.Unlock()
+		return fmt.Errorf("no task running")
+	}
+	restartCh := h.restartCh
+	h.mu.Unlock()
+
+	if restartCh == nil {
+		return fmt.Errorf("restart not supported")
+	}
+
+	// Signal the restart request
+	select {
+	case restartCh <- struct{}{}:
+		return nil
+	default:
+		return fmt.Errorf("restart already in progress")
+	}
 }
 
 // Run starts the D-Bus host and runs until the task exits or a signal is received.
@@ -159,37 +210,51 @@ func (h *Host) Run() error {
 // This is the core logic without D-Bus setup or signal handling,
 // suitable for testing.
 func (h *Host) RunTask(ctx context.Context) error {
-	doneChan, err := h.startTaskProcess()
-	if err != nil {
-		return fmt.Errorf("starting process: %w", err)
-	}
+	// Create restart channel
+	h.mu.Lock()
+	h.restartCh = make(chan struct{}, 1)
+	h.mu.Unlock()
 
-	// Emit lifecycle event
-	if err := eventlog.EmitStarted(h.events, h.sessionID, h.command); err != nil {
-		return fmt.Errorf("emitting started event: %w", err)
-	}
+	for {
+		doneChan, err := h.startTaskProcess()
+		if err != nil {
+			return fmt.Errorf("starting process: %w", err)
+		}
 
-	select {
-	case <-doneChan:
-		return nil
-	case <-ctx.Done():
-		h.processes.Kill(context.Background(), process.TaskProcess(h.sessionID), syscall.SIGKILL)
-		<-doneChan
-		return ctx.Err()
+		h.mu.Lock()
+		h.doneCh = doneChan
+		h.mu.Unlock()
+
+		// Emit lifecycle event
+		if err := eventlog.EmitStarted(h.events, h.sessionID, h.command); err != nil {
+			return fmt.Errorf("emitting started event: %w", err)
+		}
+
+		select {
+		case <-doneChan:
+			// Task exited normally
+			return nil
+		case <-h.restartCh:
+			// Restart requested - kill current task and loop
+			fmt.Fprintf(os.Stderr, "Restart requested, killing task\n")
+			h.Kill()
+			// Close pipes to unblock readers
+			h.closePipes()
+			<-doneChan // Wait for task to actually exit
+			fmt.Fprintf(os.Stderr, "Starting new task\n")
+			// Loop continues to start new task
+		case <-ctx.Done():
+			h.Kill()
+			// Close pipes to unblock readers so doneChan can complete
+			h.closePipes()
+			<-doneChan
+			return ctx.Err()
+		}
 	}
 }
 
-// startTaskProcess starts the task subprocess via the process backend.
+// startTaskProcess starts the task subprocess via the executor.
 func (srv *Host) startTaskProcess() (chan struct{}, error) {
-	ctx := context.Background()
-
-	// Subscribe to exit notifications before starting the task
-	taskRef := process.TaskProcess(srv.sessionID)
-	exitCh, err := srv.processes.SubscribeExit(ctx, taskRef)
-	if err != nil {
-		return nil, fmt.Errorf("subscribing to exit notifications: %w", err)
-	}
-
 	// Create pipes for stdio
 	stdinRead, stdinWrite, err := os.Pipe()
 	if err != nil {
@@ -211,74 +276,32 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 	}
 
 	closeAllPipes := func() {
-		_ = stdinRead.Close()
-		_ = stdinWrite.Close()
-		_ = stdoutRead.Close()
-		_ = stdoutWrite.Close()
-		_ = stderrRead.Close()
-		_ = stderrWrite.Close()
+		stdinRead.Close()
+		stdinWrite.Close()
+		stdoutRead.Close()
+		stdoutWrite.Close()
+		stderrRead.Close()
+		stderrWrite.Close()
 	}
 
-	// Build environment (excluding underscore-prefixed vars)
-	env := make(map[string]string)
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "_") {
-			continue
-		}
-		if idx := strings.Index(e, "="); idx > 0 {
-			env[e[:idx]] = e[idx+1:]
-		}
-	}
-
-	cwd, _ := os.Getwd()
-
-	// Get file descriptor numbers
-	stdinFd := int(stdinRead.Fd())
-	stdoutFd := int(stdoutWrite.Fd())
-	stderrFd := int(stderrWrite.Fd())
-
-	// Get self executable for ExecStopPost
-	selfExe, err := os.Executable()
+	// Start the process using the executor
+	proc, err := srv.executor.Start(srv.command, stdinRead, stdoutWrite, stderrWrite)
 	if err != nil {
 		closeAllPipes()
-		return nil, fmt.Errorf("getting executable path: %w", err)
+		return nil, fmt.Errorf("starting process: %w", err)
 	}
 
-	hostRef := process.HostProcess(srv.sessionID)
-
-	spec := process.ProcessSpec{
-		Ref:         taskRef,
-		WorkingDir:  cwd,
-		Description: strings.Join(srv.command, " "),
-		Environment: env,
-		Command:     srv.command,
-		Collect:     false, // Keep workload around long enough to query exit status
-		IO: process.IODescriptor{
-			Stdin:  &stdinFd,
-			Stdout: &stdoutFd,
-			Stderr: &stderrFd,
-		},
-		Dependencies: []process.ProcessRef{hostRef},
-		// Notify via EmitUnitExit when task exits (args passed directly, not via env)
-		PostStop: [][]string{
-			{selfExe, "notify-exit", srv.sessionID, "$EXIT_STATUS", "$SERVICE_RESULT"},
-		},
-		LaunchKind: process.LaunchKindExec,
-	}
-
-	if err := srv.processes.Start(ctx, spec); err != nil {
-		closeAllPipes()
-		return nil, err
-	}
-
-	// Close the task-facing ends of the pipes (owned by the backend now)
+	// Close the child-facing ends of the pipes (child now owns them)
 	stdinRead.Close()
 	stdoutWrite.Close()
 	stderrWrite.Close()
 
-	// Store stdin for SendInput
+	// Store proc and stdin for SendInput/Kill
 	srv.mu.Lock()
+	srv.proc = proc
 	srv.stdin = stdinWrite
+	srv.stdoutRead = stdoutRead
+	srv.stderrRead = stderrRead
 	srv.running = true
 	srv.mu.Unlock()
 
@@ -308,30 +331,28 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		stderrRead.Close()
 	}()
 
-	// Wait for exit notification from SubscribeUnitExit
+	// Wait for process to exit
 	go func() {
-		// Wait for exit notification
-		notification := <-exitCh
+		// Wait for process to exit and get exit code
+		exitCode, _ := proc.Wait()
 
-		// Wait for pipes to ensure all output is captured
+		// Wait for pipes to finish reading
 		wg.Wait()
 
 		srv.mu.Lock()
-		srv.exitCode = &notification.ExitCode
-		srv.mu.Unlock()
-
-		// Emit lifecycle event
-		if err := eventlog.EmitExited(srv.events, srv.sessionID, notification.ExitCode, srv.command); err != nil {
-			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
-		}
-
-		srv.mu.Lock()
+		srv.exitCode = &exitCode
 		srv.running = false
+		srv.proc = nil
 		if srv.stdin != nil {
 			srv.stdin.Close()
 		}
 		srv.stdin = nil
 		srv.mu.Unlock()
+
+		// Emit lifecycle event
+		if err := eventlog.EmitExited(srv.events, srv.sessionID, exitCode, srv.command); err != nil {
+			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
+		}
 
 		close(doneChan)
 	}()
@@ -372,9 +393,6 @@ func RunHost() error {
 
 	// POSIX (unix socket) mode: run without systemd/journald/D-Bus.
 	if *unixSocketFlag != "" {
-		processes := procexec.New()
-		defer processes.Close()
-
 		// Use socket-based eventlog via SWASH_JOURNAL_SOCKET.
 		socketPath := os.Getenv("SWASH_JOURNAL_SOCKET")
 		if socketPath == "" {
@@ -416,7 +434,6 @@ func RunHost() error {
 				Rows:      *rowsFlag,
 				Cols:      *colsFlag,
 				Tags:      tags,
-				Processes: processes,
 				Events:    events,
 			})
 			defer h.Close()
@@ -435,7 +452,6 @@ func RunHost() error {
 			Command:   command,
 			Protocol:  protocol.Protocol(*protocolFlag),
 			Tags:      tags,
-			Processes: processes,
 			Events:    events,
 		})
 
@@ -448,15 +464,7 @@ func RunHost() error {
 		return h.RunTask(ctx)
 	}
 
-	ctx := context.Background()
-
-	systemd, err := systemdproc.ConnectUserSystemd(ctx)
-	if err != nil {
-		return fmt.Errorf("connecting to systemd: %w", err)
-	}
-	processes := systemdproc.NewSystemdBackend(systemd)
-	defer processes.Close()
-
+	// Systemd mode: use journald for events
 	events, err := journald.Open()
 	if err != nil {
 		return fmt.Errorf("opening event log: %w", err)
@@ -471,7 +479,6 @@ func RunHost() error {
 			Rows:      *rowsFlag,
 			Cols:      *colsFlag,
 			Tags:      tags,
-			Processes: processes,
 			Events:    events,
 		})
 		defer host.Close()
@@ -483,7 +490,6 @@ func RunHost() error {
 		Command:   command,
 		Protocol:  protocol.Protocol(*protocolFlag),
 		Tags:      tags,
-		Processes: processes,
 		Events:    events,
 	})
 

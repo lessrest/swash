@@ -85,6 +85,7 @@ const (
 	EventScreen         = "screen"          // Final screen state for TTY sessions
 	EventContextCreated = "context-created" // Context creation
 	EventSessionContext = "session-context" // Session-to-context relation
+	EventServiceType    = "service-type"    // Session declares its service type
 )
 
 // Event field names for swash events.
@@ -94,6 +95,7 @@ const (
 	FieldCommand  = "SWASH_COMMAND"
 	FieldExitCode = "SWASH_EXIT_CODE"
 	FieldContext  = "SWASH_CONTEXT"
+	FieldService  = "SWASH_SERVICE"
 )
 
 // EmitStarted writes a session started event to the log.
@@ -126,8 +128,9 @@ func WriteOutput(log EventLog, fd int, text string, extraFields map[string]strin
 
 // EmitScreen writes the final screen state to the log.
 // This preserves the visible screen content when a TTY session exits.
+// Uses WriteSync to ensure the screen is persisted before the host exits.
 func EmitScreen(log EventLog, sessionID string, screenText string, rows, cols int) error {
-	return log.Write(screenText, map[string]string{
+	return log.WriteSync(screenText, map[string]string{
 		FieldEvent:   EventScreen,
 		FieldSession: sessionID,
 		"ROWS":       strconv.Itoa(rows),
@@ -151,6 +154,21 @@ func EmitSessionContext(log EventLog, sessionID, contextID string) error {
 		FieldSession: sessionID,
 		FieldContext: contextID,
 	})
+}
+
+// EmitServiceType writes an event declaring the session's service type.
+// This allows finding sessions by their role (e.g., "graph", "journald").
+func EmitServiceType(log EventLog, sessionID, serviceType string) error {
+	return log.WriteSync("Service type", map[string]string{
+		FieldEvent:   EventServiceType,
+		FieldSession: sessionID,
+		FieldService: serviceType,
+	})
+}
+
+// FilterByService creates a filter for a service's SWASH_SERVICE field.
+func FilterByService(serviceType string) EventFilter {
+	return EventFilter{Field: FieldService, Value: serviceType}
 }
 
 // FilterByContext creates a filter for a context's SWASH_CONTEXT field.
@@ -201,6 +219,9 @@ var (
 	SwashDirectory = oxigraph.IRI(NSSwash + "directory")
 	SwashCreatedAt = oxigraph.IRI(NSSwash + "createdAt")
 	SwashInContext = oxigraph.IRI(NSSwash + "context")
+
+	// Service types
+	SwashGraphService = oxigraph.IRI(NSSwash + "GraphService")
 )
 
 // EventToQuads converts an EventRecord to RDF quads.
@@ -218,6 +239,8 @@ func EventToQuads(e EventRecord) []oxigraph.Quad {
 		return contextCreatedQuads(e, timestamp)
 	case EventSessionContext:
 		return sessionContextQuads(e)
+	case EventServiceType:
+		return serviceTypeQuads(e)
 	default:
 		return nil
 	}
@@ -307,6 +330,33 @@ func sessionContextQuads(e EventRecord) []oxigraph.Quad {
 	}
 }
 
+// serviceTypeQuads generates quads for a service type declaration.
+func serviceTypeQuads(e EventRecord) []oxigraph.Quad {
+	sessionID := e.Fields[FieldSession]
+	serviceType := e.Fields[FieldService]
+	if sessionID == "" || serviceType == "" {
+		return nil
+	}
+
+	// Map service type string to RDF class
+	var typeIRI oxigraph.NamedNode
+	switch serviceType {
+	case "graph":
+		typeIRI = SwashGraphService
+	default:
+		// Unknown service type - use a generic IRI
+		typeIRI = oxigraph.IRI(NSSwash + "Service/" + serviceType)
+	}
+
+	return []oxigraph.Quad{
+		{
+			Subject:   SessionIRI(sessionID),
+			Predicate: RdfType,
+			Object:    typeIRI,
+		},
+	}
+}
+
 // SessionIRI returns the URN for a session.
 func SessionIRI(id string) oxigraph.NamedNode {
 	return oxigraph.IRI("urn:swash:session:" + id)
@@ -339,5 +389,6 @@ func LifecycleEventFilters() []EventFilter {
 		{Field: FieldEvent, Value: EventScreen},
 		{Field: FieldEvent, Value: EventContextCreated},
 		{Field: FieldEvent, Value: EventSessionContext},
+		{Field: FieldEvent, Value: EventServiceType},
 	}
 }

@@ -114,13 +114,14 @@ func (s *SocketSink) encodeEntry(message string, fields map[string]string) []byt
 func appendField(buf []byte, key, value string) []byte {
 	if strings.ContainsAny(value, "\n") {
 		// Binary format for values with newlines:
-		// KEY\n<8-byte-little-endian-length><binary-value>
+		// KEY\n<8-byte-little-endian-length><binary-value>\n
 		buf = append(buf, key...)
 		buf = append(buf, '\n')
 		var lenBuf [8]byte
 		binary.LittleEndian.PutUint64(lenBuf[:], uint64(len(value)))
 		buf = append(buf, lenBuf[:]...)
 		buf = append(buf, value...)
+		buf = append(buf, '\n')
 	} else {
 		// Simple format: KEY=value\n
 		buf = append(buf, key...)

@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -29,8 +30,6 @@ import (
 	"github.com/mbrock/swash/internal/backend"
 	_ "github.com/mbrock/swash/internal/backend/all"
 	"github.com/mbrock/swash/internal/host"
-	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
-	"github.com/mbrock/swash/internal/process"
 	"github.com/mbrock/swash/internal/protocol"
 )
 
@@ -50,17 +49,20 @@ var (
 // Global backend (initialized for commands that need it)
 var bk backend.Backend
 
+func init() {
+	// Configure slog level from SWASH_DEBUG env var
+	level := slog.LevelInfo
+	if os.Getenv("SWASH_DEBUG") != "" {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+}
+
 func main() {
 	// Handle "host" subcommand before flag parsing, since it has its own flags
 	// that pflag doesn't know about (--session, --command-json)
 	if len(os.Args) >= 2 && os.Args[1] == "host" {
 		cmdHost()
-		return
-	}
-
-	// Handle "notify-exit" subcommand (called by systemd ExecStopPost)
-	if len(os.Args) >= 2 && os.Args[1] == "notify-exit" {
-		cmdNotifyExit()
 		return
 	}
 
@@ -273,40 +275,6 @@ func findHostCommand() []string {
 func cmdHost() {
 	if err := host.RunHost(); err != nil {
 		fatal("%v", err)
-	}
-}
-
-// cmdNotifyExit is called by systemd's ExecStopPost to notify the host of task exit.
-// Usage: swash notify-exit <sessionID> <exitStatus> <serviceResult>
-// Arguments are passed directly (systemd expands $EXIT_STATUS and $SERVICE_RESULT).
-func cmdNotifyExit() {
-	if len(os.Args) < 5 {
-		fatal("usage: swash notify-exit <sessionID> <exitStatus> <serviceResult>")
-	}
-	sessionID := os.Args[2]
-	exitStatusStr := os.Args[3]
-	serviceResult := os.Args[4]
-
-	exitStatus := 0
-	if exitStatusStr != "" {
-		fmt.Sscanf(exitStatusStr, "%d", &exitStatus)
-	}
-
-	// Connect to systemd and emit unit exit notification
-	ctx := context.Background()
-	systemd, err := systemdproc.ConnectUserSystemd(ctx)
-	if err != nil {
-		// Don't fatal - systemd may not be available
-		fmt.Fprintf(os.Stderr, "swash notify-exit: connecting to systemd: %v\n", err)
-		os.Exit(1)
-	}
-	defer systemd.Close()
-
-	backend := systemdproc.NewSystemdBackend(systemd)
-
-	if err := backend.EmitExit(ctx, process.TaskProcess(sessionID), exitStatus, serviceResult); err != nil {
-		fmt.Fprintf(os.Stderr, "swash notify-exit: emitting exit: %v\n", err)
-		os.Exit(1)
 	}
 }
 

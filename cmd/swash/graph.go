@@ -2,15 +2,14 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/mbrock/swash/internal/backend"
 	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/internal/graph"
-	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
@@ -24,6 +23,10 @@ func cmdGraph(args []string) {
 	switch args[0] {
 	case "serve":
 		cmdGraphServe(args[1:])
+	case "start":
+		cmdGraphStart(args[1:])
+	case "stop":
+		cmdGraphStop()
 	case "query":
 		cmdGraphQuery(args[1:])
 	case "quads":
@@ -34,10 +37,6 @@ func cmdGraph(args []string) {
 		cmdGraphStatus()
 	case "restart":
 		cmdGraphRestart()
-	case "install":
-		cmdGraphInstall()
-	case "uninstall":
-		cmdGraphUninstall()
 	default:
 		fatal("unknown graph command: %s", args[0])
 	}
@@ -95,6 +94,19 @@ func cmdGraphServe(args []string) {
 		fmt.Fprintf(os.Stderr, "swash graph: loaded %d events (%d quads)\n", len(events), quadCount)
 	}
 
+	// Start following new events in background
+	go func() {
+		fmt.Fprintf(os.Stderr, "swash graph: following journal for new events...\n")
+		for e := range bk.FollowLifecycleEvents(ctx) {
+			quads := eventlog.EventToQuads(e)
+			if len(quads) > 0 {
+				if err := service.AddQuads(quads); err != nil {
+					fmt.Fprintf(os.Stderr, "swash graph: warning: failed to add quads: %v\n", err)
+				}
+			}
+		}
+	}()
+
 	server := graph.NewServer(service, cfg.SocketPath)
 
 	fmt.Fprintf(os.Stderr, "swash graph: listening on %s\n", cfg.SocketPath)
@@ -103,35 +115,174 @@ func cmdGraphServe(args []string) {
 	}
 }
 
+// cmdGraphStart starts the graph service as a swash session.
+func cmdGraphStart(args []string) {
+	ctx := context.Background()
+
+	bk, err := backend.Default(ctx)
+	if err != nil {
+		fatal("initializing backend: %v", err)
+	}
+	defer bk.Close()
+
+	// Check if already running
+	cfg := graph.DefaultConfig()
+	client := graph.NewClient(cfg.SocketPath)
+	if err := client.Health(ctx); err == nil {
+		fmt.Println("graph service already running")
+		return
+	}
+
+	// Find our executable path for the command
+	exe, err := os.Executable()
+	if err != nil {
+		fatal("finding executable: %v", err)
+	}
+
+	// Start the graph server as a swash session
+	sessionID, err := bk.StartSession(ctx, []string{exe, "graph", "serve"}, backend.SessionOptions{
+		ServiceType: "graph",
+	})
+	if err != nil {
+		fatal("starting graph service: %v", err)
+	}
+
+	fmt.Printf("started graph service (session %s)\n", sessionID)
+
+	// Wait for it to be ready
+	for range 50 {
+		time.Sleep(100 * time.Millisecond)
+		if err := client.Health(ctx); err == nil {
+			stats, _ := client.Stats(ctx)
+			fmt.Printf("ready, loaded %d quads\n", stats.Quads)
+			return
+		}
+	}
+
+	fmt.Println("warning: service started but not responding yet")
+}
+
+// cmdGraphStop stops the graph service session.
+func cmdGraphStop() {
+	ctx := context.Background()
+
+	bk, err := backend.Default(ctx)
+	if err != nil {
+		fatal("initializing backend: %v", err)
+	}
+	defer bk.Close()
+
+	// Find the graph service session
+	sessionID, err := findServiceSession(ctx, bk, "graph")
+	if err != nil {
+		fmt.Printf("graph service not found: %v\n", err)
+		return
+	}
+
+	if err := bk.StopSession(ctx, sessionID); err != nil {
+		fatal("stopping graph service: %v", err)
+	}
+
+	fmt.Printf("stopped graph service (session %s)\n", sessionID)
+}
+
+// findServiceSession finds a running session by service type.
+func findServiceSession(ctx context.Context, bk backend.Backend, serviceType string) (string, error) {
+	// Query the graph for sessions with this service type
+	// Use title case for the service type in the RDF class name
+	className := strings.ToUpper(serviceType[:1]) + serviceType[1:] + "Service"
+	sparql := fmt.Sprintf(`
+		PREFIX swa: <https://swa.sh/ns#>
+		PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+		SELECT ?session WHERE {
+			?session rdf:type swa:%s .
+			FILTER NOT EXISTS { ?session swa:exitedAt ?exit }
+		} LIMIT 1
+	`, className)
+
+	results, err := bk.GraphQuery(ctx, sparql)
+	if err != nil {
+		// Graph not available, fall back to listing sessions
+		return findServiceSessionFallback(ctx, bk, serviceType)
+	}
+
+	if len(results) == 0 {
+		return "", fmt.Errorf("no running %s service found", serviceType)
+	}
+
+	// Extract session ID from URN (urn:swash:session:ID)
+	sessionTerm, ok := results[0].Get("session")
+	if !ok {
+		return "", fmt.Errorf("no session binding in result")
+	}
+	sessionURI := sessionTerm.Value()
+	const prefix = "urn:swash:session:"
+	if !strings.HasPrefix(sessionURI, prefix) {
+		return "", fmt.Errorf("invalid session URI: %s", sessionURI)
+	}
+
+	return sessionURI[len(prefix):], nil
+}
+
+// findServiceSessionFallback finds a service session by listing running sessions
+// and checking their service type. Used when graph is not available.
+func findServiceSessionFallback(ctx context.Context, bk backend.Backend, serviceType string) (string, error) {
+	sessions, err := bk.ListSessions(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	// Look for a session running "swash graph serve" for the graph service
+	for _, s := range sessions {
+		if serviceType == "graph" && strings.Contains(s.Command, "graph serve") {
+			return s.ID, nil
+		}
+	}
+
+	return "", fmt.Errorf("no running %s service found", serviceType)
+}
+
 // cmdGraphQuery executes a SPARQL query against the graph service.
 func cmdGraphQuery(args []string) {
 	if len(args) == 0 {
 		fatal("usage: swash graph query <sparql>")
 	}
 
-	cfg := graph.DefaultConfig()
-	client := graph.NewClient(cfg.SocketPath)
-
 	ctx := context.Background()
-	results, err := client.Query(ctx, args[0])
+
+	bk, err := backend.Default(ctx)
+	if err != nil {
+		fatal("initializing backend: %v", err)
+	}
+	defer bk.Close()
+
+	results, err := bk.GraphQuery(ctx, args[0])
 	if err != nil {
 		fatal("query failed: %v", err)
 	}
 
-	// Pretty print results
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	enc.Encode(results)
+	// Print as simple rows
+	for _, sol := range results {
+		vars := sol.Variables()
+		for i, v := range vars {
+			if i > 0 {
+				fmt.Print("\t")
+			}
+			if term, ok := sol.Get(v); ok {
+				fmt.Print(term.Value())
+			}
+		}
+		fmt.Println()
+	}
 }
 
 // cmdGraphQuads queries quads with an optional pattern.
 func cmdGraphQuads(args []string) {
-	cfg := graph.DefaultConfig()
-	client := graph.NewClient(cfg.SocketPath)
+	ctx := context.Background()
 
 	// Parse pattern flags
 	var pattern oxigraph.Pattern
-	format := "" // default to TriG
+	format := oxigraph.TriG // default
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-s", "--subject":
@@ -158,12 +309,19 @@ func cmdGraphQuads(args []string) {
 				fatal("-f requires a value (trig, nquads)")
 			}
 			i++
-			format = args[i]
+			if args[i] == "nquads" {
+				format = oxigraph.NQuads
+			}
 		}
 	}
 
-	ctx := context.Background()
-	data, err := client.Quads(ctx, pattern, format)
+	bk, err := backend.Default(ctx)
+	if err != nil {
+		fatal("initializing backend: %v", err)
+	}
+	defer bk.Close()
+
+	data, err := bk.GraphSerialize(ctx, pattern, format)
 	if err != nil {
 		fatal("quads failed: %v", err)
 	}
@@ -173,8 +331,7 @@ func cmdGraphQuads(args []string) {
 
 // cmdGraphLoad loads RDF data from stdin or a file.
 func cmdGraphLoad(args []string) {
-	cfg := graph.DefaultConfig()
-	client := graph.NewClient(cfg.SocketPath)
+	ctx := context.Background()
 
 	format := oxigraph.NTriples
 	var data []byte
@@ -218,8 +375,13 @@ func cmdGraphLoad(args []string) {
 		}
 	}
 
-	ctx := context.Background()
-	if err := client.Load(ctx, data, format); err != nil {
+	bk, err := backend.Default(ctx)
+	if err != nil {
+		fatal("initializing backend: %v", err)
+	}
+	defer bk.Close()
+
+	if err := bk.GraphLoad(ctx, data, format); err != nil {
 		fatal("load failed: %v", err)
 	}
 	fmt.Println("loaded")
@@ -236,8 +398,7 @@ func cmdGraphStatus() {
 	if err := client.Health(ctx); err != nil {
 		fmt.Printf("graph service: not running (%v)\n", err)
 		fmt.Printf("socket: %s\n", cfg.SocketPath)
-		fmt.Println("\nstart with: swash graph serve")
-		fmt.Println("or install: swash graph install")
+		fmt.Println("\nstart with: swash graph start")
 		return
 	}
 
@@ -257,133 +418,47 @@ func cmdGraphRestart() {
 	ctx := context.Background()
 	cfg := graph.DefaultConfig()
 
-	// Try systemd restart first
-	sd, err := systemdproc.ConnectUserSystemd(ctx)
-	if err == nil {
-		defer sd.Close()
-
-		// Stop the service (socket stays active)
-		_ = sd.StopUnit(ctx, systemdproc.UnitName("swash-graph.service"))
-		fmt.Println("stopped swash-graph.service")
-
-		// Trigger restart by hitting the socket
-		client := graph.NewClient(cfg.SocketPath)
-		if err := client.Health(ctx); err != nil {
-			fatal("failed to restart: %v", err)
-		}
-
-		stats, _ := client.Stats(ctx)
-		fmt.Printf("restarted, loaded %d quads\n", stats.Quads)
+	// Check if service is running
+	graphClient := graph.NewClient(cfg.SocketPath)
+	if err := graphClient.Health(ctx); err != nil {
+		fmt.Println("graph service not running")
 		return
 	}
 
-	// Non-systemd: just report that we can't restart
-	fmt.Println("restart requires systemd socket activation")
-	fmt.Println("stop the service manually and reconnect to restart")
-}
-
-// cmdGraphInstall installs the graph service as a socket-activated systemd user service.
-func cmdGraphInstall() {
-	exe, err := os.Executable()
+	bk, err := backend.Default(ctx)
 	if err != nil {
-		fatal("finding executable: %v", err)
+		fatal("initializing backend: %v", err)
 	}
-	exe, err = filepath.EvalSymlinks(exe)
+	defer bk.Close()
+
+	// Find the graph service session
+	sessionID, err := findServiceSession(ctx, bk, "graph")
 	if err != nil {
-		fatal("resolving executable path: %v", err)
+		fatal("graph service session not found: %v", err)
 	}
 
-	cfg := graph.DefaultConfig()
-
-	userConfigDir, err := os.UserConfigDir()
+	// Connect to the session and call Restart
+	sessionClient, err := bk.ConnectSession(sessionID)
 	if err != nil {
-		fatal("finding config dir: %v", err)
+		fatal("connecting to session: %v", err)
 	}
-	unitDir := filepath.Join(userConfigDir, "systemd", "user")
-	if err := os.MkdirAll(unitDir, 0755); err != nil {
-		fatal("creating unit dir: %v", err)
+	defer sessionClient.Close()
+
+	fmt.Printf("restarting graph service (session %s)...\n", sessionID)
+	if err := sessionClient.Restart(); err != nil {
+		fatal("restart failed: %v", err)
 	}
 
-	// Socket unit - listens on Unix socket
-	socketUnit := fmt.Sprintf(`[Unit]
-Description=swash graph service socket
-
-[Socket]
-ListenStream=%s
-SocketMode=0666
-
-[Install]
-WantedBy=sockets.target
-`, cfg.SocketPath)
-
-	socketPath := filepath.Join(unitDir, "swash-graph.socket")
-	if err := os.WriteFile(socketPath, []byte(socketUnit), 0644); err != nil {
-		fatal("writing socket unit: %v", err)
+	// Wait for service to come back up
+	for range 50 {
+		time.Sleep(100 * time.Millisecond)
+		if err := graphClient.Health(ctx); err == nil {
+			break
+		}
 	}
-	fmt.Printf("wrote %s\n", socketPath)
 
-	// Service unit
-	serviceUnit := fmt.Sprintf(`[Unit]
-Description=swash graph service (RDF knowledge graph)
-
-[Service]
-ExecStart=%s graph serve
-`, exe)
-
-	servicePath := filepath.Join(unitDir, "swash-graph.service")
-	if err := os.WriteFile(servicePath, []byte(serviceUnit), 0644); err != nil {
-		fatal("writing service unit: %v", err)
-	}
-	fmt.Printf("wrote %s\n", servicePath)
-
-	// Connect to systemd and enable
-	ctx := context.Background()
-	sd, err := systemdproc.ConnectUserSystemd(ctx)
-	if err != nil {
-		fatal("connecting to systemd: %v", err)
-	}
-	defer sd.Close()
-
-	if err := sd.Reload(ctx); err != nil {
-		fatal("daemon-reload: %v", err)
-	}
-	fmt.Println("reloaded systemd")
-
-	if err := sd.EnableUnits(ctx, []string{"swash-graph.socket"}); err != nil {
-		fatal("enabling socket: %v", err)
-	}
-	fmt.Println("enabled swash-graph.socket")
-
-	if err := sd.StartUnit(ctx, systemdproc.UnitName("swash-graph.socket")); err != nil {
-		fatal("starting socket: %v", err)
-	}
-	fmt.Printf("started swash-graph.socket at %s\n", cfg.SocketPath)
-}
-
-// cmdGraphUninstall removes the graph service systemd units.
-func cmdGraphUninstall() {
-	ctx := context.Background()
-	sd, err := systemdproc.ConnectUserSystemd(ctx)
-	if err != nil {
-		fatal("connecting to systemd: %v", err)
-	}
-	defer sd.Close()
-
-	// Stop and disable
-	sd.StopUnit(ctx, systemdproc.UnitName("swash-graph.service"))
-	sd.StopUnit(ctx, systemdproc.UnitName("swash-graph.socket"))
-	sd.DisableUnits(ctx, []string{"swash-graph.socket"})
-	fmt.Println("stopped and disabled swash-graph")
-
-	// Remove unit files
-	userConfigDir, _ := os.UserConfigDir()
-	unitDir := filepath.Join(userConfigDir, "systemd", "user")
-	os.Remove(filepath.Join(unitDir, "swash-graph.socket"))
-	os.Remove(filepath.Join(unitDir, "swash-graph.service"))
-	fmt.Println("removed unit files")
-
-	sd.Reload(ctx)
-	fmt.Println("reloaded systemd")
+	stats, _ := graphClient.Stats(ctx)
+	fmt.Printf("restarted, loaded %d quads\n", stats.Quads)
 }
 
 // parseTermArg parses a term from a command line argument.

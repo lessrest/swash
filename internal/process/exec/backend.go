@@ -15,14 +15,9 @@ import (
 )
 
 // Backend is a portable ProcessBackend implementation backed by plain OS processes.
-//
-// Current intended use: posix backend prototype, where the session host runs
-// the task directly and needs SubscribeExit semantics.
 type Backend struct {
-	mu sync.Mutex
-
+	mu    sync.Mutex
 	procs map[process.ProcessRef]*procState
-	subs  map[process.ProcessRef][]chan process.ProcessExit
 }
 
 type procState struct {
@@ -45,7 +40,6 @@ var _ process.ProcessBackend = (*Backend)(nil)
 func New() *Backend {
 	return &Backend{
 		procs: make(map[process.ProcessRef]*procState),
-		subs:  make(map[process.ProcessRef][]chan process.ProcessExit),
 	}
 }
 
@@ -182,13 +176,22 @@ func (b *Backend) Start(ctx context.Context, spec process.ProcessSpec) error {
 	p.exitState = process.ProcessStateRunning
 	b.mu.Unlock()
 
-	go b.waitAndNotify(p)
+	go b.waitForExit(p)
 	return nil
 }
 
 func (b *Backend) Stop(ctx context.Context, ref process.ProcessRef) error {
 	_ = ctx
 	return b.Kill(context.Background(), ref, syscall.SIGTERM)
+}
+
+func (b *Backend) ResetFailed(ctx context.Context, ref process.ProcessRef) error {
+	_ = ctx
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// Remove the process record so it can be started again
+	delete(b.procs, ref)
+	return nil
 }
 
 func (b *Backend) Kill(ctx context.Context, ref process.ProcessRef, signal syscall.Signal) error {
@@ -208,43 +211,7 @@ func (b *Backend) Kill(ctx context.Context, ref process.ProcessRef, signal sysca
 	return p.cmd.Process.Signal(signal)
 }
 
-func (b *Backend) SubscribeExit(ctx context.Context, ref process.ProcessRef) (<-chan process.ProcessExit, error) {
-	_ = ctx
-	ch := make(chan process.ProcessExit, 1)
-
-	b.mu.Lock()
-	// If already exited, return immediate notification.
-	if p := b.procs[ref]; p != nil && p.exitState != process.ProcessStateRunning && p.exitState != process.ProcessStateStarting {
-		ch <- process.ProcessExit{Ref: ref, ExitCode: p.exitCode, Result: exitResultFromState(p.exitState, p.exitCode, p.exitErr)}
-		close(ch)
-		b.mu.Unlock()
-		return ch, nil
-	}
-
-	b.subs[ref] = append(b.subs[ref], ch)
-	b.mu.Unlock()
-
-	return ch, nil
-}
-
-func (b *Backend) EmitExit(ctx context.Context, ref process.ProcessRef, exitCode int, result string) error {
-	_ = ctx
-	b.mu.Lock()
-	subs := b.subs[ref]
-	delete(b.subs, ref)
-	b.mu.Unlock()
-
-	for _, ch := range subs {
-		select {
-		case ch <- process.ProcessExit{Ref: ref, ExitCode: exitCode, Result: result}:
-		default:
-		}
-		close(ch)
-	}
-	return nil
-}
-
-func (b *Backend) waitAndNotify(p *procState) {
+func (b *Backend) waitForExit(p *procState) {
 	err := p.cmd.Wait()
 
 	exitCode := 0
@@ -265,17 +232,7 @@ func (b *Backend) waitAndNotify(p *procState) {
 	p.exitErr = err
 	p.exitCode = exitCode
 	p.exitState = state
-	subs := b.subs[p.ref]
-	delete(b.subs, p.ref)
 	b.mu.Unlock()
-
-	for _, ch := range subs {
-		select {
-		case ch <- process.ProcessExit{Ref: p.ref, ExitCode: exitCode, Result: exitResultFromState(state, exitCode, err)}:
-		default:
-		}
-		close(ch)
-	}
 
 	close(p.done)
 }
@@ -297,17 +254,4 @@ func pidOf(cmd *osexec.Cmd) int {
 		return 0
 	}
 	return cmd.Process.Pid
-}
-
-func exitResultFromState(state process.ProcessState, exitCode int, err error) string {
-	if err == context.Canceled {
-		return "signal"
-	}
-	if exitCode == 0 && state == process.ProcessStateExited {
-		return "success"
-	}
-	if state == process.ProcessStateFailed {
-		return "exit-code"
-	}
-	return "success"
 }

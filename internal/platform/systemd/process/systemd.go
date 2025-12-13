@@ -3,6 +3,7 @@ package systemd
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"syscall"
 	"time"
 
@@ -30,6 +31,9 @@ type Systemd interface {
 
 	// StopUnit gracefully stops a unit, blocking until complete.
 	StopUnit(ctx context.Context, name UnitName) error
+
+	// ResetFailedUnit resets a failed unit so it can be restarted.
+	ResetFailedUnit(ctx context.Context, name UnitName) error
 
 	// KillUnit sends a signal to all processes in a unit.
 	KillUnit(ctx context.Context, name UnitName, signal syscall.Signal) error
@@ -218,6 +222,11 @@ func (s *systemdConn) DisableUnits(ctx context.Context, units []string) error {
 func (s *systemdConn) KillUnit(ctx context.Context, name UnitName, signal syscall.Signal) error {
 	s.conn.KillUnitWithTarget(ctx, name.String(), dbus.All, int32(signal))
 	return nil
+}
+
+// ResetFailedUnit resets a failed unit so it can be restarted.
+func (s *systemdConn) ResetFailedUnit(ctx context.Context, name UnitName) error {
+	return s.conn.ResetFailedUnitContext(ctx, name.String())
 }
 
 // StartTransient creates and starts a transient unit via D-Bus API.
@@ -413,6 +422,7 @@ func (s *systemdConn) SubscribeUnitExit(ctx context.Context, unit UnitName) (<-c
 
 	// Watch for signals in background
 	go func() {
+		slog.Debug("SubscribeExit started", "unit", unit)
 		defer sigConn.Close()
 		defer sigConn.RemoveSignal(sigChan)
 		defer sigConn.RemoveMatchSignal(
@@ -424,24 +434,31 @@ func (s *systemdConn) SubscribeUnitExit(ctx context.Context, unit UnitName) (<-c
 		for {
 			select {
 			case sig := <-sigChan:
+				slog.Debug("SubscribeExit received signal", "signal", sig)
 				if sig == nil {
+					slog.Debug("SubscribeExit nil signal, returning")
 					return
 				}
 				if sig.Name != swashExitSignalInterface+".UnitExited" {
+					slog.Debug("SubscribeExit wrong signal name", "name", sig.Name)
 					continue
 				}
 				// Signal body: (unitName string, exitCode int32, serviceResult string)
 				if len(sig.Body) < 3 {
+					slog.Debug("SubscribeExit signal body too short", "len", len(sig.Body))
 					continue
 				}
 				sigUnit, ok1 := sig.Body[0].(string)
 				exitCode, ok2 := sig.Body[1].(int32)
 				serviceResult, ok3 := sig.Body[2].(string)
 				if !ok1 || !ok2 || !ok3 {
+					slog.Debug("SubscribeExit type assertion failed")
 					continue
 				}
+				slog.Debug("SubscribeExit got exit", "sigUnit", sigUnit, "wantUnit", unit)
 				// Check if this is for our unit
 				if UnitName(sigUnit) == unit {
+					slog.Debug("SubscribeExit match, sending notification")
 					select {
 					case ch <- ExitNotification{
 						Unit:          unit,
@@ -453,6 +470,7 @@ func (s *systemdConn) SubscribeUnitExit(ctx context.Context, unit UnitName) (<-c
 					return // Got our notification, done
 				}
 			case <-ctx.Done():
+				slog.Debug("SubscribeExit ctx done")
 				close(ch)
 				return
 			}
@@ -464,6 +482,7 @@ func (s *systemdConn) SubscribeUnitExit(ctx context.Context, unit UnitName) (<-c
 
 // EmitUnitExit sends an exit notification for a unit via D-Bus signal.
 func (s *systemdConn) EmitUnitExit(ctx context.Context, unit UnitName, exitCode int, serviceResult string) error {
+	slog.Debug("EmitUnitExit", "unit", unit, "exitCode", exitCode, "result", serviceResult)
 	// Connect to session bus to emit signal
 	conn, err := godbus.ConnectSessionBus()
 	if err != nil {
@@ -472,11 +491,13 @@ func (s *systemdConn) EmitUnitExit(ctx context.Context, unit UnitName, exitCode 
 	defer conn.Close()
 
 	// Emit the signal
-	return conn.Emit(
+	err = conn.Emit(
 		godbus.ObjectPath(swashExitSignalPath),
 		swashExitSignalInterface+".UnitExited",
 		unit.String(),
 		int32(exitCode),
 		serviceResult,
 	)
+	slog.Debug("EmitUnitExit result", "error", err)
+	return err
 }

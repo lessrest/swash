@@ -1,5 +1,6 @@
 use oxigraph::io::RdfFormat;
 use oxigraph::model::{NamedNodeRef, NamedOrBlankNode, Quad, Term};
+use oxigraph::sparql::results::{QueryResultsFormat, QueryResultsParser, QueryResultsSerializer};
 use oxigraph::sparql::{QueryResults, QuerySolution, SparqlEvaluator};
 use oxigraph::store::Store;
 use std::sync::Mutex;
@@ -314,6 +315,157 @@ pub extern "C" fn query_result_ptr(iter_handle: i32) -> *const u8 {
 #[no_mangle]
 pub extern "C" fn query_free(iter_handle: i32) {
     free_handle(&QUERY_ITERS, iter_handle);
+}
+
+/// SPARQL results format constants
+pub const RESULTS_FORMAT_JSON: u8 = 0;
+pub const RESULTS_FORMAT_XML: u8 = 1;
+pub const RESULTS_FORMAT_CSV: u8 = 2;
+pub const RESULTS_FORMAT_TSV: u8 = 3;
+
+/// Run a SPARQL query and return results in the specified format.
+/// format: 0=JSON, 1=XML, 2=CSV, 3=TSV
+/// Returns buffer handle >= 0, or -1 on error.
+#[no_mangle]
+pub extern "C" fn query_results(handle: i32, query_ptr: *const u8, query_len: usize, format: u8) -> i32 {
+    let query = unsafe {
+        if query_ptr.is_null() {
+            return -1;
+        }
+        match std::str::from_utf8(std::slice::from_raw_parts(query_ptr, query_len)) {
+            Ok(s) => s,
+            Err(_) => return -1,
+        }
+    };
+
+    let results_format = match format {
+        RESULTS_FORMAT_JSON => QueryResultsFormat::Json,
+        RESULTS_FORMAT_XML => QueryResultsFormat::Xml,
+        RESULTS_FORMAT_CSV => QueryResultsFormat::Csv,
+        RESULTS_FORMAT_TSV => QueryResultsFormat::Tsv,
+        _ => return -1,
+    };
+
+    with_handle(&STORES, handle, |store| {
+        let parsed = match SparqlEvaluator::new().parse_query(query) {
+            Ok(q) => q,
+            Err(_) => return -1,
+        };
+        let serializer = QueryResultsSerializer::from_format(results_format);
+        match parsed.on_store(store).execute() {
+            Ok(QueryResults::Boolean(value)) => {
+                match serializer.serialize_boolean_to_writer(Vec::new(), value) {
+                    Ok(buf) => alloc_handle(&SERIALIZE_BUFS, buf),
+                    Err(_) => -1,
+                }
+            }
+            Ok(QueryResults::Solutions(solutions)) => {
+                let variables: Vec<_> = solutions.variables().to_vec();
+                let mut writer = match serializer.serialize_solutions_to_writer(Vec::new(), variables) {
+                    Ok(w) => w,
+                    Err(_) => return -1,
+                };
+                for solution in solutions {
+                    if let Ok(sol) = solution {
+                        if writer.serialize(&sol).is_err() {
+                            return -1;
+                        }
+                    }
+                }
+                match writer.finish() {
+                    Ok(buf) => alloc_handle(&SERIALIZE_BUFS, buf),
+                    Err(_) => -1,
+                }
+            }
+            Ok(QueryResults::Graph(_)) => -1, // CONSTRUCT/DESCRIBE not supported via this API
+            Err(_) => -1,
+        }
+    })
+    .unwrap_or(-1)
+}
+
+/// Convenience wrapper: Run a SPARQL query and return results as JSON.
+#[no_mangle]
+pub extern "C" fn query_json(handle: i32, query_ptr: *const u8, query_len: usize) -> i32 {
+    query_results(handle, query_ptr, query_len, RESULTS_FORMAT_JSON)
+}
+
+/// Get the length of a serialization buffer.
+#[no_mangle]
+pub extern "C" fn buffer_len(buf_handle: i32) -> i32 {
+    with_handle(&SERIALIZE_BUFS, buf_handle, |buf| buf.len() as i32).unwrap_or(-1)
+}
+
+/// Get pointer to a serialization buffer.
+#[no_mangle]
+pub extern "C" fn buffer_ptr(buf_handle: i32) -> *const u8 {
+    with_handle(&SERIALIZE_BUFS, buf_handle, |buf| {
+        if buf.is_empty() {
+            std::ptr::null()
+        } else {
+            buf.as_ptr()
+        }
+    })
+    .unwrap_or(std::ptr::null())
+}
+
+/// Free a serialization buffer.
+#[no_mangle]
+pub extern "C" fn buffer_free(buf_handle: i32) {
+    free_handle(&SERIALIZE_BUFS, buf_handle);
+}
+
+/// Parse SPARQL results from bytes into a solution iterator.
+/// format: 0=JSON, 1=XML, 2=CSV, 3=TSV
+/// Returns iterator handle >= 0, or -1 on error.
+/// Use query_next/query_result_ptr/query_free to iterate.
+#[no_mangle]
+pub extern "C" fn parse_results(format: u8, data_ptr: *const u8, data_len: usize) -> i32 {
+    let data = unsafe {
+        if data_ptr.is_null() {
+            return -1;
+        }
+        std::slice::from_raw_parts(data_ptr, data_len)
+    };
+
+    let results_format = match format {
+        RESULTS_FORMAT_JSON => QueryResultsFormat::Json,
+        RESULTS_FORMAT_XML => QueryResultsFormat::Xml,
+        RESULTS_FORMAT_CSV => QueryResultsFormat::Csv,
+        RESULTS_FORMAT_TSV => QueryResultsFormat::Tsv,
+        _ => return -1,
+    };
+
+    let parser = QueryResultsParser::from_format(results_format);
+    let parsed = match parser.for_reader(data) {
+        Ok(p) => p,
+        Err(_) => return -1,
+    };
+
+    match parsed {
+        oxigraph::sparql::results::ReaderQueryResultsParserOutput::Solutions(solutions) => {
+            let solutions_vec: Vec<_> = solutions.flatten().collect();
+            alloc_handle(
+                &QUERY_ITERS,
+                QueryIterator {
+                    solutions: solutions_vec,
+                    index: 0,
+                    result_buf: Vec::new(),
+                },
+            )
+        }
+        oxigraph::sparql::results::ReaderQueryResultsParserOutput::Boolean(_) => {
+            // For ASK queries, return empty iterator (or we could handle differently)
+            alloc_handle(
+                &QUERY_ITERS,
+                QueryIterator {
+                    solutions: Vec::new(),
+                    index: 0,
+                    result_buf: Vec::new(),
+                },
+            )
+        }
+    }
 }
 
 // ============================================================================

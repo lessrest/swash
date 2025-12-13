@@ -68,6 +68,7 @@ type Backend interface {
 	// Graph (RDF knowledge graph)
 	GraphQuery(ctx context.Context, sparql string) ([]oxigraph.Solution, error)
 	GraphSerialize(ctx context.Context, pattern oxigraph.Pattern, format oxigraph.Format) ([]byte, error)
+	GraphLoad(ctx context.Context, data []byte, format oxigraph.Format) error
 
 	// Lifecycle events (for graph population)
 	PollLifecycleEvents(ctx context.Context, cursor string) ([]eventlog.EventRecord, string, error)

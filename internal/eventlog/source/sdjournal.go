@@ -50,6 +50,10 @@ func NewSDJournalSource(journalDir string) (*SDJournalSource, error) {
 
 // Poll reads entries matching filters since cursor.
 func (s *SDJournalSource) Poll(ctx context.Context, filters []eventlog.EventFilter, cursor string) ([]eventlog.EventRecord, string, error) {
+	// Process any pending journal updates (Wait(0) is equivalent to sd_journal_process())
+	// This ensures we see entries that were written since the last call.
+	s.journal.Wait(0)
+
 	// Apply matches
 	s.journal.FlushMatches()
 	for _, f := range filters {

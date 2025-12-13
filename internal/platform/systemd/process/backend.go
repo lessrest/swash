@@ -77,31 +77,9 @@ func (b *SystemdBackend) Kill(ctx context.Context, ref process.ProcessRef, signa
 	return b.systemd.KillUnit(ctx, unitNameForRef(ref), signal)
 }
 
-// SubscribeExit subscribes to exit notifications for a workload.
-func (b *SystemdBackend) SubscribeExit(ctx context.Context, ref process.ProcessRef) (<-chan process.ProcessExit, error) {
-	unit := unitNameForRef(ref)
-	ch, err := b.systemd.SubscribeUnitExit(ctx, unit)
-	if err != nil {
-		return nil, err
-	}
-
-	out := make(chan process.ProcessExit, 1)
-	go func() {
-		defer close(out)
-		for n := range ch {
-			out <- process.ProcessExit{
-				Ref:      ref,
-				ExitCode: n.ExitCode,
-				Result:   n.ServiceResult,
-			}
-		}
-	}()
-	return out, nil
-}
-
-// EmitExit emits an exit notification (used by notify-exit).
-func (b *SystemdBackend) EmitExit(ctx context.Context, ref process.ProcessRef, exitCode int, result string) error {
-	return b.systemd.EmitUnitExit(ctx, unitNameForRef(ref), exitCode, result)
+// ResetFailed resets a failed workload so it can be restarted.
+func (b *SystemdBackend) ResetFailed(ctx context.Context, ref process.ProcessRef) error {
+	return b.systemd.ResetFailedUnit(ctx, unitNameForRef(ref))
 }
 
 // List lists workloads matching the filter.

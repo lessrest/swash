@@ -14,38 +14,6 @@ import (
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
-// JSONToSolution converts a JSON term map back to an oxigraph.Solution.
-func JSONToSolution(row map[string]TermJSON) oxigraph.Solution {
-	return oxigraph.NewSolution(jsonMapToTerms(row))
-}
-
-func jsonMapToTerms(row map[string]TermJSON) map[string]oxigraph.Term {
-	result := make(map[string]oxigraph.Term)
-	for k, v := range row {
-		result[k] = jsonToTerm(v)
-	}
-	return result
-}
-
-func jsonToTerm(tj TermJSON) oxigraph.Term {
-	switch tj.Type {
-	case "iri":
-		return oxigraph.IRI(tj.Value)
-	case "bnode":
-		return oxigraph.BlankNode{ID: tj.Value}
-	case "literal":
-		if tj.Language != "" {
-			return oxigraph.LangLiteral(tj.Value, tj.Language)
-		}
-		if tj.Datatype != "" {
-			return oxigraph.TypedLiteral(tj.Value, tj.Datatype)
-		}
-		return oxigraph.StringLiteral(tj.Value)
-	default:
-		return oxigraph.StringLiteral(tj.Value)
-	}
-}
-
 // Client is a client for the graph service.
 type Client struct {
 	socketPath string
@@ -117,8 +85,17 @@ type StatsResponse struct {
 	Quads int64 `json:"quads"`
 }
 
-// Query executes a SPARQL SELECT query.
-func (c *Client) Query(ctx context.Context, sparql string) ([]map[string]TermJSON, error) {
+// Query executes a SPARQL SELECT query and returns parsed solutions.
+func (c *Client) Query(ctx context.Context, sparql string) ([]oxigraph.Solution, error) {
+	data, err := c.QueryRaw(ctx, sparql)
+	if err != nil {
+		return nil, err
+	}
+	return oxigraph.ParseResults(data, oxigraph.ResultsJSON)
+}
+
+// QueryRaw executes a SPARQL query and returns the raw JSON response.
+func (c *Client) QueryRaw(ctx context.Context, sparql string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "POST", "http://unix/sparql", bytes.NewReader([]byte(sparql)))
 	if err != nil {
 		return nil, err
@@ -136,13 +113,7 @@ func (c *Client) Query(ctx context.Context, sparql string) ([]map[string]TermJSO
 		return nil, fmt.Errorf("query failed: %s", string(body))
 	}
 
-	var result struct {
-		Results []map[string]TermJSON `json:"results"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-	return result.Results, nil
+	return io.ReadAll(resp.Body)
 }
 
 // Quads returns quads matching a pattern as serialized RDF (TriG by default).

@@ -421,6 +421,13 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		}
 	}
 
+	// Emit service type if set
+	if opts.ServiceType != "" {
+		if err := b.emitServiceType(ctx, sessionID, opts.ServiceType); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to emit service-type: %v\n", err)
+		}
+	}
+
 	return sessionID, nil
 }
 
@@ -739,6 +746,14 @@ func (b *PosixBackend) emitSessionContext(ctx context.Context, sessionID, contex
 	return eventlog.EmitSessionContext(el, sessionID, contextID)
 }
 
+func (b *PosixBackend) emitServiceType(ctx context.Context, sessionID, serviceType string) error {
+	el, err := b.ensureSharedLog(ctx)
+	if err != nil {
+		return fmt.Errorf("opening shared event log: %w", err)
+	}
+	return eventlog.EmitServiceType(el, sessionID, serviceType)
+}
+
 // -----------------------------------------------------------------------------
 // Graph (RDF knowledge graph)
 // -----------------------------------------------------------------------------
@@ -809,17 +824,7 @@ func (b *PosixBackend) GraphQuery(ctx context.Context, sparql string) ([]oxigrap
 	}
 
 	client := b.graphClient()
-	results, err := client.Query(ctx, sparql)
-	if err != nil {
-		return nil, err
-	}
-
-	// Convert from JSON representation back to oxigraph.Solution
-	solutions := make([]oxigraph.Solution, len(results))
-	for i, row := range results {
-		solutions[i] = graph.JSONToSolution(row)
-	}
-	return solutions, nil
+	return client.Query(ctx, sparql)
 }
 
 func (b *PosixBackend) GraphSerialize(ctx context.Context, pattern oxigraph.Pattern, format oxigraph.Format) ([]byte, error) {
@@ -836,6 +841,15 @@ func (b *PosixBackend) GraphSerialize(ctx context.Context, pattern oxigraph.Patt
 	}
 
 	return client.Quads(ctx, pattern, formatStr)
+}
+
+func (b *PosixBackend) GraphLoad(ctx context.Context, data []byte, format oxigraph.Format) error {
+	if err := b.ensureGraph(ctx); err != nil {
+		return fmt.Errorf("ensuring graph service: %w", err)
+	}
+
+	client := b.graphClient()
+	return client.Load(ctx, data, format)
 }
 
 // -----------------------------------------------------------------------------
