@@ -1,4 +1,4 @@
-module github.com/mbrock/swash/vterm
+module swa.sh/go/vterm
 
 go 1.25.0
 

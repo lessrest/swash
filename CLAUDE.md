@@ -55,8 +55,8 @@ Backend selection: `SWASH_BACKEND` env var, or auto-detect (probes D-Bus for `or
 ### Workspace Modules
 
 This is a Go multi-module workspace (`go.work`):
-- `.` - Main swash module
-- `vterm/` - Independent terminal emulation module (WASM-based libvterm bindings)
+- `.` - Main swash module (`swa.sh/go/swash`)
+- `vterm/` - Independent terminal emulation module (`swa.sh/go/vterm`)
 
 ### Public Packages (`pkg/`)
 

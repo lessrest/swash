@@ -8,7 +8,7 @@ import (
 	"iter"
 	"log/slog"
 
-	"github.com/mbrock/swash/pkg/journalfile"
+	"swa.sh/go/swash/pkg/journalfile"
 )
 
 // JournalfileSource implements EventSource using the pure Go journalfile reader.

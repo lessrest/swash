@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbrock/swash/internal/backend"
-	"github.com/mbrock/swash/internal/server"
+	"swa.sh/go/swash/internal/backend"
+	"swa.sh/go/swash/internal/server"
 )
 
 // cmdWebUI handles the "swash webui" subcommand.

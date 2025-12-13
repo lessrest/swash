@@ -14,8 +14,9 @@ import (
 	"github.com/creack/pty"
 	"github.com/godbus/dbus/v5"
 
-	"github.com/mbrock/swash/internal/journal"
-	"github.com/mbrock/swash/vterm"
+	"swa.sh/go/vterm"
+
+	"swa.sh/go/swash/internal/journal"
 )
 
 // PTYPair represents a bidirectional connection for terminal I/O.

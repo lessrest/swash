@@ -2,10 +2,10 @@
 //
 // Import for side effects:
 //
-//	import _ "github.com/mbrock/swash/internal/backend/all"
+//	import _ "swa.sh/go/swash/internal/backend/all"
 package all
 
 import (
-	_ "github.com/mbrock/swash/internal/backend/posix"
-	_ "github.com/mbrock/swash/internal/backend/systemd"
+	_ "swa.sh/go/swash/internal/backend/posix"
+	_ "swa.sh/go/swash/internal/backend/systemd"
 )

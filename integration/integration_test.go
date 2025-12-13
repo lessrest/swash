@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbrock/swash/pkg/journalfile"
+	"swa.sh/go/swash/pkg/journalfile"
 )
 
 const testTimeout = 10 * time.Second

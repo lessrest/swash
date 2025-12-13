@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/mbrock/swash/pkg/oxigraph"
+	"swa.sh/go/swash/pkg/oxigraph"
 )
 
 // Client is a client for the graph service.

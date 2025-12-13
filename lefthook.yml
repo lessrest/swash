@@ -8,7 +8,7 @@ pre-commit:
         - rebase
     imports:
       run: |
-        go run golang.org/x/tools/cmd/goimports@latest -w -local github.com/mbrock/swash .
+        go run golang.org/x/tools/cmd/goimports@latest -w -local swa.sh/go/swash .
         git add -u
       skip:
         - merge

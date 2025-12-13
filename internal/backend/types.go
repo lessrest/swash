@@ -3,8 +3,8 @@ package backend
 import (
 	"time"
 
-	"github.com/mbrock/swash/internal/journal"
-	"github.com/mbrock/swash/internal/protocol"
+	"swa.sh/go/swash/internal/journal"
+	"swa.sh/go/swash/internal/protocol"
 )
 
 // Session is the platform-neutral presentation model for a swash session.

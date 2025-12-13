@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbrock/swash/internal/backend"
-	"github.com/mbrock/swash/internal/graph"
-	"github.com/mbrock/swash/internal/journal"
-	"github.com/mbrock/swash/pkg/oxigraph"
+	"swa.sh/go/swash/internal/backend"
+	"swa.sh/go/swash/internal/graph"
+	"swa.sh/go/swash/internal/journal"
+	"swa.sh/go/swash/pkg/oxigraph"
 )
 
 // cmdGraph handles the "swash graph" subcommand.

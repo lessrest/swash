@@ -6,7 +6,7 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
-	"github.com/mbrock/swash/internal/host"
+	"swa.sh/go/swash/internal/host"
 )
 
 // dbusClient implements host.Client via D-Bus.

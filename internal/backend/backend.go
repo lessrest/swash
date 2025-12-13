@@ -11,10 +11,10 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
-	"github.com/mbrock/swash/internal/dirs"
-	"github.com/mbrock/swash/internal/host"
-	"github.com/mbrock/swash/internal/journal"
-	"github.com/mbrock/swash/pkg/oxigraph"
+	"swa.sh/go/swash/internal/dirs"
+	"swa.sh/go/swash/internal/host"
+	"swa.sh/go/swash/internal/journal"
+	"swa.sh/go/swash/pkg/oxigraph"
 )
 
 // Kind identifies a backend implementation.

@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbrock/swash/internal/host"
+	"swa.sh/go/swash/internal/host"
 )
 
 // unixClient implements host.Client over HTTP+JSON on a unix socket.

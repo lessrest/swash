@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/mbrock/swash/internal/dirs"
-	"github.com/mbrock/swash/internal/journal"
-	"github.com/mbrock/swash/pkg/oxigraph"
+	"swa.sh/go/swash/internal/dirs"
+	"swa.sh/go/swash/internal/journal"
+	"swa.sh/go/swash/pkg/oxigraph"
 )
 
 // Service is the graph service that manages an in-memory RDF store.

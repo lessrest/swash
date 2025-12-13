@@ -1,4 +1,4 @@
-module github.com/mbrock/swash
+module swa.sh/go/swash
 
 go 1.25.0
 

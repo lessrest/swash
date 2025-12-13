@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbrock/swash/pkg/oxigraph"
+	"swa.sh/go/swash/pkg/oxigraph"
 )
 
 // EventRecord represents a single persisted event.

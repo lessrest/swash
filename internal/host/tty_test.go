@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	journal "github.com/mbrock/swash/internal/journal"
+	journal "swa.sh/go/swash/internal/journal"
 )
 
 type FakeJournal = journal.FakeJournal

@@ -16,8 +16,8 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
-	"github.com/mbrock/swash/internal/journal"
-	"github.com/mbrock/swash/internal/protocol"
+	"swa.sh/go/swash/internal/journal"
+	"swa.sh/go/swash/internal/protocol"
 )
 
 // Host is the D-Bus host for a swash session.

@@ -12,7 +12,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/mbrock/swash/pkg/oxigraph"
+	"swa.sh/go/swash/pkg/oxigraph"
 )
 
 // Server is an HTTP server for the graph service.

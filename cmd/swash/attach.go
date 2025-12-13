@@ -1,6 +1,6 @@
 package main
 
-import "github.com/mbrock/swash/internal/attach"
+import "swa.sh/go/swash/internal/attach"
 
 func cmdAttach(sessionID string) {
 	initBackend()

@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/mbrock/swash/pkg/journalfile"
+	"swa.sh/go/swash/pkg/journalfile"
 )
 
 func main() {
