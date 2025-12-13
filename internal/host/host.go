@@ -16,13 +16,10 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
-	"github.com/mbrock/swash/internal/eventlog"
-	"github.com/mbrock/swash/internal/eventlog/sink"
-	"github.com/mbrock/swash/internal/eventlog/source"
 	"github.com/mbrock/swash/internal/executor"
-	journald "github.com/mbrock/swash/internal/platform/systemd/eventlog"
+	"github.com/mbrock/swash/internal/job"
+	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/internal/protocol"
-	"github.com/mbrock/swash/internal/session"
 	"github.com/mbrock/swash/internal/tty"
 )
 
@@ -33,7 +30,7 @@ type Host struct {
 	protocol  protocol.Protocol
 	tags      map[string]string
 
-	events   eventlog.EventLog
+	events   journal.EventLog
 	executor executor.Executor
 
 	mu        sync.Mutex
@@ -55,7 +52,7 @@ type HostConfig struct {
 	Command   []string
 	Protocol  protocol.Protocol
 	Tags      map[string]string
-	Events    eventlog.EventLog
+	Events    journal.EventLog
 	Executor  executor.Executor // Optional; defaults to ExecExecutor if nil
 }
 
@@ -64,7 +61,7 @@ func NewHost(cfg HostConfig) *Host {
 	// Merge session ID into tags so output lines can be filtered
 	tags := make(map[string]string)
 	maps.Copy(tags, cfg.Tags)
-	tags[eventlog.FieldSession] = cfg.SessionID
+	tags[journal.FieldSession] = cfg.SessionID
 
 	execImpl := cfg.Executor
 	if execImpl == nil {
@@ -81,7 +78,7 @@ func NewHost(cfg HostConfig) *Host {
 	}
 }
 
-type HostStatus = session.HostStatus
+type HostStatus = job.HostStatus
 
 // Gist returns the current session status.
 func (h *Host) Gist() (HostStatus, error) {
@@ -195,7 +192,7 @@ func (h *Host) Run() error {
 	}
 	defer conn.Close()
 
-	busName := fmt.Sprintf("%s.%s", session.DBusNamePrefix, h.sessionID)
+	busName := fmt.Sprintf("%s.%s", job.DBusNamePrefix, h.sessionID)
 	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
 	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
 		slog.Debug("Host.Run bus name request failed", "busName", busName, "error", err)
@@ -203,7 +200,7 @@ func (h *Host) Run() error {
 	}
 	slog.Debug("Host.Run acquired bus name", "busName", busName)
 
-	conn.ExportAll(h, dbus.ObjectPath(session.DBusPath), session.DBusNamePrefix)
+	conn.ExportAll(h, dbus.ObjectPath(job.DBusPath), job.DBusNamePrefix)
 
 	// Set up context that cancels on SIGTERM/SIGINT
 	ctx, cancel := context.WithCancel(context.Background())
@@ -230,7 +227,7 @@ func (h *Host) Run() error {
 	h.mu.Unlock()
 	if exitCode != nil {
 		slog.Debug("Host.Run emitting exit signal", "session", h.sessionID, "exitCode", *exitCode)
-		conn.Emit(dbus.ObjectPath(session.DBusPath), session.DBusNamePrefix+".Exited", int32(*exitCode))
+		conn.Emit(dbus.ObjectPath(job.DBusPath), job.DBusNamePrefix+".Exited", int32(*exitCode))
 	}
 
 	slog.Debug("Host.Run exiting", "session", h.sessionID)
@@ -261,7 +258,7 @@ func (h *Host) RunTask(ctx context.Context) error {
 		h.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := eventlog.EmitStarted(h.events, h.sessionID, h.command); err != nil {
+		if err := journal.EmitStarted(h.events, h.sessionID, h.command); err != nil {
 			return fmt.Errorf("emitting started event: %w", err)
 		}
 
@@ -353,7 +350,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 
 	// Output handler that writes to journal with tags
 	outputHandler := func(fd int, text string, fields map[string]string) {
-		eventlog.WriteOutput(srv.events, fd, text, fields)
+		journal.WriteOutput(srv.events, fd, text, fields)
 	}
 
 	// Read stdout and write to journal (protocol-aware)
@@ -396,7 +393,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		srv.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := eventlog.EmitExited(srv.events, srv.sessionID, exitCode, srv.command); err != nil {
+		if err := journal.EmitExited(srv.events, srv.sessionID, exitCode, srv.command); err != nil {
 			slog.Debug("Host.startTaskProcess failed to emit exited event", "error", err)
 		}
 
@@ -450,13 +447,13 @@ func RunHost() error {
 		}
 
 		// Create combined eventlog: SocketSink for writing, JournalfileSource for reading
-		snk := sink.NewSocketSink(socketPath)
-		src, err := source.NewJournalfileSource(journalPath)
+		snk := journal.NewSocketSink(socketPath)
+		src, err := journal.NewJournalfileSource(journalPath)
 		if err != nil {
 			snk.Close()
 			return fmt.Errorf("opening journal source: %w", err)
 		}
-		events := eventlog.NewCombinedEventLog(snk, src)
+		events := journal.NewCombinedEventLog(snk, src)
 		defer events.Close()
 
 		// Set up context that cancels on SIGTERM/SIGINT (like D-Bus mode).
@@ -511,7 +508,7 @@ func RunHost() error {
 	}
 
 	// Systemd mode: use journald for events
-	events, err := journald.Open()
+	events, err := journal.OpenSystemd()
 	if err != nil {
 		return fmt.Errorf("opening event log: %w", err)
 	}

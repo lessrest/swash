@@ -19,7 +19,7 @@ import (
 
 	"github.com/mbrock/swash/cmd/swash/templates"
 	"github.com/mbrock/swash/internal/backend"
-	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
+	systemdproc "github.com/mbrock/swash/internal/backend/systemd"
 )
 
 // cmdHTTP handles the "swash http" subcommand and its sub-subcommands.

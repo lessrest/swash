@@ -8,20 +8,20 @@ import (
 	"github.com/mbrock/swash/internal/process"
 )
 
-// SystemdBackend adapts the low-level Systemd interface to the semantic ProcessBackend.
-type SystemdBackend struct {
+// ProcessManager adapts the low-level Systemd interface to the semantic ProcessBackend.
+type ProcessManager struct {
 	systemd Systemd
 }
 
-var _ process.ProcessBackend = (*SystemdBackend)(nil)
+var _ process.ProcessBackend = (*ProcessManager)(nil)
 
-// NewSystemdBackend wraps a Systemd connection in a ProcessBackend.
-func NewSystemdBackend(sd Systemd) *SystemdBackend {
-	return &SystemdBackend{systemd: sd}
+// NewProcessManager wraps a Systemd connection in a ProcessBackend.
+func NewProcessManager(sd Systemd) *ProcessManager {
+	return &ProcessManager{systemd: sd}
 }
 
 // Start launches a workload by translating a ProcessSpec into a transient unit.
-func (b *SystemdBackend) Start(ctx context.Context, spec process.ProcessSpec) error {
+func (b *ProcessManager) Start(ctx context.Context, spec process.ProcessSpec) error {
 	unit := unitNameForRef(spec.Ref)
 	slice := SessionSlice(spec.Ref.SessionID)
 
@@ -68,22 +68,22 @@ func (b *SystemdBackend) Start(ctx context.Context, spec process.ProcessSpec) er
 }
 
 // Stop stops a workload.
-func (b *SystemdBackend) Stop(ctx context.Context, ref process.ProcessRef) error {
+func (b *ProcessManager) Stop(ctx context.Context, ref process.ProcessRef) error {
 	return b.systemd.StopUnit(ctx, unitNameForRef(ref))
 }
 
 // Kill sends a signal to a workload.
-func (b *SystemdBackend) Kill(ctx context.Context, ref process.ProcessRef, signal syscall.Signal) error {
+func (b *ProcessManager) Kill(ctx context.Context, ref process.ProcessRef, signal syscall.Signal) error {
 	return b.systemd.KillUnit(ctx, unitNameForRef(ref), signal)
 }
 
 // ResetFailed resets a failed workload so it can be restarted.
-func (b *SystemdBackend) ResetFailed(ctx context.Context, ref process.ProcessRef) error {
+func (b *ProcessManager) ResetFailed(ctx context.Context, ref process.ProcessRef) error {
 	return b.systemd.ResetFailedUnit(ctx, unitNameForRef(ref))
 }
 
 // List lists workloads matching the filter.
-func (b *SystemdBackend) List(ctx context.Context, filter process.ProcessFilter) ([]process.ProcessStatus, error) {
+func (b *ProcessManager) List(ctx context.Context, filter process.ProcessFilter) ([]process.ProcessStatus, error) {
 	patterns := patternsForRoles(filter.Roles)
 	states := statesForFilter(filter.States)
 
@@ -123,7 +123,7 @@ func (b *SystemdBackend) List(ctx context.Context, filter process.ProcessFilter)
 }
 
 // Describe returns a single workload status.
-func (b *SystemdBackend) Describe(ctx context.Context, ref process.ProcessRef) (*process.ProcessStatus, error) {
+func (b *ProcessManager) Describe(ctx context.Context, ref process.ProcessRef) (*process.ProcessStatus, error) {
 	unit := unitNameForRef(ref)
 	u, err := b.systemd.GetUnit(ctx, unit)
 	if err != nil {
@@ -142,7 +142,7 @@ func (b *SystemdBackend) Describe(ctx context.Context, ref process.ProcessRef) (
 }
 
 // Close releases the underlying Systemd connection.
-func (b *SystemdBackend) Close() error {
+func (b *ProcessManager) Close() error {
 	if b.systemd == nil {
 		return nil
 	}

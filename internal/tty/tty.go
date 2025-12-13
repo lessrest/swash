@@ -14,13 +14,13 @@ import (
 	"github.com/creack/pty"
 	"github.com/godbus/dbus/v5"
 
-	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/internal/executor"
-	"github.com/mbrock/swash/internal/session"
+	"github.com/mbrock/swash/internal/job"
+	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/pkg/vterm"
 )
 
-type HostStatus = session.HostStatus
+type HostStatus = job.HostStatus
 
 // PTYPair represents a bidirectional connection for terminal I/O.
 // This abstraction allows testing with fake PTYs.
@@ -158,7 +158,7 @@ type TTYHost struct {
 	rows, cols int
 	tags       map[string]string
 
-	events   eventlog.EventLog
+	events   journal.EventLog
 	executor executor.Executor
 
 	mu              sync.Mutex
@@ -190,7 +190,7 @@ type TTYHostConfig struct {
 	Command    []string
 	Rows, Cols int
 	Tags       map[string]string
-	Events     eventlog.EventLog
+	Events     journal.EventLog
 	Executor   executor.Executor // Optional; defaults to ExecExecutor if nil
 
 	// OpenPTY is optional; defaults to OpenRealPTY if nil.
@@ -221,7 +221,7 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 	// Merge session ID into tags so output lines can be filtered
 	tags := make(map[string]string)
 	maps.Copy(tags, cfg.Tags)
-	tags[eventlog.FieldSession] = cfg.SessionID
+	tags[journal.FieldSession] = cfg.SessionID
 
 	h := &TTYHost{
 		sessionID:       cfg.SessionID,
@@ -250,7 +250,7 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 			}
 			// Write scrollback line to journal
 			if h.events != nil {
-				eventlog.WriteOutput(h.events, 1, line, h.tags)
+				journal.WriteOutput(h.events, 1, line, h.tags)
 			}
 		}
 		h.mu.Unlock()
@@ -626,7 +626,7 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 		h.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := eventlog.EmitStarted(h.events, h.sessionID, h.command); err != nil {
+		if err := journal.EmitStarted(h.events, h.sessionID, h.command); err != nil {
 			return fmt.Errorf("emitting started event: %w", err)
 		}
 
@@ -729,13 +729,13 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 			h.mu.Lock()
 			rows, cols := h.rows, h.cols
 			h.mu.Unlock()
-			if err := eventlog.EmitScreen(h.events, h.sessionID, screenANSI, rows, cols); err != nil {
+			if err := journal.EmitScreen(h.events, h.sessionID, screenANSI, rows, cols); err != nil {
 				fmt.Fprintf(os.Stderr, "error: failed to emit screen: %v\n", err)
 			}
 		}
 
 		// Emit lifecycle event
-		if err := eventlog.EmitExited(h.events, h.sessionID, exitCode, h.command); err != nil {
+		if err := journal.EmitExited(h.events, h.sessionID, exitCode, h.command); err != nil {
 			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
 		}
 
@@ -776,13 +776,13 @@ func (h *TTYHost) Run() error {
 	}
 	defer conn.Close()
 
-	busName := fmt.Sprintf("%s.%s", session.DBusNamePrefix, h.sessionID)
+	busName := fmt.Sprintf("%s.%s", job.DBusNamePrefix, h.sessionID)
 	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
 	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
 		return fmt.Errorf("requesting bus name: %w", err)
 	}
 
-	conn.ExportAll(h, dbus.ObjectPath(session.DBusPath), session.DBusNamePrefix)
+	conn.ExportAll(h, dbus.ObjectPath(job.DBusPath), job.DBusNamePrefix)
 
 	// Set up context that cancels on SIGTERM/SIGINT
 	ctx, cancel := context.WithCancel(context.Background())
@@ -806,7 +806,7 @@ func (h *TTYHost) Run() error {
 	exitCode := h.exitCode
 	h.mu.Unlock()
 	if exitCode != nil {
-		conn.Emit(dbus.ObjectPath(session.DBusPath), session.DBusNamePrefix+".Exited", int32(*exitCode))
+		conn.Emit(dbus.ObjectPath(job.DBusPath), job.DBusNamePrefix+".Exited", int32(*exitCode))
 	}
 
 	return err

@@ -742,7 +742,7 @@ func (jf *File) syncLocked() error {
 		return nil
 	}
 
-	// While we append the entry array we should advertise ONLINE like real journald.
+	// While we append the entry array we should advertise ONLINE like real journal.
 	if err := jf.beginWrite(); err != nil {
 		return err
 	}

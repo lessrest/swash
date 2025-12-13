@@ -1,7 +1,7 @@
 // Package journald provides a minimal journald-compatible daemon for the POSIX backend.
 // It listens on a Unix datagram socket using the systemd journal native protocol
 // and writes entries to a single shared journal file.
-package journald
+package journal
 
 import (
 	"bytes"

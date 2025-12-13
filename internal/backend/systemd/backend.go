@@ -11,13 +11,11 @@ import (
 	"time"
 
 	"github.com/mbrock/swash/internal/backend"
-	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/internal/graph"
-	journald "github.com/mbrock/swash/internal/platform/systemd/eventlog"
-	systemdproc "github.com/mbrock/swash/internal/platform/systemd/process"
+	"github.com/mbrock/swash/internal/job"
+	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/internal/process"
 	"github.com/mbrock/swash/internal/protocol"
-	"github.com/mbrock/swash/internal/session"
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
@@ -28,7 +26,7 @@ func init() {
 // SystemdBackend is the production backend backed by user systemd + journald + D-Bus.
 type SystemdBackend struct {
 	processes   process.ProcessBackend
-	events      eventlog.EventLog
+	events      journal.EventLog
 	hostCommand []string
 }
 
@@ -40,13 +38,13 @@ func Open(ctx context.Context, cfg backend.Config) (backend.Backend, error) {
 		return nil, err
 	}
 
-	sd, err := systemdproc.ConnectUserSystemd(ctx)
+	sd, err := ConnectUserSystemd(ctx)
 	if err != nil {
 		return nil, err
 	}
-	proc := systemdproc.NewSystemdBackend(sd)
+	proc := NewProcessManager(sd)
 
-	j, err := journald.Open()
+	j, err := journal.OpenSystemd()
 	if err != nil {
 		proc.Close()
 		return nil, err
@@ -121,9 +119,9 @@ func (b *SystemdBackend) GetScreen(ctx context.Context, sessionID string) (strin
 	}
 
 	// Fall back to journal for saved screen
-	filters := []eventlog.EventFilter{
-		eventlog.FilterByEvent(eventlog.EventScreen),
-		eventlog.FilterBySession(sessionID),
+	filters := []journal.EventFilter{
+		journal.FilterByEvent(journal.EventScreen),
+		journal.FilterBySession(sessionID),
 	}
 
 	entries, _, err := b.events.Poll(ctx, filters, "")
@@ -141,12 +139,12 @@ func (b *SystemdBackend) GetScreen(ctx context.Context, sessionID string) (strin
 
 // StartSession starts a new swash session with the given command and options.
 func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opts backend.SessionOptions) (string, error) {
-	sessionID := session.GenSessionID()
+	sessionID := job.GenID()
 	cwd := opts.WorkingDir
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	dbusName := fmt.Sprintf("%s.%s", session.DBusNamePrefix, sessionID)
+	dbusName := fmt.Sprintf("%s.%s", job.DBusNamePrefix, sessionID)
 	cmdStr := strings.Join(command, " ")
 
 	// Resolve command[0] to absolute path so systemd can find it
@@ -172,7 +170,7 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 	serverCmd := append([]string{}, b.hostCommand...)
 	serverCmd = append(serverCmd,
 		"--session", sessionID,
-		"--command-json", session.MustJSON(command),
+		"--command-json", job.MustJSON(command),
 	)
 
 	// Add protocol if not default (only for non-TTY mode)
@@ -182,7 +180,7 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 
 	// Add tags if present
 	if len(opts.Tags) > 0 {
-		serverCmd = append(serverCmd, "--tags-json", session.MustJSON(opts.Tags))
+		serverCmd = append(serverCmd, "--tags-json", job.MustJSON(opts.Tags))
 	}
 
 	// Add TTY mode options
@@ -213,7 +211,7 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 
 	// Emit session-context relation if context is set
 	if opts.ContextID != "" {
-		if err := eventlog.EmitSessionContext(b.events, sessionID, opts.ContextID); err != nil {
+		if err := journal.EmitSessionContext(b.events, sessionID, opts.ContextID); err != nil {
 			// Log but don't fail - session already started
 			fmt.Fprintf(os.Stderr, "warning: failed to emit session-context: %v\n", err)
 		}
@@ -221,7 +219,7 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 
 	// Emit service type if set
 	if opts.ServiceType != "" {
-		if err := eventlog.EmitServiceType(b.events, sessionID, opts.ServiceType); err != nil {
+		if err := journal.EmitServiceType(b.events, sessionID, opts.ServiceType); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to emit service-type: %v\n", err)
 		}
 	}
@@ -257,7 +255,7 @@ func (b *SystemdBackend) SendInput(ctx context.Context, sessionID, input string)
 
 // PollSessionOutput reads output events from a session's journal since cursor.
 func (b *SystemdBackend) PollSessionOutput(ctx context.Context, sessionID, cursor string) ([]backend.Event, string, error) {
-	filters := []eventlog.EventFilter{eventlog.FilterBySession(sessionID)}
+	filters := []journal.EventFilter{journal.FilterBySession(sessionID)}
 
 	entries, newCursor, err := b.events.Poll(ctx, filters, cursor)
 	if err != nil {
@@ -295,7 +293,7 @@ func (b *SystemdBackend) PollSessionOutput(ctx context.Context, sessionID, curso
 // If timeout is 0, waits indefinitely. If outputLimit is 0, output is unlimited.
 // Returns (exitCode, result). exitCode is only valid when result is FollowCompleted.
 func (b *SystemdBackend) FollowSession(ctx context.Context, sessionID string, timeout time.Duration, outputLimit int) (int, backend.FollowResult) {
-	filters := []eventlog.EventFilter{eventlog.FilterBySession(sessionID)}
+	filters := []journal.EventFilter{journal.FilterBySession(sessionID)}
 	outputBytes := 0
 
 	// Create a timeout context if timeout > 0
@@ -307,9 +305,9 @@ func (b *SystemdBackend) FollowSession(ctx context.Context, sessionID string, ti
 
 	for e := range b.events.Follow(ctx, filters) {
 		// Check for exit event
-		if e.Fields[eventlog.FieldEvent] == eventlog.EventExited {
+		if e.Fields[journal.FieldEvent] == journal.EventExited {
 			exitCode := 0
-			if codeStr := e.Fields[eventlog.FieldExitCode]; codeStr != "" {
+			if codeStr := e.Fields[journal.FieldExitCode]; codeStr != "" {
 				exitCode, _ = strconv.Atoi(codeStr)
 			}
 			return exitCode, backend.FollowCompleted
@@ -338,7 +336,7 @@ func (b *SystemdBackend) FollowSession(ctx context.Context, sessionID string, ti
 // ListHistory returns recently exited sessions by querying lifecycle events.
 func (b *SystemdBackend) ListHistory(ctx context.Context) ([]backend.HistorySession, error) {
 	// Query for exited events
-	filters := []eventlog.EventFilter{eventlog.FilterByEvent(eventlog.EventExited)}
+	filters := []journal.EventFilter{journal.FilterByEvent(journal.EventExited)}
 
 	entries, _, err := b.events.Poll(ctx, filters, "")
 	if err != nil {
@@ -352,14 +350,14 @@ func (b *SystemdBackend) ListHistory(ctx context.Context) ([]backend.HistorySess
 	// Iterate backwards to get most recent first and dedupe
 	for i := len(entries) - 1; i >= 0; i-- {
 		e := entries[i]
-		sessionID := e.Fields[eventlog.FieldSession]
+		sessionID := e.Fields[journal.FieldSession]
 		if sessionID == "" || seen[sessionID] {
 			continue
 		}
 		seen[sessionID] = true
 
 		var exitCode *int
-		if codeStr := e.Fields[eventlog.FieldExitCode]; codeStr != "" {
+		if codeStr := e.Fields[journal.FieldExitCode]; codeStr != "" {
 			if code, err := strconv.Atoi(codeStr); err == nil {
 				exitCode = &code
 			}
@@ -369,7 +367,7 @@ func (b *SystemdBackend) ListHistory(ctx context.Context) ([]backend.HistorySess
 			ID:       sessionID,
 			Status:   "exited",
 			ExitCode: exitCode,
-			Command:  e.Fields[eventlog.FieldCommand],
+			Command:  e.Fields[journal.FieldCommand],
 			Started:  e.Timestamp.Format("Mon 2006-01-02 15:04:05 MST"),
 		})
 	}
@@ -377,12 +375,12 @@ func (b *SystemdBackend) ListHistory(ctx context.Context) ([]backend.HistorySess
 	return sessions, nil
 }
 
-func (b *SystemdBackend) ConnectSession(sessionID string) (session.SessionClient, error) {
-	return session.ConnectSession(sessionID)
+func (b *SystemdBackend) ConnectSession(sessionID string) (job.Client, error) {
+	return job.Connect(sessionID)
 }
 
-func (b *SystemdBackend) ConnectTTYSession(sessionID string) (session.TTYClient, error) {
-	return session.ConnectTTYSession(sessionID)
+func (b *SystemdBackend) ConnectTTYSession(sessionID string) (job.TTYClient, error) {
+	return job.ConnectTTY(sessionID)
 }
 
 func unitNameStringForRef(ref process.ProcessRef) string {
@@ -403,7 +401,7 @@ func (b *SystemdBackend) contextDir(stateDir, contextID string) string {
 }
 
 func (b *SystemdBackend) CreateContext(ctx context.Context) (string, string, error) {
-	contextID := session.GenSessionID()
+	contextID := job.GenID()
 
 	// Get state directory - we need to look it up since systemd backend doesn't store cfg
 	stateDir := defaultStateDir()
@@ -413,7 +411,7 @@ func (b *SystemdBackend) CreateContext(ctx context.Context) (string, string, err
 		return "", "", fmt.Errorf("creating context directory: %w", err)
 	}
 
-	if err := eventlog.EmitContextCreated(b.events, contextID, dir); err != nil {
+	if err := journal.EmitContextCreated(b.events, contextID, dir); err != nil {
 		return "", "", fmt.Errorf("emitting context-created event: %w", err)
 	}
 
@@ -421,7 +419,7 @@ func (b *SystemdBackend) CreateContext(ctx context.Context) (string, string, err
 }
 
 func (b *SystemdBackend) ListContexts(ctx context.Context) ([]backend.Context, error) {
-	filters := []eventlog.EventFilter{eventlog.FilterByEvent(eventlog.EventContextCreated)}
+	filters := []journal.EventFilter{journal.FilterByEvent(journal.EventContextCreated)}
 	entries, _, err := b.events.Poll(ctx, filters, "")
 	if err != nil {
 		return nil, err
@@ -430,7 +428,7 @@ func (b *SystemdBackend) ListContexts(ctx context.Context) ([]backend.Context, e
 	var contexts []backend.Context
 	for _, e := range entries {
 		contexts = append(contexts, backend.Context{
-			ID:      e.Fields[eventlog.FieldContext],
+			ID:      e.Fields[journal.FieldContext],
 			Dir:     e.Fields["DIR"],
 			Created: e.Timestamp,
 		})
@@ -448,9 +446,9 @@ func (b *SystemdBackend) GetContextDir(ctx context.Context, contextID string) (s
 }
 
 func (b *SystemdBackend) ListContextSessions(ctx context.Context, contextID string) ([]string, error) {
-	filters := []eventlog.EventFilter{
-		eventlog.FilterByEvent(eventlog.EventSessionContext),
-		eventlog.FilterByContext(contextID),
+	filters := []journal.EventFilter{
+		journal.FilterByEvent(journal.EventSessionContext),
+		journal.FilterByContext(contextID),
 	}
 	entries, _, err := b.events.Poll(ctx, filters, "")
 	if err != nil {
@@ -459,7 +457,7 @@ func (b *SystemdBackend) ListContextSessions(ctx context.Context, contextID stri
 
 	var sessionIDs []string
 	for _, e := range entries {
-		if sid := e.Fields[eventlog.FieldSession]; sid != "" {
+		if sid := e.Fields[journal.FieldSession]; sid != "" {
 			sessionIDs = append(sessionIDs, sid)
 		}
 	}
@@ -564,12 +562,12 @@ func (b *SystemdBackend) GraphLoad(ctx context.Context, data []byte, format oxig
 // Lifecycle events (for graph population)
 // -----------------------------------------------------------------------------
 
-func (b *SystemdBackend) PollLifecycleEvents(ctx context.Context, cursor string) ([]eventlog.EventRecord, string, error) {
-	filters := eventlog.LifecycleEventFilters()
+func (b *SystemdBackend) PollLifecycleEvents(ctx context.Context, cursor string) ([]journal.EventRecord, string, error) {
+	filters := journal.LifecycleEventFilters()
 	return b.events.Poll(ctx, filters, cursor)
 }
 
-func (b *SystemdBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[eventlog.EventRecord] {
-	filters := eventlog.LifecycleEventFilters()
+func (b *SystemdBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[journal.EventRecord] {
+	filters := journal.LifecycleEventFilters()
 	return b.events.Follow(ctx, filters)
 }

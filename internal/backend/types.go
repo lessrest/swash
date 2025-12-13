@@ -3,7 +3,7 @@ package backend
 import (
 	"time"
 
-	"github.com/mbrock/swash/internal/eventlog"
+	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/internal/protocol"
 )
 
@@ -46,13 +46,13 @@ type Context struct {
 }
 
 // EventFilter is a semantic event query filter.
-type EventFilter = eventlog.EventFilter
+type EventFilter = journal.EventFilter
 
 // Event is a parsed output event.
-type Event = eventlog.Event
+type Event = journal.Event
 
 // HistorySession is a presentation model for a historical session entry.
-type HistorySession = eventlog.HistorySession
+type HistorySession = journal.HistorySession
 
 // FollowResult indicates how FollowSession completed.
 type FollowResult int

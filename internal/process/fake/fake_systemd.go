@@ -10,9 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbrock/swash/internal/eventlog"
-	eventlogfake "github.com/mbrock/swash/internal/eventlog/fake"
-	systemdapi "github.com/mbrock/swash/internal/platform/systemd/process"
+	systemdapi "github.com/mbrock/swash/internal/backend/systemd"
+	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/internal/process"
 )
 
@@ -21,8 +20,8 @@ type Unit = systemdapi.Unit
 type UnitState = systemdapi.UnitState
 type ExitNotification = systemdapi.ExitNotification
 type TransientSpec = systemdapi.TransientSpec
-type FakeJournal = eventlogfake.FakeJournal
-type EventRecord = eventlog.EventRecord
+type FakeJournal = journal.FakeJournal
+type EventRecord = journal.EventRecord
 
 type ProcessSpec = process.ProcessSpec
 type ProcessRef = process.ProcessRef
@@ -70,7 +69,7 @@ func NewFakeSystemd() *FakeSystemd {
 // NewTestFakes creates a connected FakeSystemd and FakeJournal for testing.
 func NewTestFakes() (*FakeSystemd, *FakeJournal) {
 	systemd := NewFakeSystemd()
-	journal := eventlogfake.NewFakeJournal()
+	journal := journal.NewFakeJournal()
 	systemd.journal = journal
 	return systemd, journal
 }

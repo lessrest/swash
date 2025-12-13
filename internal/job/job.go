@@ -1,4 +1,4 @@
-package session
+package job
 
 import (
 	"crypto/rand"
@@ -12,7 +12,7 @@ import (
 )
 
 // Session represents a running swash session (high-level view).
-type Session struct {
+type Job struct {
 	ID      string `json:"id"`
 	Unit    string `json:"unit"`
 	PID     uint32 `json:"pid"`
@@ -23,7 +23,7 @@ type Session struct {
 }
 
 // GenSessionID generates a short random session ID like "KXO284".
-func GenSessionID() string {
+func GenID() string {
 	const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	const digits = "0123456789"
 
@@ -41,7 +41,7 @@ func GenSessionID() string {
 }
 
 // SessionOptions configures a new session.
-type SessionOptions struct {
+type Options struct {
 	Protocol protocol.Protocol // shell (default), sse
 	Tags     map[string]string // Extra journal fields
 	TTY      bool              // Use PTY mode with terminal emulation
@@ -56,10 +56,10 @@ type HostStatus struct {
 	Command  []string `json:"command"`
 }
 
-// SessionController defines the methods exposed over D-Bus for controlling a session.
+// Controller defines the methods exposed over D-Bus for controlling a session.
 // Both Host (server) and sessionClient (client) implement this interface.
 // This provides compile-time checking that signatures match.
-type SessionController interface {
+type Controller interface {
 	// SendInput sends input to the process stdin.
 	// Returns the number of bytes written.
 	SendInput(input string) (int, error)
@@ -78,26 +78,26 @@ type SessionController interface {
 	SessionID() (string, error)
 }
 
-// SessionClient extends SessionController with connection management.
-type SessionClient interface {
-	SessionController
+// Client extends Controller with connection management.
+type Client interface {
+	Controller
 
 	// Close releases the D-Bus connection.
 	Close() error
 }
 
-// Compile-time check that sessionClient implements SessionClient.
-var _ SessionClient = (*sessionClientDBus)(nil)
+// Compile-time check that sessionClient implements Client.
+var _ Client = (*dbusClient)(nil)
 
-// sessionClientDBus implements SessionClient via D-Bus.
-type sessionClientDBus struct {
+// dbusClient implements Client via D-Bus.
+type dbusClient struct {
 	conn      *dbus.Conn
 	obj       dbus.BusObject
 	sessionID string
 }
 
-// ConnectSession connects to a running session's D-Bus service.
-func ConnectSession(sessionID string) (SessionClient, error) {
+// Connect connects to a running session's D-Bus service.
+func Connect(sessionID string) (Client, error) {
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
 		return nil, fmt.Errorf("connecting to session bus: %w", err)
@@ -106,22 +106,22 @@ func ConnectSession(sessionID string) (SessionClient, error) {
 	busName := fmt.Sprintf("%s.%s", DBusNamePrefix, sessionID)
 	obj := conn.Object(busName, dbus.ObjectPath(DBusPath))
 
-	return &sessionClientDBus{
+	return &dbusClient{
 		conn:      conn,
 		obj:       obj,
 		sessionID: sessionID,
 	}, nil
 }
 
-func (c *sessionClientDBus) Close() error {
+func (c *dbusClient) Close() error {
 	return c.conn.Close()
 }
 
-func (c *sessionClientDBus) SessionID() (string, error) {
+func (c *dbusClient) SessionID() (string, error) {
 	return c.sessionID, nil
 }
 
-func (c *sessionClientDBus) SendInput(input string) (int, error) {
+func (c *dbusClient) SendInput(input string) (int, error) {
 	var n int
 	err := c.obj.Call(DBusNamePrefix+".SendInput", 0, input).Store(&n)
 	if err != nil {
@@ -130,15 +130,15 @@ func (c *sessionClientDBus) SendInput(input string) (int, error) {
 	return n, nil
 }
 
-func (c *sessionClientDBus) Kill() error {
+func (c *dbusClient) Kill() error {
 	return c.obj.Call(DBusNamePrefix+".Kill", 0).Err
 }
 
-func (c *sessionClientDBus) Restart() error {
+func (c *dbusClient) Restart() error {
 	return c.obj.Call(DBusNamePrefix+".Restart", 0).Err
 }
 
-func (c *sessionClientDBus) Gist() (HostStatus, error) {
+func (c *dbusClient) Gist() (HostStatus, error) {
 	var status HostStatus
 	err := c.obj.Call(DBusNamePrefix+".Gist", 0).Store(&status)
 	if err != nil {
@@ -147,10 +147,10 @@ func (c *sessionClientDBus) Gist() (HostStatus, error) {
 	return status, nil
 }
 
-// TTYClient extends SessionClient with terminal-specific methods.
+// TTYClient extends Client with terminal-specific methods.
 // These are only available for sessions started with --tty.
 type TTYClient interface {
-	SessionClient
+	Client
 
 	// GetScreenText returns the current screen content as plain text.
 	GetScreenText() (string, error)
@@ -189,16 +189,16 @@ type TTYClient interface {
 
 // ttyClientDBus implements TTYClient via D-Bus.
 type ttyClientDBus struct {
-	*sessionClientDBus
+	*dbusClient
 }
 
 // connectTTYSessionViaDBusBackend connects to a running TTY session's D-Bus service.
-func ConnectTTYSession(sessionID string) (TTYClient, error) {
-	client, err := ConnectSession(sessionID)
+func ConnectTTY(sessionID string) (TTYClient, error) {
+	client, err := Connect(sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return &ttyClientDBus{sessionClientDBus: client.(*sessionClientDBus)}, nil
+	return &ttyClientDBus{dbusClient: client.(*dbusClient)}, nil
 }
 
 func (c *ttyClientDBus) GetScreenText() (string, error) {

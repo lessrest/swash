@@ -9,25 +9,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbrock/swash/internal/eventlog"
-	eventlogfake "github.com/mbrock/swash/internal/eventlog/fake"
 	"github.com/mbrock/swash/internal/executor"
+	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/internal/protocol"
 )
 
 // runTestTask sets up fakes, runs a task to completion, and returns the journal for assertions.
-func runTestTask(t *testing.T, cmd executor.FakeCommand, proto protocol.Protocol) *eventlogfake.FakeJournal {
+func runTestTask(t *testing.T, cmd executor.FakeCommand, proto protocol.Protocol) *journal.FakeJournal {
 	t.Helper()
 
 	exec := executor.NewFakeExecutor()
-	journal := eventlogfake.NewFakeJournal()
+	fj := journal.NewFakeJournal()
 	exec.RegisterCommand("test-cmd", cmd)
 
 	host := NewHost(HostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"test-cmd"},
 		Protocol:  proto,
-		Events:    journal,
+		Events:    fj,
 		Executor:  exec,
 	})
 
@@ -38,12 +37,12 @@ func runTestTask(t *testing.T, cmd executor.FakeCommand, proto protocol.Protocol
 		t.Fatalf("RunTask failed: %v", err)
 	}
 
-	return journal
+	return fj
 }
 
 // startTestTask starts a task in a goroutine and returns the Host for interaction.
 // The caller must wait on the done channel for task completion.
-func startTestTask(t *testing.T, exec *executor.FakeExecutor, journal *eventlogfake.FakeJournal, cmd executor.FakeCommand, proto protocol.Protocol) (*Host, <-chan error) {
+func startTestTask(t *testing.T, exec *executor.FakeExecutor, fj *journal.FakeJournal, cmd executor.FakeCommand, proto protocol.Protocol) (*Host, <-chan error) {
 	t.Helper()
 
 	exec.RegisterCommand("test-cmd", cmd)
@@ -52,7 +51,7 @@ func startTestTask(t *testing.T, exec *executor.FakeExecutor, journal *eventlogf
 		SessionID: "TEST01",
 		Command:   []string{"test-cmd"},
 		Protocol:  proto,
-		Events:    journal,
+		Events:    fj,
 		Executor:  exec,
 	})
 
@@ -67,12 +66,12 @@ func startTestTask(t *testing.T, exec *executor.FakeExecutor, journal *eventlogf
 }
 
 func TestHost_OutputCapture(t *testing.T) {
-	journal := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	fj := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		fmt.Fprintln(stdout, "hello")
 		return 0
 	}, protocol.ProtocolShell)
 
-	entries := journal.Entries()
+	entries := fj.Entries()
 
 	// Find the output entry (not lifecycle events)
 	var found bool
@@ -89,12 +88,12 @@ func TestHost_OutputCapture(t *testing.T) {
 }
 
 func TestHost_StderrCapture(t *testing.T) {
-	journal := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	fj := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		fmt.Fprintln(stderr, "error message")
 		return 0
 	}, protocol.ProtocolShell)
 
-	entries := journal.Entries()
+	entries := fj.Entries()
 
 	var found bool
 	for _, e := range entries {
@@ -110,15 +109,15 @@ func TestHost_StderrCapture(t *testing.T) {
 }
 
 func TestHost_ExitCode(t *testing.T) {
-	journal := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	fj := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		return 42
 	}, protocol.ProtocolShell)
 
 	// Check journal exited event
-	entries := journal.Entries()
+	entries := fj.Entries()
 	var found bool
 	for _, e := range entries {
-		if e.Fields[eventlog.FieldEvent] == eventlog.EventExited && e.Fields[eventlog.FieldExitCode] == "42" {
+		if e.Fields[journal.FieldEvent] == journal.EventExited && e.Fields[journal.FieldExitCode] == "42" {
 			found = true
 			break
 		}
@@ -129,24 +128,24 @@ func TestHost_ExitCode(t *testing.T) {
 }
 
 func TestHost_LifecycleEvents(t *testing.T) {
-	journal := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	fj := runTestTask(t, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		return 0
 	}, protocol.ProtocolShell)
 
-	entries := journal.Entries()
+	entries := fj.Entries()
 
 	var hasStarted, hasExited bool
 	for _, e := range entries {
-		switch e.Fields[eventlog.FieldEvent] {
-		case eventlog.EventStarted:
+		switch e.Fields[journal.FieldEvent] {
+		case journal.EventStarted:
 			hasStarted = true
-			if e.Fields[eventlog.FieldSession] != "TEST01" {
-				t.Errorf("started event has wrong session ID: %s", e.Fields[eventlog.FieldSession])
+			if e.Fields[journal.FieldSession] != "TEST01" {
+				t.Errorf("started event has wrong session ID: %s", e.Fields[journal.FieldSession])
 			}
-		case eventlog.EventExited:
+		case journal.EventExited:
 			hasExited = true
-			if e.Fields[eventlog.FieldSession] != "TEST01" {
-				t.Errorf("exited event has wrong session ID: %s", e.Fields[eventlog.FieldSession])
+			if e.Fields[journal.FieldSession] != "TEST01" {
+				t.Errorf("exited event has wrong session ID: %s", e.Fields[journal.FieldSession])
 			}
 		}
 	}
@@ -161,11 +160,11 @@ func TestHost_LifecycleEvents(t *testing.T) {
 
 func TestHost_SendInput(t *testing.T) {
 	exec := executor.NewFakeExecutor()
-	journal := eventlogfake.NewFakeJournal()
+	fj := journal.NewFakeJournal()
 
 	// Command that reads from stdin and echoes to stdout
 	inputReceived := make(chan string, 1)
-	host, done := startTestTask(t, exec, journal, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	host, done := startTestTask(t, exec, fj, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		buf := make([]byte, 100)
 		n, err := stdin.Read(buf)
 		if err != nil && err != io.EOF {
@@ -214,7 +213,7 @@ func TestHost_SendInput(t *testing.T) {
 	}
 
 	// Verify echoed output in journal
-	entries := journal.Entries()
+	entries := fj.Entries()
 	var found bool
 	for _, e := range entries {
 		if e.Message == "got: hello" && e.Fields["FD"] == "1" {
@@ -228,13 +227,13 @@ func TestHost_SendInput(t *testing.T) {
 }
 
 func TestHost_SendInput_NoProcess(t *testing.T) {
-	journal := eventlogfake.NewFakeJournal()
+	fj := journal.NewFakeJournal()
 
 	host := NewHost(HostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"test-cmd"},
 		Protocol:  protocol.ProtocolShell,
-		Events:    journal,
+		Events:    fj,
 	})
 
 	// Try to send input before task is started
@@ -260,7 +259,7 @@ func countOpenFDs(t *testing.T) int {
 }
 
 func TestHost_StartTaskProcess_NoFDLeakOnStartError(t *testing.T) {
-	journal := eventlogfake.NewFakeJournal()
+	fj := journal.NewFakeJournal()
 	exec := executor.NewFakeExecutor()
 	// Don't register the command; FakeExecutor will fail with "executable not found".
 
@@ -268,7 +267,7 @@ func TestHost_StartTaskProcess_NoFDLeakOnStartError(t *testing.T) {
 		SessionID: "TEST01",
 		Command:   []string{"missing-cmd"},
 		Protocol:  protocol.ProtocolShell,
-		Events:    journal,
+		Events:    fj,
 		Executor:  exec,
 	})
 
@@ -294,10 +293,10 @@ func TestHost_StartTaskProcess_NoFDLeakOnStartError(t *testing.T) {
 
 func TestHost_Kill(t *testing.T) {
 	exec := executor.NewFakeExecutor()
-	journal := eventlogfake.NewFakeJournal()
+	fj := journal.NewFakeJournal()
 
 	// Command that blocks until context is cancelled
-	host, done := startTestTask(t, exec, journal, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	host, done := startTestTask(t, exec, fj, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		<-ctx.Done()
 		return 0
 	}, protocol.ProtocolShell)
@@ -326,11 +325,11 @@ func TestHost_Kill(t *testing.T) {
 
 func TestHost_Gist(t *testing.T) {
 	exec := executor.NewFakeExecutor()
-	journal := eventlogfake.NewFakeJournal()
+	fj := journal.NewFakeJournal()
 
 	// Command that blocks until context is cancelled
 	blocked := make(chan struct{})
-	host, done := startTestTask(t, exec, journal, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+	host, done := startTestTask(t, exec, fj, func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
 		close(blocked)
 		<-ctx.Done()
 		return 42

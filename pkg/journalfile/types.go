@@ -80,7 +80,7 @@ type Header struct {
 	TailEntryOffset uint64 // le64
 }
 
-// HeaderSize matches the on-disk header length used by journald.
+// HeaderSize matches the on-disk header length used by journal.
 const HeaderSize = 272
 
 // ObjectHeader is the common header for all objects

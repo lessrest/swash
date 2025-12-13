@@ -1,4 +1,4 @@
-package eventlog
+package journal
 
 import (
 	"context"

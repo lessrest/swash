@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/mbrock/swash/internal/journald"
+	"github.com/mbrock/swash/internal/journal"
 )
 
 // cmdMinijournald runs a minimal journald-compatible daemon for the POSIX backend.
@@ -20,7 +20,7 @@ func cmdMinijournald() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
 
-	cfg := journald.DefaultConfig()
+	cfg := journal.DefaultConfig()
 
 	fs := flag.NewFlagSet("minijournald", flag.ExitOnError)
 	fs.StringVar(&cfg.SocketPath, "socket", cfg.SocketPath, "Unix socket path")
@@ -36,7 +36,7 @@ func cmdMinijournald() {
 		os.Unsetenv("SWASH_JOURNALD_FD")
 	}
 
-	daemon, err := journald.New(cfg)
+	daemon, err := journal.New(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "swash minijournald: %v\n", err)
 		os.Exit(1)

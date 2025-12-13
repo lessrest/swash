@@ -15,12 +15,9 @@ import (
 	"time"
 
 	"github.com/mbrock/swash/internal/backend"
-	"github.com/mbrock/swash/internal/eventlog"
-	"github.com/mbrock/swash/internal/eventlog/sink"
-	"github.com/mbrock/swash/internal/eventlog/source"
 	"github.com/mbrock/swash/internal/graph"
-	"github.com/mbrock/swash/internal/journald"
-	"github.com/mbrock/swash/internal/session"
+	"github.com/mbrock/swash/internal/job"
+	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
@@ -32,12 +29,12 @@ type PosixBackend struct {
 	cfg backend.Config
 
 	// journaldConfig holds the socket and journal paths for "swash minijournald".
-	journaldConfig journald.Config
+	journaldConfig journal.Config
 
 	// sharedLog is the combined eventlog for the shared journal.
 	// Uses SocketSink for writing and JournalfileSource for reading.
 	// Lazily initialized on first use.
-	sharedLog eventlog.EventLog
+	sharedLog journal.EventLog
 }
 
 var _ backend.Backend = (*PosixBackend)(nil)
@@ -49,7 +46,7 @@ func Open(ctx context.Context, cfg backend.Config) (backend.Backend, error) {
 	// Configure journald paths:
 	// - Socket in RuntimeDir (ephemeral, cleared on reboot)
 	// - Journal file in StateDir (persistent)
-	jcfg := journald.Config{
+	jcfg := journal.Config{
 		SocketPath:  filepath.Join(cfg.RuntimeDir, "journal.socket"),
 		JournalPath: filepath.Join(cfg.StateDir, "swash.journal"),
 	}
@@ -123,7 +120,7 @@ func (b *PosixBackend) ensureJournald(ctx context.Context) error {
 
 // ensureSharedLog lazily initializes the eventlog for reading and writing
 // to the shared journal. Uses SocketSink for writing and JournalfileSource for reading.
-func (b *PosixBackend) ensureSharedLog(ctx context.Context) (eventlog.EventLog, error) {
+func (b *PosixBackend) ensureSharedLog(ctx context.Context) (journal.EventLog, error) {
 	if b.sharedLog != nil {
 		return b.sharedLog, nil
 	}
@@ -134,17 +131,17 @@ func (b *PosixBackend) ensureSharedLog(ctx context.Context) (eventlog.EventLog, 
 	}
 
 	// Create sink (write to socket)
-	snk := sink.NewSocketSink(b.journaldConfig.SocketPath)
+	snk := journal.NewSocketSink(b.journaldConfig.SocketPath)
 
 	// Create source (read from journal file)
-	src, err := source.NewJournalfileSource(b.journaldConfig.JournalPath)
+	src, err := journal.NewJournalfileSource(b.journaldConfig.JournalPath)
 	if err != nil {
 		snk.Close()
 		return nil, fmt.Errorf("opening journal source: %w", err)
 	}
 
 	// Combine into full EventLog
-	b.sharedLog = eventlog.NewCombinedEventLog(snk, src)
+	b.sharedLog = journal.NewCombinedEventLog(snk, src)
 	return b.sharedLog, nil
 }
 
@@ -270,8 +267,8 @@ func (b *PosixBackend) ListHistory(ctx context.Context) ([]backend.HistorySessio
 		return nil, err
 	}
 
-	filters := []eventlog.EventFilter{
-		eventlog.FilterByEvent(eventlog.EventExited),
+	filters := []journal.EventFilter{
+		journal.FilterByEvent(journal.EventExited),
 	}
 	recs, _, err := el.Poll(ctx, filters, "")
 	if err != nil {
@@ -279,9 +276,9 @@ func (b *PosixBackend) ListHistory(ctx context.Context) ([]backend.HistorySessio
 	}
 
 	// Group by session ID, keeping only the most recent exit per session
-	bySession := make(map[string]eventlog.EventRecord)
+	bySession := make(map[string]journal.EventRecord)
 	for _, rec := range recs {
-		sid := rec.Fields[eventlog.FieldSession]
+		sid := rec.Fields[journal.FieldSession]
 		if sid == "" {
 			continue
 		}
@@ -297,7 +294,7 @@ func (b *PosixBackend) ListHistory(ctx context.Context) ([]backend.HistorySessio
 
 	for sessionID, rec := range bySession {
 		var exitCode *int
-		if s := rec.Fields[eventlog.FieldExitCode]; s != "" {
+		if s := rec.Fields[journal.FieldExitCode]; s != "" {
 			if code, err := strconv.Atoi(s); err == nil {
 				exitCode = &code
 			}
@@ -309,7 +306,7 @@ func (b *PosixBackend) ListHistory(ctx context.Context) ([]backend.HistorySessio
 				ID:       sessionID,
 				Status:   "exited",
 				ExitCode: exitCode,
-				Command:  rec.Fields[eventlog.FieldCommand],
+				Command:  rec.Fields[journal.FieldCommand],
 				Started:  rec.Timestamp.Format("Mon 2006-01-02 15:04:05 MST"),
 			},
 		})
@@ -329,7 +326,7 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		return "", fmt.Errorf("ensuring journald: %w", err)
 	}
 
-	sessionID := session.GenSessionID()
+	sessionID := job.GenID()
 
 	sessionDir := b.sessionDir(sessionID)
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
@@ -345,7 +342,7 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	args := append([]string{}, b.cfg.HostCommand...)
 	args = append(args,
 		"--session", sessionID,
-		"--command-json", session.MustJSON(command),
+		"--command-json", job.MustJSON(command),
 		"--unix-socket", socketPath,
 	)
 
@@ -354,7 +351,7 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		args = append(args, "--protocol", string(opts.Protocol))
 	}
 	if len(opts.Tags) > 0 {
-		args = append(args, "--tags-json", session.MustJSON(opts.Tags))
+		args = append(args, "--tags-json", job.MustJSON(opts.Tags))
 	}
 	if opts.TTY {
 		args = append(args, "--tty")
@@ -442,7 +439,7 @@ func (b *PosixBackend) waitReady(ctx context.Context, sessionID string, pid int,
 		}
 
 		if _, err := os.Stat(socketPath); err == nil {
-			c, err := session.ConnectUnixSession(sessionID, socketPath)
+			c, err := job.ConnectUnix(sessionID, socketPath)
 			if err == nil {
 				_, err = c.Gist()
 				_ = c.Close()
@@ -476,9 +473,9 @@ func (b *PosixBackend) hasSessionStarted(sessionID string) bool {
 		return false
 	}
 
-	filters := []eventlog.EventFilter{
-		eventlog.FilterBySession(sessionID),
-		eventlog.FilterByEvent(eventlog.EventStarted),
+	filters := []journal.EventFilter{
+		journal.FilterBySession(sessionID),
+		journal.FilterByEvent(journal.EventStarted),
 	}
 	entries, _, err := el.Poll(context.Background(), filters, "")
 	return err == nil && len(entries) > 0
@@ -529,7 +526,7 @@ func (b *PosixBackend) PollSessionOutput(ctx context.Context, sessionID, cursor 
 		return nil, "", err
 	}
 
-	filters := []eventlog.EventFilter{eventlog.FilterBySession(sessionID)}
+	filters := []journal.EventFilter{journal.FilterBySession(sessionID)}
 	entries, newCursor, err := el.Poll(ctx, filters, cursor)
 	if err != nil {
 		return nil, "", err
@@ -567,7 +564,7 @@ func (b *PosixBackend) FollowSession(ctx context.Context, sessionID string, time
 		return 0, backend.FollowCancelled
 	}
 
-	filters := []eventlog.EventFilter{eventlog.FilterBySession(sessionID)}
+	filters := []journal.EventFilter{journal.FilterBySession(sessionID)}
 	outputBytes := 0
 
 	var cancel context.CancelFunc
@@ -577,9 +574,9 @@ func (b *PosixBackend) FollowSession(ctx context.Context, sessionID string, time
 	}
 
 	for e := range el.Follow(ctx, filters) {
-		if e.Fields[eventlog.FieldEvent] == eventlog.EventExited {
+		if e.Fields[journal.FieldEvent] == journal.EventExited {
 			exitCode := 0
-			if codeStr := e.Fields[eventlog.FieldExitCode]; codeStr != "" {
+			if codeStr := e.Fields[journal.FieldExitCode]; codeStr != "" {
 				exitCode, _ = strconv.Atoi(codeStr)
 			}
 			return exitCode, backend.FollowCompleted
@@ -619,9 +616,9 @@ func (b *PosixBackend) GetScreen(ctx context.Context, sessionID string) (string,
 		return "", err
 	}
 
-	filters := []eventlog.EventFilter{
-		eventlog.FilterByEvent(eventlog.EventScreen),
-		eventlog.FilterBySession(sessionID),
+	filters := []journal.EventFilter{
+		journal.FilterByEvent(journal.EventScreen),
+		journal.FilterBySession(sessionID),
 	}
 	entries, _, err := el.Poll(ctx, filters, "")
 	if err != nil {
@@ -633,20 +630,20 @@ func (b *PosixBackend) GetScreen(ctx context.Context, sessionID string) (string,
 	return entries[len(entries)-1].Message, nil
 }
 
-func (b *PosixBackend) ConnectSession(sessionID string) (session.SessionClient, error) {
+func (b *PosixBackend) ConnectSession(sessionID string) (job.Client, error) {
 	sock := b.socketPath(sessionID)
 	if _, err := os.Stat(sock); err != nil {
 		return nil, err
 	}
-	return session.ConnectUnixSession(sessionID, sock)
+	return job.ConnectUnix(sessionID, sock)
 }
 
-func (b *PosixBackend) ConnectTTYSession(sessionID string) (session.TTYClient, error) {
+func (b *PosixBackend) ConnectTTYSession(sessionID string) (job.TTYClient, error) {
 	sock := b.socketPath(sessionID)
 	if _, err := os.Stat(sock); err != nil {
 		return nil, err
 	}
-	return session.ConnectUnixTTYSession(sessionID, sock)
+	return job.ConnectUnixTTY(sessionID, sock)
 }
 
 // -----------------------------------------------------------------------------
@@ -658,7 +655,7 @@ func (b *PosixBackend) contextDir(contextID string) string {
 }
 
 func (b *PosixBackend) CreateContext(ctx context.Context) (string, string, error) {
-	contextID := session.GenSessionID()
+	contextID := job.GenID()
 	dir := b.contextDir(contextID)
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -671,7 +668,7 @@ func (b *PosixBackend) CreateContext(ctx context.Context) (string, string, error
 	}
 	// Don't close - kept open for future writes
 
-	if err := eventlog.EmitContextCreated(el, contextID, dir); err != nil {
+	if err := journal.EmitContextCreated(el, contextID, dir); err != nil {
 		return "", "", fmt.Errorf("emitting context-created event: %w", err)
 	}
 
@@ -685,7 +682,7 @@ func (b *PosixBackend) ListContexts(ctx context.Context) ([]backend.Context, err
 	}
 	// Don't close - kept open
 
-	filters := []eventlog.EventFilter{eventlog.FilterByEvent(eventlog.EventContextCreated)}
+	filters := []journal.EventFilter{journal.FilterByEvent(journal.EventContextCreated)}
 	entries, _, err := el.Poll(ctx, filters, "")
 	if err != nil {
 		return nil, err
@@ -694,7 +691,7 @@ func (b *PosixBackend) ListContexts(ctx context.Context) ([]backend.Context, err
 	var contexts []backend.Context
 	for _, e := range entries {
 		contexts = append(contexts, backend.Context{
-			ID:      e.Fields[eventlog.FieldContext],
+			ID:      e.Fields[journal.FieldContext],
 			Dir:     e.Fields["DIR"],
 			Created: e.Timestamp,
 		})
@@ -718,9 +715,9 @@ func (b *PosixBackend) ListContextSessions(ctx context.Context, contextID string
 	}
 	// Don't close - kept open
 
-	filters := []eventlog.EventFilter{
-		eventlog.FilterByEvent(eventlog.EventSessionContext),
-		eventlog.FilterByContext(contextID),
+	filters := []journal.EventFilter{
+		journal.FilterByEvent(journal.EventSessionContext),
+		journal.FilterByContext(contextID),
 	}
 	entries, _, err := el.Poll(ctx, filters, "")
 	if err != nil {
@@ -729,7 +726,7 @@ func (b *PosixBackend) ListContextSessions(ctx context.Context, contextID string
 
 	var sessionIDs []string
 	for _, e := range entries {
-		if sid := e.Fields[eventlog.FieldSession]; sid != "" {
+		if sid := e.Fields[journal.FieldSession]; sid != "" {
 			sessionIDs = append(sessionIDs, sid)
 		}
 	}
@@ -743,7 +740,7 @@ func (b *PosixBackend) emitSessionContext(ctx context.Context, sessionID, contex
 	}
 	// Don't close - kept open for future writes
 
-	return eventlog.EmitSessionContext(el, sessionID, contextID)
+	return journal.EmitSessionContext(el, sessionID, contextID)
 }
 
 func (b *PosixBackend) emitServiceType(ctx context.Context, sessionID, serviceType string) error {
@@ -751,7 +748,7 @@ func (b *PosixBackend) emitServiceType(ctx context.Context, sessionID, serviceTy
 	if err != nil {
 		return fmt.Errorf("opening shared event log: %w", err)
 	}
-	return eventlog.EmitServiceType(el, sessionID, serviceType)
+	return journal.EmitServiceType(el, sessionID, serviceType)
 }
 
 // -----------------------------------------------------------------------------
@@ -856,20 +853,20 @@ func (b *PosixBackend) GraphLoad(ctx context.Context, data []byte, format oxigra
 // Lifecycle events (for graph population)
 // -----------------------------------------------------------------------------
 
-func (b *PosixBackend) PollLifecycleEvents(ctx context.Context, cursor string) ([]eventlog.EventRecord, string, error) {
+func (b *PosixBackend) PollLifecycleEvents(ctx context.Context, cursor string) ([]journal.EventRecord, string, error) {
 	log, err := b.ensureSharedLog(ctx)
 	if err != nil {
 		return nil, "", err
 	}
-	filters := eventlog.LifecycleEventFilters()
+	filters := journal.LifecycleEventFilters()
 	return log.Poll(ctx, filters, cursor)
 }
 
-func (b *PosixBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[eventlog.EventRecord] {
+func (b *PosixBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[journal.EventRecord] {
 	log, err := b.ensureSharedLog(ctx)
 	if err != nil {
-		return func(yield func(eventlog.EventRecord) bool) {}
+		return func(yield func(journal.EventRecord) bool) {}
 	}
-	filters := eventlog.LifecycleEventFilters()
+	filters := journal.LifecycleEventFilters()
 	return log.Follow(ctx, filters)
 }

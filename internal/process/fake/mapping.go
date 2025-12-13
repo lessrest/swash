@@ -1,7 +1,7 @@
 package fake
 
 import (
-	systemd "github.com/mbrock/swash/internal/platform/systemd/process"
+	systemd "github.com/mbrock/swash/internal/backend/systemd"
 	"github.com/mbrock/swash/internal/process"
 )
 

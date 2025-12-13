@@ -12,8 +12,8 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/mbrock/swash/internal/dirs"
-	"github.com/mbrock/swash/internal/eventlog"
-	"github.com/mbrock/swash/internal/session"
+	"github.com/mbrock/swash/internal/job"
+	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
@@ -56,8 +56,8 @@ type Backend interface {
 
 	GetScreen(ctx context.Context, sessionID string) (string, error)
 
-	ConnectSession(sessionID string) (session.SessionClient, error)
-	ConnectTTYSession(sessionID string) (session.TTYClient, error)
+	ConnectSession(sessionID string) (job.Client, error)
+	ConnectTTYSession(sessionID string) (job.TTYClient, error)
 
 	// Context management
 	CreateContext(ctx context.Context) (contextID string, dir string, err error)
@@ -71,8 +71,8 @@ type Backend interface {
 	GraphLoad(ctx context.Context, data []byte, format oxigraph.Format) error
 
 	// Lifecycle events (for graph population)
-	PollLifecycleEvents(ctx context.Context, cursor string) ([]eventlog.EventRecord, string, error)
-	FollowLifecycleEvents(ctx context.Context) iter.Seq[eventlog.EventRecord]
+	PollLifecycleEvents(ctx context.Context, cursor string) ([]journal.EventRecord, string, error)
+	FollowLifecycleEvents(ctx context.Context) iter.Seq[journal.EventRecord]
 }
 
 type opener func(ctx context.Context, cfg Config) (Backend, error)

@@ -1,4 +1,4 @@
-package session
+package job
 
 import (
 	"bufio"
@@ -16,8 +16,8 @@ import (
 	"time"
 )
 
-// unixSessionClient implements SessionClient over HTTP+JSON on a unix socket.
-type unixSessionClient struct {
+// unixClient implements Client over HTTP+JSON on a unix socket.
+type unixClient struct {
 	sessionID   string
 	socketPath  string
 	httpClient  *http.Client
@@ -26,17 +26,17 @@ type unixSessionClient struct {
 	closedError error
 }
 
-var _ SessionClient = (*unixSessionClient)(nil)
+var _ Client = (*unixClient)(nil)
 
 // unixTTYClient implements TTYClient over HTTP+JSON on a unix socket.
 type unixTTYClient struct {
-	*unixSessionClient
+	*unixClient
 }
 
 var _ TTYClient = (*unixTTYClient)(nil)
 
-// ConnectUnixSession connects to a session control socket.
-func ConnectUnixSession(sessionID, socketPath string) (SessionClient, error) {
+// ConnectUnix connects to a session control socket.
+func ConnectUnix(sessionID, socketPath string) (Client, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session ID is empty")
 	}
@@ -44,7 +44,7 @@ func ConnectUnixSession(sessionID, socketPath string) (SessionClient, error) {
 		return nil, fmt.Errorf("socket path is empty")
 	}
 
-	c := &unixSessionClient{
+	c := &unixClient{
 		sessionID:  sessionID,
 		socketPath: socketPath,
 		closed:     make(chan struct{}),
@@ -54,12 +54,12 @@ func ConnectUnixSession(sessionID, socketPath string) (SessionClient, error) {
 }
 
 // ConnectUnixTTYSession connects to a TTY session control socket.
-func ConnectUnixTTYSession(sessionID, socketPath string) (TTYClient, error) {
-	c, err := ConnectUnixSession(sessionID, socketPath)
+func ConnectUnixTTY(sessionID, socketPath string) (TTYClient, error) {
+	c, err := ConnectUnix(sessionID, socketPath)
 	if err != nil {
 		return nil, err
 	}
-	return &unixTTYClient{unixSessionClient: c.(*unixSessionClient)}, nil
+	return &unixTTYClient{unixClient: c.(*unixClient)}, nil
 }
 
 func newUnixHTTPClient(socketPath string) *http.Client {
@@ -74,7 +74,7 @@ func newUnixHTTPClient(socketPath string) *http.Client {
 	return &http.Client{Transport: tr}
 }
 
-func (c *unixSessionClient) Close() error {
+func (c *unixClient) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.closed)
 	})
@@ -82,9 +82,9 @@ func (c *unixSessionClient) Close() error {
 	return c.closedError
 }
 
-func (c *unixSessionClient) SessionID() (string, error) { return c.sessionID, nil }
+func (c *unixClient) SessionID() (string, error) { return c.sessionID, nil }
 
-func (c *unixSessionClient) Gist() (HostStatus, error) {
+func (c *unixClient) Gist() (HostStatus, error) {
 	var out HostStatus
 	if err := c.doJSON(context.Background(), http.MethodGet, "/gist", nil, &out); err != nil {
 		return HostStatus{}, err
@@ -92,15 +92,15 @@ func (c *unixSessionClient) Gist() (HostStatus, error) {
 	return out, nil
 }
 
-func (c *unixSessionClient) Kill() error {
+func (c *unixClient) Kill() error {
 	return c.doJSON(context.Background(), http.MethodPost, "/kill", nil, nil)
 }
 
-func (c *unixSessionClient) Restart() error {
+func (c *unixClient) Restart() error {
 	return c.doJSON(context.Background(), http.MethodPost, "/restart", nil, nil)
 }
 
-func (c *unixSessionClient) SendInput(input string) (int, error) {
+func (c *unixClient) SendInput(input string) (int, error) {
 	req, err := c.newRequest(context.Background(), http.MethodPost, "/input", strings.NewReader(input))
 	if err != nil {
 		return 0, err
@@ -273,7 +273,7 @@ func (c *unixTTYClient) WaitExited() <-chan int32 {
 	return exitCh
 }
 
-func (c *unixSessionClient) getText(path string) (string, error) {
+func (c *unixClient) getText(path string) (string, error) {
 	req, err := c.newRequest(context.Background(), http.MethodGet, path, nil)
 	if err != nil {
 		return "", err
@@ -291,7 +291,7 @@ func (c *unixSessionClient) getText(path string) (string, error) {
 	return string(b), nil
 }
 
-func (c *unixSessionClient) doJSON(ctx context.Context, method, path string, in any, out any) error {
+func (c *unixClient) doJSON(ctx context.Context, method, path string, in any, out any) error {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
@@ -327,7 +327,7 @@ func (c *unixSessionClient) doJSON(ctx context.Context, method, path string, in 
 	return nil
 }
 
-func (c *unixSessionClient) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+func (c *unixClient) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	u := &url.URL{
 		Scheme: "http",
 		Host:   "unix",

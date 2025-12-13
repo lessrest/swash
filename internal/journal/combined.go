@@ -1,4 +1,4 @@
-package eventlog
+package journal
 
 import (
 	"context"
@@ -18,7 +18,7 @@ type CombinedEventLog struct {
 
 var _ EventLog = (*CombinedEventLog)(nil)
 
-// NewCombinedEventLog creates an EventLog from separate sink and source.
+// NewCombinedEventLog creates an EventLog from separate sink and journal.
 func NewCombinedEventLog(sink EventSink, source EventSource) *CombinedEventLog {
 	return &CombinedEventLog{
 		sink:   sink,
@@ -31,7 +31,7 @@ func (c *CombinedEventLog) Write(message string, fields map[string]string) error
 	return c.sink.Write(message, fields)
 }
 
-// WriteSync sends a structured entry and waits until readable via the source.
+// WriteSync sends a structured entry and waits until readable via the journal.
 func (c *CombinedEventLog) WriteSync(message string, fields map[string]string) error {
 	// Generate a unique nonce to identify this specific write
 	nonce := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())

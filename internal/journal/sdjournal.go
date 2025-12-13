@@ -1,5 +1,5 @@
 // Package source provides EventSource implementations for reading from journals.
-package source
+package journal
 
 import (
 	"context"
@@ -11,8 +11,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/coreos/go-systemd/v22/sdjournal"
-
-	"github.com/mbrock/swash/internal/eventlog"
 )
 
 // SDJournalSource implements EventSource using go-systemd/sdjournal (CGO).
@@ -22,7 +20,7 @@ type SDJournalSource struct {
 	journalDir string
 }
 
-var _ eventlog.EventSource = (*SDJournalSource)(nil)
+var _ EventSource = (*SDJournalSource)(nil)
 
 // NewSDJournalSource creates a source that reads from the system journal.
 // If journalDir is non-empty, reads from that directory instead of the default.
@@ -51,7 +49,7 @@ func NewSDJournalSource(journalDir string) (*SDJournalSource, error) {
 }
 
 // Poll reads entries matching filters since cursor.
-func (s *SDJournalSource) Poll(ctx context.Context, filters []eventlog.EventFilter, cursor string) ([]eventlog.EventRecord, string, error) {
+func (s *SDJournalSource) Poll(ctx context.Context, filters []EventFilter, cursor string) ([]EventRecord, string, error) {
 	// Process any pending journal updates (non-blocking)
 	// This ensures we see entries that were written since the last call.
 	s.journal.Process()
@@ -75,7 +73,7 @@ func (s *SDJournalSource) Poll(ctx context.Context, filters []eventlog.EventFilt
 		s.journal.SeekHead()
 	}
 
-	var entries []eventlog.EventRecord
+	var entries []EventRecord
 	var lastCursor string
 
 	for {
@@ -101,8 +99,8 @@ func (s *SDJournalSource) Poll(ctx context.Context, filters []eventlog.EventFilt
 // Follow returns an iterator over entries matching filters.
 // Uses the file descriptor-based API for efficient, non-blocking waits
 // that integrate properly with Go's runtime scheduler.
-func (s *SDJournalSource) Follow(ctx context.Context, filters []eventlog.EventFilter) iter.Seq[eventlog.EventRecord] {
-	return func(yield func(eventlog.EventRecord) bool) {
+func (s *SDJournalSource) Follow(ctx context.Context, filters []EventFilter) iter.Seq[EventRecord] {
+	return func(yield func(EventRecord) bool) {
 		// Apply matches
 		s.journal.FlushMatches()
 		for _, f := range filters {
@@ -188,7 +186,7 @@ func (s *SDJournalSource) waitForJournal(ctx context.Context, fd int, events int
 
 // followWithGoroutine is the fallback implementation using the blocking Wait().
 // Used when GetFD() is not available.
-func (s *SDJournalSource) followWithGoroutine(ctx context.Context, yield func(eventlog.EventRecord) bool) {
+func (s *SDJournalSource) followWithGoroutine(ctx context.Context, yield func(EventRecord) bool) {
 	for {
 		n, err := s.journal.Next()
 		if err != nil {
@@ -223,15 +221,15 @@ func (s *SDJournalSource) followWithGoroutine(ctx context.Context, yield func(ev
 }
 
 // parseEntry parses the current journal position into an EventRecord.
-func (s *SDJournalSource) parseEntry() (eventlog.EventRecord, error) {
+func (s *SDJournalSource) parseEntry() (EventRecord, error) {
 	raw, err := s.journal.GetEntry()
 	if err != nil {
-		return eventlog.EventRecord{}, err
+		return EventRecord{}, err
 	}
 
 	cursor, _ := s.journal.GetCursor()
 
-	return eventlog.EventRecord{
+	return EventRecord{
 		Cursor:    cursor,
 		Timestamp: time.Unix(int64(raw.RealtimeTimestamp/1000000), int64((raw.RealtimeTimestamp%1000000)*1000)),
 		Message:   raw.Fields["MESSAGE"],

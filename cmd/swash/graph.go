@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/mbrock/swash/internal/backend"
-	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/internal/graph"
+	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
@@ -96,7 +96,7 @@ func cmdGraphServe(args []string) {
 	} else {
 		var quadCount int
 		for _, e := range events {
-			quads := eventlog.EventToQuads(e)
+			quads := journal.EventToQuads(e)
 			if len(quads) > 0 {
 				if err := service.AddQuads(quads); err != nil {
 					fmt.Fprintf(os.Stderr, "swash graph: warning: failed to add quads: %v\n", err)
@@ -112,7 +112,7 @@ func cmdGraphServe(args []string) {
 	go func() {
 		fmt.Fprintf(os.Stderr, "swash graph: following journal for new events...\n")
 		for e := range bk.FollowLifecycleEvents(ctx) {
-			quads := eventlog.EventToQuads(e)
+			quads := journal.EventToQuads(e)
 			if len(quads) > 0 {
 				if err := service.AddQuads(quads); err != nil {
 					fmt.Fprintf(os.Stderr, "swash graph: warning: failed to add quads: %v\n", err)

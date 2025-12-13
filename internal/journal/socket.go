@@ -1,5 +1,5 @@
-// Package sink provides EventSink implementations for writing to journald.
-package sink
+// Package sink provides EventSink implementations for writing to journal.
+package journal
 
 import (
 	"encoding/binary"
@@ -8,15 +8,13 @@ import (
 	"os"
 	"strings"
 	"sync"
-
-	"github.com/mbrock/swash/internal/eventlog"
 )
 
 // DefaultSocketPath is the standard journald socket location.
 const DefaultSocketPath = "/run/systemd/journal/socket"
 
 // SocketSink implements EventSink by writing to a journald-compatible socket.
-// This works with both real journald and mini-journald.
+// This works with both real journald and mini-journal.
 type SocketSink struct {
 	socketPath string
 
@@ -24,7 +22,7 @@ type SocketSink struct {
 	conn *net.UnixConn
 }
 
-var _ eventlog.EventSink = (*SocketSink)(nil)
+var _ EventSink = (*SocketSink)(nil)
 
 // NewSocketSink creates a sink that writes to the given socket path.
 // If socketPath is empty, uses DefaultSocketPath.

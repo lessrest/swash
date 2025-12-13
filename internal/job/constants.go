@@ -1,4 +1,4 @@
-package session
+package job
 
 const (
 	DBusNamePrefix = "sh.swa.Swash"

@@ -1,5 +1,5 @@
 // Package source provides EventSource implementations for reading from journals.
-package source
+package journal
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"iter"
 	"log/slog"
 
-	"github.com/mbrock/swash/internal/eventlog"
 	"github.com/mbrock/swash/pkg/journalfile"
 )
 
@@ -19,7 +18,7 @@ type JournalfileSource struct {
 	reader *journalfile.Reader
 }
 
-var _ eventlog.EventSource = (*JournalfileSource)(nil)
+var _ EventSource = (*JournalfileSource)(nil)
 
 // NewJournalfileSource creates a source that reads from a journal file.
 func NewJournalfileSource(path string) (*JournalfileSource, error) {
@@ -34,7 +33,7 @@ func NewJournalfileSource(path string) (*JournalfileSource, error) {
 }
 
 // Poll reads entries matching filters since cursor.
-func (s *JournalfileSource) Poll(ctx context.Context, filters []eventlog.EventFilter, cursor string) ([]eventlog.EventRecord, string, error) {
+func (s *JournalfileSource) Poll(ctx context.Context, filters []EventFilter, cursor string) ([]EventRecord, string, error) {
 	// Refresh to see latest entries
 	if err := s.reader.Refresh(); err != nil {
 		return nil, "", fmt.Errorf("refreshing journal: %w", err)
@@ -55,7 +54,7 @@ func (s *JournalfileSource) Poll(ctx context.Context, filters []eventlog.EventFi
 		s.reader.SeekHead()
 	}
 
-	var entries []eventlog.EventRecord
+	var entries []EventRecord
 	var lastCursor string
 
 	for {
@@ -67,7 +66,7 @@ func (s *JournalfileSource) Poll(ctx context.Context, filters []eventlog.EventFi
 			return nil, "", fmt.Errorf("reading journal: %w", err)
 		}
 
-		record := eventlog.EventRecord{
+		record := EventRecord{
 			Cursor:    journalfile.GetCursor(entry),
 			Timestamp: entry.Realtime,
 			Message:   entry.Fields["MESSAGE"],
@@ -82,8 +81,8 @@ func (s *JournalfileSource) Poll(ctx context.Context, filters []eventlog.EventFi
 
 // Follow returns an iterator over entries matching filters.
 // Uses the Reader's Wait method for efficient file change detection.
-func (s *JournalfileSource) Follow(ctx context.Context, filters []eventlog.EventFilter) iter.Seq[eventlog.EventRecord] {
-	return func(yield func(eventlog.EventRecord) bool) {
+func (s *JournalfileSource) Follow(ctx context.Context, filters []EventFilter) iter.Seq[EventRecord] {
+	return func(yield func(EventRecord) bool) {
 		slog.Debug("JournalfileSource.Follow starting", "path", s.path, "filters", len(filters))
 
 		// Apply matches
@@ -117,7 +116,7 @@ func (s *JournalfileSource) Follow(ctx context.Context, filters []eventlog.Event
 				return
 			}
 
-			record := eventlog.EventRecord{
+			record := EventRecord{
 				Cursor:    journalfile.GetCursor(entry),
 				Timestamp: entry.Realtime,
 				Message:   entry.Fields["MESSAGE"],

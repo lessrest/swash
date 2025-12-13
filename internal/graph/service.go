@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/mbrock/swash/internal/dirs"
-	"github.com/mbrock/swash/internal/eventlog"
+	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
 
@@ -190,8 +190,8 @@ func (s *Service) AddQuads(quads []oxigraph.Quad) error {
 
 // AddEvent converts an event record to RDF quads and adds them to the store.
 // Returns the number of quads added.
-func (s *Service) AddEvent(e eventlog.EventRecord) (int, error) {
-	quads := eventlog.EventToQuads(e)
+func (s *Service) AddEvent(e journal.EventRecord) (int, error) {
+	quads := journal.EventToQuads(e)
 	if len(quads) == 0 {
 		return 0, nil
 	}

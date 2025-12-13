@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	eventlogfake "github.com/mbrock/swash/internal/eventlog/fake"
 	"github.com/mbrock/swash/internal/executor"
+	journal "github.com/mbrock/swash/internal/journal"
 )
 
-type FakeJournal = eventlogfake.FakeJournal
+type FakeJournal = journal.FakeJournal
 type FakeCommand = executor.FakeCommand
 
 func NewTestFakes() (*executor.FakeExecutor, *FakeJournal) {
-	return executor.NewFakeExecutor(), eventlogfake.NewFakeJournal()
+	return executor.NewFakeExecutor(), journal.NewFakeJournal()
 }
 
 func TestTTYHost_NewTTYHost(t *testing.T) {
