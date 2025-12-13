@@ -25,4 +25,4 @@ require (
 
 require github.com/andybalholm/cascadia v1.3.3 // indirect
 
-replace github.com/coreos/go-systemd/v22 => github.com/mbrock/go-systemd/v22 v22.6.1-swash
+replace github.com/coreos/go-systemd/v22 => github.com/mbrock/go-systemd/v22 v22.6.2-swash

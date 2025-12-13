@@ -8,6 +8,8 @@ import (
 	"os"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/coreos/go-systemd/v22/sdjournal"
 
 	"github.com/mbrock/swash/internal/eventlog"
@@ -50,9 +52,9 @@ func NewSDJournalSource(journalDir string) (*SDJournalSource, error) {
 
 // Poll reads entries matching filters since cursor.
 func (s *SDJournalSource) Poll(ctx context.Context, filters []eventlog.EventFilter, cursor string) ([]eventlog.EventRecord, string, error) {
-	// Process any pending journal updates (Wait(0) is equivalent to sd_journal_process())
+	// Process any pending journal updates (non-blocking)
 	// This ensures we see entries that were written since the last call.
-	s.journal.Wait(0)
+	s.journal.Process()
 
 	// Apply matches
 	s.journal.FlushMatches()
@@ -97,6 +99,8 @@ func (s *SDJournalSource) Poll(ctx context.Context, filters []eventlog.EventFilt
 }
 
 // Follow returns an iterator over entries matching filters.
+// Uses the file descriptor-based API for efficient, non-blocking waits
+// that integrate properly with Go's runtime scheduler.
 func (s *SDJournalSource) Follow(ctx context.Context, filters []eventlog.EventFilter) iter.Seq[eventlog.EventRecord] {
 	return func(yield func(eventlog.EventRecord) bool) {
 		// Apply matches
@@ -109,6 +113,21 @@ func (s *SDJournalSource) Follow(ctx context.Context, filters []eventlog.EventFi
 
 		s.journal.SeekHead()
 
+		// Get the journal file descriptor for polling
+		fd, err := s.journal.GetFD()
+		if err != nil {
+			// Fall back to the old goroutine-based approach if GetFD fails
+			s.followWithGoroutine(ctx, yield)
+			return
+		}
+
+		// Get the events to poll for (typically POLLIN)
+		events, err := s.journal.GetEvents()
+		if err != nil {
+			s.followWithGoroutine(ctx, yield)
+			return
+		}
+
 		for {
 			n, err := s.journal.Next()
 			if err != nil {
@@ -116,19 +135,13 @@ func (s *SDJournalSource) Follow(ctx context.Context, filters []eventlog.EventFi
 			}
 
 			if n == 0 {
-				// No entries available, wait for new ones
-				waitCh := make(chan struct{})
-				go func() {
-					s.journal.Wait(5 * time.Second)
-					close(waitCh)
-				}()
-
-				select {
-				case <-ctx.Done():
-					return
-				case <-waitCh:
-					continue
+				// No entries available, wait for new ones using poll
+				if err := s.waitForJournal(ctx, fd, events); err != nil {
+					return // context cancelled or error
 				}
+				// Process the events
+				s.journal.Process()
+				continue
 			}
 
 			record, err := s.parseEntry()
@@ -139,6 +152,72 @@ func (s *SDJournalSource) Follow(ctx context.Context, filters []eventlog.EventFi
 			if !yield(record) {
 				return
 			}
+		}
+	}
+}
+
+// waitForJournal waits for the journal FD to become readable or context to cancel.
+// Uses poll(2) with a timeout so we can check the context periodically.
+func (s *SDJournalSource) waitForJournal(ctx context.Context, fd int, events int) error {
+	pollFds := []unix.PollFd{{
+		Fd:     int32(fd),
+		Events: int16(events),
+	}}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Poll with 100ms timeout so we can check context regularly
+		n, err := unix.Poll(pollFds, 100)
+		if err != nil {
+			if err == unix.EINTR {
+				continue // Interrupted, retry
+			}
+			return err
+		}
+		if n > 0 {
+			return nil // FD is ready
+		}
+		// Timeout, loop to check context and poll again
+	}
+}
+
+// followWithGoroutine is the fallback implementation using the blocking Wait().
+// Used when GetFD() is not available.
+func (s *SDJournalSource) followWithGoroutine(ctx context.Context, yield func(eventlog.EventRecord) bool) {
+	for {
+		n, err := s.journal.Next()
+		if err != nil {
+			return
+		}
+
+		if n == 0 {
+			// No entries available, wait for new ones
+			waitCh := make(chan struct{})
+			go func() {
+				s.journal.Wait(5 * time.Second)
+				close(waitCh)
+			}()
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-waitCh:
+				continue
+			}
+		}
+
+		record, err := s.parseEntry()
+		if err != nil {
+			continue
+		}
+
+		if !yield(record) {
+			return
 		}
 	}
 }
