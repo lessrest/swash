@@ -172,7 +172,11 @@ func (r *renderer) drawBorder() {
 
 // runVtermOwner runs the goroutine that owns the vterm
 func runVtermOwner(ctx context.Context, msgCh <-chan vtermMsg, rend *renderer, rows, cols int, initialScreen []byte) {
-	vt := vterm.New(rows, cols)
+	vt, err := vterm.New(rows, cols)
+	if err != nil {
+		// Fatal error - can't continue without vterm
+		panic(fmt.Sprintf("vterm.New failed: %v", err))
+	}
 	defer vt.Free()
 
 	dirty := false

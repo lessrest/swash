@@ -18,10 +18,20 @@ func NewTestFakes() (*FakeExecutor, *FakeJournal) {
 	return NewFakeExecutor(), journal.NewFakeJournal()
 }
 
+// mustNewTTYHost creates a TTYHost or fails the test
+func mustNewTTYHost(t *testing.T, cfg TTYHostConfig) *TTYHost {
+	t.Helper()
+	h, err := NewTTYHost(cfg)
+	if err != nil {
+		t.Fatalf("NewTTYHost failed: %v", err)
+	}
+	return h
+}
+
 func TestTTYHost_NewTTYHost(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
@@ -49,7 +59,7 @@ func TestTTYHost_NewTTYHost(t *testing.T) {
 func TestTTYHost_SessionID(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "ABC123",
 		Command:   []string{"bash"},
 		Rows:      24,
@@ -71,7 +81,7 @@ func TestTTYHost_DefaultSize(t *testing.T) {
 	_, journal := NewTestFakes()
 
 	// Test with zero values - should default to 24x80
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      0,
@@ -96,7 +106,7 @@ func TestTTYHost_DefaultSize(t *testing.T) {
 func TestTTYHost_GetScreenText(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      5,
@@ -121,7 +131,7 @@ func TestTTYHost_GetScreenText(t *testing.T) {
 func TestTTYHost_GetScreenANSI(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      5,
@@ -150,7 +160,7 @@ func TestTTYHost_GetScreenANSI(t *testing.T) {
 func TestTTYHost_GetCursor(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
@@ -183,7 +193,7 @@ func TestTTYHost_GetCursor(t *testing.T) {
 func TestTTYHost_Resize(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
@@ -218,7 +228,7 @@ func TestTTYHost_Resize(t *testing.T) {
 func TestTTYHost_GetTitle(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
@@ -251,7 +261,7 @@ func TestTTYHost_GetTitle(t *testing.T) {
 func TestTTYHost_GetMode(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
@@ -295,7 +305,7 @@ func TestTTYHost_GetMode(t *testing.T) {
 func TestTTYHost_GetScrollback(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      3, // Small screen to trigger scrollback
@@ -324,7 +334,7 @@ func TestTTYHost_GetScrollback(t *testing.T) {
 func TestTTYHost_SendInput_NoProcess(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TEST01",
 		Command:   []string{"bash"},
 		Rows:      24,
@@ -352,7 +362,7 @@ func TestTTYHost_RunTask_WithFakePTY(t *testing.T) {
 		return 0
 	})
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TTYTEST1",
 		Command:   []string{"echo", "Hello from TTY"},
 		Rows:      10,
@@ -420,7 +430,7 @@ func TestTTYHost_RunTask_ColoredOutput(t *testing.T) {
 		return 0
 	})
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TTYTEST2",
 		Command:   []string{"colortest"},
 		Rows:      5,
@@ -461,7 +471,7 @@ func TestTTYHost_RunTask_Scrollback(t *testing.T) {
 		return 0
 	})
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TTYTEST3",
 		Command:   []string{"manylines"},
 		Rows:      5, // Small screen to trigger scrollback
@@ -509,7 +519,7 @@ func TestTTYHost_RunTask_Cancel(t *testing.T) {
 		return 137   // Typical killed exit code
 	})
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TTYTEST4",
 		Command:   []string{"sleep"},
 		Rows:      5,
@@ -574,7 +584,7 @@ func TestTTYHost_RunTask_SendInput(t *testing.T) {
 		return 0
 	})
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "TTYTEST5",
 		Command:   []string{"cat"},
 		Rows:      5,
@@ -632,7 +642,7 @@ func TestTTYHost_RunTask_SendInput(t *testing.T) {
 func TestTTYHost_Attach_Basic(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "ATTACH1",
 		Command:   []string{"bash"},
 		Rows:      5,
@@ -669,7 +679,7 @@ func TestTTYHost_Attach_Basic(t *testing.T) {
 func TestTTYHost_Attach_MultiClient(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "ATTACH2",
 		Command:   []string{"bash"},
 		Rows:      5,
@@ -748,7 +758,7 @@ func TestTTYHost_Attach_StreamOutput(t *testing.T) {
 		return 0
 	})
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "ATTACH3",
 		Command:   []string{"outputter"},
 		Rows:      5,
@@ -806,7 +816,7 @@ func TestTTYHost_Attach_StreamOutput(t *testing.T) {
 func TestTTYHost_Attach_ReattachAfterDisconnect(t *testing.T) {
 	_, journal := NewTestFakes()
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "ATTACH5",
 		Command:   []string{"bash"},
 		Rows:      5,
@@ -864,7 +874,7 @@ func TestTTYHost_Attach_SendInput(t *testing.T) {
 		return 0
 	})
 
-	host := NewTTYHost(TTYHostConfig{
+	host := mustNewTTYHost(t, TTYHostConfig{
 		SessionID: "ATTACH4",
 		Command:   []string{"reader"},
 		Rows:      5,

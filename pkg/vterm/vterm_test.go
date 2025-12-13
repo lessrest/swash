@@ -5,8 +5,18 @@ import (
 	"testing"
 )
 
-func TestNew(t *testing.T) {
-	vt := New(24, 80)
+// mustNew creates a new VTerm or fails the test
+func mustNew(t *testing.T, rows, cols int) *VTerm {
+	t.Helper()
+	vt, err := New(rows, cols)
+	if err != nil {
+		t.Fatalf("New(%d, %d) failed: %v", rows, cols, err)
+	}
+	return vt
+}
+
+func TestBasicNew(t *testing.T) {
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	rows, cols := vt.GetSize()
@@ -16,7 +26,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestWrite(t *testing.T) {
-	vt := New(24, 80)
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	n := vt.Write([]byte("Hello, World!"))
@@ -31,7 +41,7 @@ func TestWrite(t *testing.T) {
 }
 
 func TestGetCell(t *testing.T) {
-	vt := New(24, 80)
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	vt.Write([]byte("A"))
@@ -43,7 +53,7 @@ func TestGetCell(t *testing.T) {
 }
 
 func TestSetSize(t *testing.T) {
-	vt := New(24, 80)
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	vt.SetSize(40, 120)
@@ -54,7 +64,7 @@ func TestSetSize(t *testing.T) {
 }
 
 func TestGetCursor(t *testing.T) {
-	vt := New(24, 80)
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	vt.Write([]byte("Hello"))
@@ -65,7 +75,7 @@ func TestGetCursor(t *testing.T) {
 }
 
 func TestOnDamage(t *testing.T) {
-	vt := New(24, 80)
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	damaged := false
@@ -80,7 +90,7 @@ func TestOnDamage(t *testing.T) {
 }
 
 func TestOnMoveCursor(t *testing.T) {
-	vt := New(24, 80)
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	var cursorRow, cursorCol int
@@ -95,7 +105,7 @@ func TestOnMoveCursor(t *testing.T) {
 }
 
 func TestOnPushLine(t *testing.T) {
-	vt := New(3, 10) // Small terminal to trigger scrollback quickly
+	vt := mustNew(t, 3, 10) // Small terminal to trigger scrollback quickly
 	defer vt.Free()
 
 	var pushedLines []string
@@ -114,7 +124,7 @@ func TestOnPushLine(t *testing.T) {
 }
 
 func TestOnPushLineWithColors(t *testing.T) {
-	vt := New(3, 40) // Small terminal to trigger scrollback quickly
+	vt := mustNew(t, 3, 40) // Small terminal to trigger scrollback quickly
 	defer vt.Free()
 
 	var pushedLines []string
@@ -151,7 +161,7 @@ func TestOnPushLineWithColors(t *testing.T) {
 }
 
 func TestOnPushLinePlainText(t *testing.T) {
-	vt := New(3, 40) // Small terminal to trigger scrollback quickly
+	vt := mustNew(t, 3, 40) // Small terminal to trigger scrollback quickly
 	defer vt.Free()
 
 	var pushedLines []string
@@ -180,7 +190,7 @@ func TestOnPushLinePlainText(t *testing.T) {
 }
 
 func TestOnTermProp(t *testing.T) {
-	vt := New(24, 80)
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	var title string
@@ -199,7 +209,7 @@ func TestOnTermProp(t *testing.T) {
 }
 
 func TestScreenText(t *testing.T) {
-	vt := New(5, 20)
+	vt := mustNew(t, 5, 20)
 	defer vt.Free()
 
 	// Use \r\n to move to beginning of next line (like a real terminal)
@@ -224,7 +234,7 @@ func TestScreenText(t *testing.T) {
 }
 
 func TestUnicode(t *testing.T) {
-	vt := New(24, 80)
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	// Write some Unicode characters
@@ -238,7 +248,7 @@ func TestUnicode(t *testing.T) {
 }
 
 func TestColors(t *testing.T) {
-	vt := New(24, 80)
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	// Write with red foreground: ESC[31m
@@ -252,7 +262,7 @@ func TestColors(t *testing.T) {
 }
 
 func TestBold(t *testing.T) {
-	vt := New(24, 80)
+	vt := mustNew(t, 24, 80)
 	defer vt.Free()
 
 	// Write with bold: ESC[1m
@@ -265,7 +275,7 @@ func TestBold(t *testing.T) {
 }
 
 func TestGetScreenANSI(t *testing.T) {
-	vt := New(3, 20)
+	vt := mustNew(t, 3, 20)
 	defer vt.Free()
 
 	// Write colored text

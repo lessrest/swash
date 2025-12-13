@@ -195,7 +195,7 @@ type TTYHostConfig struct {
 }
 
 // NewTTYHost creates a new TTYHost with the given configuration.
-func NewTTYHost(cfg TTYHostConfig) *TTYHost {
+func NewTTYHost(cfg TTYHostConfig) (*TTYHost, error) {
 	rows, cols := cfg.Rows, cfg.Cols
 	if rows <= 0 {
 		rows = 24
@@ -233,7 +233,11 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 	}
 
 	// Create vterm instance
-	h.vt = vterm.New(rows, cols)
+	vt, err := vterm.New(rows, cols)
+	if err != nil {
+		return nil, fmt.Errorf("vterm.New: %w", err)
+	}
+	h.vt = vt
 
 	// Set up vterm callbacks
 	h.vt.OnPushLine(func(line string) {
@@ -267,7 +271,7 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 		}
 	})
 
-	return h
+	return h, nil
 }
 
 // HostStatus returns the current session status (same as Host).

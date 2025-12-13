@@ -1,0 +1,49 @@
+# Build libvterm to WASM using wasi-libc
+
+CC = clang
+TARGET = --target=wasm32-wasi
+SYSROOT = --sysroot=/usr
+
+CFLAGS = $(TARGET) $(SYSROOT) \
+	-I/usr/include/wasm32-wasi \
+	-Iinclude \
+	-O2 \
+	-Wall
+
+LDFLAGS = $(TARGET) $(SYSROOT) \
+	-L/usr/lib/wasm32-wasi \
+	-nostartfiles \
+	-Wl,--no-entry \
+	-Wl,--export-all
+
+SRCS = src/vterm.c \
+       src/encoding.c \
+       src/keyboard.c \
+       src/mouse.c \
+       src/parser.c \
+       src/pen.c \
+       src/screen.c \
+       src/state.c \
+       src/unicode.c \
+       wasm_callbacks.c
+
+OBJS = $(SRCS:.c=.wasm.o)
+
+# Output compressed WASM to parent directory for Go embedding
+OUTPUT_ZST = ../vterm.wasm.zst
+
+all: $(OUTPUT_ZST)
+
+%.wasm.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+vterm.wasm: $(OBJS)
+	$(CC) $(LDFLAGS) $(OBJS) -lc -o $@
+
+$(OUTPUT_ZST): vterm.wasm
+	zstd -f $< -o $@
+
+clean:
+	rm -f $(OBJS) vterm.wasm $(OUTPUT_ZST)
+
+.PHONY: all clean

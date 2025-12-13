@@ -466,7 +466,7 @@ func RunHost() error {
 		}()
 
 		if *ttyFlag {
-			h := NewTTYHost(TTYHostConfig{
+			h, err := NewTTYHost(TTYHostConfig{
 				SessionID: *sessionIDFlag,
 				Command:   command,
 				Rows:      *rowsFlag,
@@ -474,6 +474,9 @@ func RunHost() error {
 				Tags:      tags,
 				Events:    events,
 			})
+			if err != nil {
+				return fmt.Errorf("NewTTYHost: %w", err)
+			}
 			defer h.Close()
 
 			srv, err := ServeUnix(*unixSocketFlag, h, h)
@@ -511,7 +514,7 @@ func RunHost() error {
 
 	// Use TTYHost for --tty mode, otherwise use regular Host
 	if *ttyFlag {
-		host := NewTTYHost(TTYHostConfig{
+		host, err := NewTTYHost(TTYHostConfig{
 			SessionID: *sessionIDFlag,
 			Command:   command,
 			Rows:      *rowsFlag,
@@ -519,6 +522,9 @@ func RunHost() error {
 			Tags:      tags,
 			Events:    events,
 		})
+		if err != nil {
+			return fmt.Errorf("NewTTYHost: %w", err)
+		}
 		defer host.Close()
 		return host.Run()
 	}

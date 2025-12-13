@@ -23,7 +23,7 @@ endif
 export SWASH_TEST_MODE
 export SWASH_TEST_JOURNAL_READER
 
-.PHONY: all build test test-unit test-integration test-all-backends install clean generate oxigraph-wasm coverage
+.PHONY: all build test test-unit test-integration test-all-backends install clean generate oxigraph-wasm vterm-wasm coverage
 
 all: build
 
@@ -94,3 +94,12 @@ oxigraph-wasm: $(OXIGRAPH_WASM_ZST)
 $(OXIGRAPH_WASM_ZST): $(OXIGRAPH_SOURCES)
 	cd oxigraph-wasi-ffi && cargo build --target wasm32-wasip1 --release
 	zstd -f oxigraph-wasi-ffi/target/wasm32-wasip1/release/oxigraph_wasi_ffi.wasm -o $@
+
+# Build libvterm WASI module (compressed blob is embedded in pkg/vterm)
+VTERM_WASM_ZST := pkg/vterm/vterm.wasm.zst
+VTERM_SOURCES := $(wildcard pkg/vterm/libvterm/src/*.c) pkg/vterm/libvterm/wasm_callbacks.c
+
+vterm-wasm: $(VTERM_WASM_ZST)
+
+$(VTERM_WASM_ZST): $(VTERM_SOURCES)
+	$(MAKE) -C pkg/vterm/libvterm -f Makefile.wasm
