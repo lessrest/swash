@@ -21,3 +21,4 @@ result
 # Rust build artifacts
 oxigraph-wasi-ffi/target/
 
+coverage/

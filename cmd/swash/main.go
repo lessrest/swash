@@ -84,6 +84,12 @@ func main() {
 		return
 	}
 
+	// Handle "http" subcommand (has its own flags)
+	if len(os.Args) >= 2 && os.Args[1] == "http" {
+		cmdHTTP(os.Args[2:])
+		return
+	}
+
 	// Register flags
 	flag.StringVar(&backendFlag, "backend", os.Getenv("SWASH_BACKEND"), "Backend: systemd, posix (overrides SWASH_BACKEND)")
 	flag.StringVarP(&protocolFlag, "protocol", "p", "shell", "Protocol: shell, sse")

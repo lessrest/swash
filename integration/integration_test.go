@@ -114,13 +114,10 @@ func setupEnv() (*testEnv, error) {
 		rootSlice: rootSlice,
 	}
 
-	// Build swash
-	swashBin := filepath.Join(tmpDir, "swash")
-	cmd := exec.Command("go", "build", "-o", swashBin, "./cmd/swash/")
-	cmd.Dir = getProjectRoot()
-	cmd.Env = append(os.Environ(), "CGO_CFLAGS=-I"+filepath.Join(getProjectRoot(), "cvendor"))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("building swash: %w\n%s", err, out)
+	// Use pre-built binary from bin/swash (built by `make build`)
+	swashBin := filepath.Join(getProjectRoot(), "bin", "swash")
+	if _, err := os.Stat(swashBin); err != nil {
+		return nil, fmt.Errorf("swash binary not found at %s - run 'make build' first", swashBin)
 	}
 	env.swashBin = swashBin
 
@@ -241,8 +238,11 @@ func (e *testEnv) cleanup() {
 			runCmd(3*time.Second, "systemctl", "--user", "reset-failed")
 		}
 
-		// Kill process groups (negative PID) to ensure all children are terminated
+		// Gracefully stop swash processes first (SIGTERM) so coverage data is flushed,
+		// then SIGKILL the process group to ensure all children are terminated
 		if e.miniSystemdCmd != nil && e.miniSystemdCmd.Process != nil {
+			syscall.Kill(e.miniSystemdCmd.Process.Pid, syscall.SIGTERM)
+			time.Sleep(100 * time.Millisecond)
 			syscall.Kill(-e.miniSystemdCmd.Process.Pid, syscall.SIGKILL)
 			e.miniSystemdCmd.Wait()
 		}
@@ -250,8 +250,10 @@ func (e *testEnv) cleanup() {
 			syscall.Kill(-e.dbusCmd.Process.Pid, syscall.SIGKILL)
 			e.dbusCmd.Wait()
 		}
-		// Kill "swash minijournald" for posix mode
+		// Gracefully stop "swash minijournald" for posix mode
 		if e.journaldCmd != nil && e.journaldCmd.Process != nil {
+			syscall.Kill(e.journaldCmd.Process.Pid, syscall.SIGTERM)
+			time.Sleep(100 * time.Millisecond)
 			syscall.Kill(-e.journaldCmd.Process.Pid, syscall.SIGKILL)
 			e.journaldCmd.Wait()
 		}
@@ -328,6 +330,10 @@ func (e *testEnv) getEnvVars() []string {
 	env := os.Environ()
 	// Always set root slice for test isolation
 	env = append(env, "SWASH_ROOT_SLICE="+e.rootSlice)
+	// Pass through GOCOVERDIR for coverage collection
+	if coverDir := os.Getenv("GOCOVERDIR"); coverDir != "" {
+		env = setEnv(env, "GOCOVERDIR", coverDir)
+	}
 	switch e.mode {
 	case "mini":
 		env = append(env,
@@ -616,6 +622,10 @@ func TestTTYAttach(t *testing.T) {
 
 		// Build command with env vars for the test mode
 		attachCmd := e.swashBin + " attach " + sessionID
+		// Add GOCOVERDIR for coverage collection if set
+		if coverDir := os.Getenv("GOCOVERDIR"); coverDir != "" {
+			attachCmd = fmt.Sprintf("GOCOVERDIR=%s %s", coverDir, attachCmd)
+		}
 		switch e.mode {
 		case "mini":
 			attachCmd = fmt.Sprintf("DBUS_SESSION_BUS_ADDRESS=unix:path=%s SWASH_JOURNAL_SOCKET=%s %s",
@@ -640,6 +650,10 @@ func TestTTYAttach(t *testing.T) {
 		if !strings.Contains(string(captureOut), "HELLO_ATTACH_TEST") {
 			t.Errorf("expected 'HELLO_ATTACH_TEST' in tmux pane, got: %s", string(captureOut))
 		}
+
+		// Detach cleanly with Ctrl+C so coverage data is flushed
+		exec.Command("tmux", "send-keys", "-t", tmuxSession, "C-c").Run()
+		time.Sleep(100 * time.Millisecond)
 	})
 }
 

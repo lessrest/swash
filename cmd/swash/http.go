@@ -22,6 +22,21 @@ import (
 
 // cmdHTTP handles the "swash http" subcommand and its sub-subcommands.
 func cmdHTTP(args []string) {
+	// Parse flags
+	for len(args) > 0 && strings.HasPrefix(args[0], "--") {
+		switch {
+		case strings.HasPrefix(args[0], "--socket="):
+			httpSocket = strings.TrimPrefix(args[0], "--socket=")
+			args = args[1:]
+		case args[0] == "--socket" && len(args) > 1:
+			httpSocket = args[1]
+			args = args[2:]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[0])
+			os.Exit(1)
+		}
+	}
+
 	if len(args) == 0 {
 		// Default: run the server
 		runHTTPServer()
@@ -200,6 +215,8 @@ func runHTTPServer() {
 	}
 }
 
+var httpSocket string
+
 func getListener() (net.Listener, error) {
 	// systemd socket activation: LISTEN_FDS=1 means fd 3 is our socket
 	if os.Getenv("LISTEN_FDS") == "1" {
@@ -210,6 +227,11 @@ func getListener() (net.Listener, error) {
 			return nil, fmt.Errorf("socket activation: %w", err)
 		}
 		return ln, nil
+	}
+	// Unix socket if specified
+	if httpSocket != "" {
+		os.Remove(httpSocket) // clean up stale socket
+		return net.Listen("unix", httpSocket)
 	}
 	return net.Listen("tcp", "0.0.0.0:8484")
 }

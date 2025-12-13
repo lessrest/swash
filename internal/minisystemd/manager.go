@@ -429,7 +429,7 @@ func (m *Manager) ListUnitsByPatterns(states []string, patterns []string) ([][]a
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	var result [][]any
+	result := [][]any{}
 	for name, unit := range m.units {
 		// Check pattern match
 		matched := false
@@ -463,7 +463,7 @@ func (m *Manager) ListUnitsByPatterns(states []string, patterns []string) ([][]a
 			unit.State,       // active state
 			"",               // sub state
 			"",               // following
-			dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/systemd1/unit/%s", strings.ReplaceAll(name, ".", "_"))),
+			dbus.ObjectPath("/org/freedesktop/systemd1/unit/" + escapeUnitNameForPath(name)),
 			uint32(0),            // job id
 			"",                   // job type
 			dbus.ObjectPath("/"), // job path

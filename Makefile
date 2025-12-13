@@ -23,7 +23,7 @@ endif
 export SWASH_TEST_MODE
 export SWASH_TEST_JOURNAL_READER
 
-.PHONY: all build test test-unit test-integration test-all-backends install clean generate oxigraph-wasm
+.PHONY: all build test test-unit test-integration test-all-backends install clean generate oxigraph-wasm coverage
 
 all: build
 
@@ -60,7 +60,24 @@ test-all-backends: build
 	@echo "=== All backends passed! ==="
 
 clean:
-	rm -rf bin/
+	rm -rf bin/ coverage/
+
+# Coverage report from integration tests (runs all backends)
+COVERAGE_DIR := $(CURDIR)/coverage
+coverage: generate
+	@rm -rf $(COVERAGE_DIR)
+	@mkdir -p $(COVERAGE_DIR)
+	go build -cover -o bin/swash ./cmd/swash/
+	@echo "=== Coverage: mini-systemd backend ==="
+	GOCOVERDIR=$(COVERAGE_DIR) SWASH_TEST_MODE=mini go test ./integration/... -timeout 120s
+	@echo "=== Coverage: posix backend ==="
+	GOCOVERDIR=$(COVERAGE_DIR) SWASH_TEST_MODE=posix go test ./integration/... -timeout 120s
+	@echo "=== Coverage: real systemd backend ==="
+	GOCOVERDIR=$(COVERAGE_DIR) SWASH_TEST_MODE=real go test ./integration/... -timeout 120s
+	go tool covdata textfmt -i=$(COVERAGE_DIR) -o=$(COVERAGE_DIR)/coverage.out
+	go tool cover -html=$(COVERAGE_DIR)/coverage.out -o $(COVERAGE_DIR)/coverage.html
+	@go tool cover -func=$(COVERAGE_DIR)/coverage.out | tail -1
+	@echo "HTML report: $(COVERAGE_DIR)/coverage.html"
 
 # Build oxigraph WASI module (compressed blob is embedded in pkg/oxigraph)
 OXIGRAPH_WASM_ZST := pkg/oxigraph/oxigraph.wasm.zst
