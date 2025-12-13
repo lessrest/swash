@@ -3,7 +3,6 @@ package integration
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -18,27 +17,27 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-// TestHTTP runs all HTTP server tests sequentially with a single server instance
-func TestHTTP(t *testing.T) {
+// TestWebUI runs all WebUI server tests sequentially with a single server instance
+func TestWebUI(t *testing.T) {
 	e := getEnv(t)
 
 	// Skip on posix backend - TTY attach over HTTP not fully supported yet
 	if e.mode == "posix" {
-		t.Skip("HTTP tests not yet supported on posix backend")
+		t.Skip("WebUI tests not yet supported on posix backend")
 	}
 
-	// Use Unix socket to avoid port conflicts
-	socketPath := filepath.Join(e.tmpDir, "http.sock")
+	// Use Unix socket in temp dir
+	socketPath := filepath.Join(e.tmpDir, "webui.sock")
 
-	// Start HTTP server with Unix socket
-	cmd := exec.Command(e.swashBin, "http", "--socket", socketPath)
+	// Start WebUI server with Unix socket
+	cmd := exec.Command(e.swashBin, "webui", "serve", "--socket", socketPath)
 	cmd.Env = e.getEnvVars()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("starting http server: %v", err)
+		t.Fatalf("starting webui server: %v", err)
 	}
 	defer func() {
 		// SIGTERM to allow coverage flush
@@ -71,7 +70,7 @@ func TestHTTP(t *testing.T) {
 	// Wait for server to be ready
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := client.Get(baseURL + "/sessions")
+		resp, err := client.Get(baseURL + "/health")
 		if err == nil {
 			resp.Body.Close()
 			break
@@ -93,8 +92,19 @@ func TestHTTP(t *testing.T) {
 		return doc
 	}
 
+	t.Run("Health", func(t *testing.T) {
+		resp, err := client.Get(baseURL + "/health")
+		if err != nil {
+			t.Fatalf("GET /health: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+	})
+
 	t.Run("SessionsList", func(t *testing.T) {
-		// First just test that we can list sessions (even empty)
 		resp, err := client.Get(baseURL + "/sessions")
 		if err != nil {
 			t.Fatalf("GET /sessions: %v", err)
@@ -119,35 +129,6 @@ func TestHTTP(t *testing.T) {
 		// Verify page structure
 		if doc.Find("h1").Length() == 0 {
 			t.Errorf("expected h1 heading, got: %s", body[:min(500, len(body))])
-		}
-	})
-
-	t.Run("StartSessionAPI", func(t *testing.T) {
-		data, _ := json.Marshal(map[string]any{
-			"command": []string{"sleep", "30"},
-		})
-		req, _ := http.NewRequest("POST", baseURL+"/sessions", bytes.NewReader(data))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json")
-		resp, err := client.Do(req)
-		if err != nil {
-			t.Fatalf("POST /sessions: %v", err)
-		}
-		defer resp.Body.Close()
-
-		var buf bytes.Buffer
-		buf.ReadFrom(resp.Body)
-		body := buf.String()
-
-		if resp.StatusCode != http.StatusCreated {
-			t.Errorf("expected 201, got %d: %s", resp.StatusCode, body)
-			return
-		}
-
-		var result map[string]any
-		json.NewDecoder(strings.NewReader(body)).Decode(&result)
-		if result["id"] == nil {
-			t.Errorf("expected session ID in response, got: %s", body)
 		}
 	})
 

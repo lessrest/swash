@@ -79,9 +79,9 @@ func main() {
 		return
 	}
 
-	// Handle "http" subcommand (has its own flags)
-	if len(os.Args) >= 2 && os.Args[1] == "http" {
-		cmdHTTP(os.Args[2:])
+	// Handle "webui" subcommand (has its own flags)
+	if len(os.Args) >= 2 && os.Args[1] == "webui" {
+		cmdWebUI(os.Args[2:])
 		return
 	}
 
@@ -197,8 +197,8 @@ Flags:
 		cmdAttach(cmdArgs[0])
 	case "host":
 		cmdHost()
-	case "http":
-		cmdHTTP(cmdArgs)
+	case "webui":
+		cmdWebUI(cmdArgs)
 	case "context":
 		cmdContext(cmdArgs)
 	case "graph":

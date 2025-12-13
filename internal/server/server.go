@@ -1,4 +1,4 @@
-// Package server provides the HTTP API server for swash.
+// Package server provides the WebUI server for swash.
 package server
 
 import (
@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -19,14 +18,14 @@ import (
 	"github.com/mbrock/swash/internal/backend"
 )
 
-// Server is the HTTP API server for swash.
+// Server is the WebUI server for swash.
 type Server struct {
 	backend backend.Backend
 	mux     *http.ServeMux
 	server  *http.Server
 }
 
-// New creates a new HTTP server with the given backend.
+// New creates a new WebUI server with the given backend.
 func New(bk backend.Backend) *Server {
 	s := &Server{
 		backend: bk,
@@ -38,11 +37,15 @@ func New(bk backend.Backend) *Server {
 }
 
 func (s *Server) registerRoutes() {
+	// Health check for service discovery
+	s.mux.HandleFunc("GET /health", s.handleHealth)
+
+	// Session management
+	s.mux.HandleFunc("GET /", s.handleListSessions)
 	s.mux.HandleFunc("GET /sessions", s.handleListSessions)
 	s.mux.HandleFunc("POST /sessions", s.handleStartSession)
 	s.mux.HandleFunc("GET /sessions/new", s.handleNewSessionForm)
 	s.mux.HandleFunc("GET /sessions/{id}", s.handleGetSession)
-	s.mux.HandleFunc("DELETE /sessions/{id}", s.handleStopSession)
 	s.mux.HandleFunc("POST /sessions/{id}/kill", s.handleKillSession)
 	s.mux.HandleFunc("POST /sessions/{id}/input", s.handleSendInput)
 	s.mux.HandleFunc("GET /sessions/{id}/output", s.handleSessionOutput)
@@ -52,38 +55,32 @@ func (s *Server) registerRoutes() {
 	s.mux.Handle("GET /sessions/{id}/attach", websocket.Handler(s.handleAttach))
 }
 
-// Serve starts the server on the given listener.
-func (s *Server) Serve(ln net.Listener) error {
-	return s.server.Serve(ln)
-}
-
-// Shutdown gracefully shuts down the server.
-func (s *Server) Shutdown(ctx context.Context) error {
-	return s.server.Shutdown(ctx)
-}
-
-// GetListener returns a listener based on environment.
-// Supports systemd socket activation (LISTEN_FDS=1) or falls back to the given address.
-func GetListener(socketPath, defaultAddr string) (net.Listener, error) {
-	// systemd socket activation: LISTEN_FDS=1 means fd 3 is our socket
-	if os.Getenv("LISTEN_FDS") == "1" {
-		f := os.NewFile(3, "systemd-socket")
-		ln, err := net.FileListener(f)
-		f.Close()
-		if err != nil {
-			return nil, fmt.Errorf("socket activation: %w", err)
-		}
-		return ln, nil
+// ServeUnix starts the server on a Unix socket, respecting context cancellation.
+func (s *Server) ServeUnix(ctx context.Context, socketPath string) error {
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return err
 	}
-	// Unix socket if specified
-	if socketPath != "" {
-		os.Remove(socketPath) // clean up stale socket
-		return net.Listen("unix", socketPath)
+
+	// Shutdown when context is cancelled
+	go func() {
+		<-ctx.Done()
+		s.server.Shutdown(context.Background())
+	}()
+
+	err = s.server.Serve(ln)
+	if err == http.ErrServerClosed {
+		return ctx.Err()
 	}
-	return net.Listen("tcp", defaultAddr)
+	return err
 }
 
 // Handlers
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte("ok"))
+}
 
 func (s *Server) handleNewSessionForm(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
@@ -91,38 +88,14 @@ func (s *Server) handleNewSessionForm(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
-	var command []string
-	var tty bool
-
-	contentType := r.Header.Get("Content-Type")
-	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
-		r.ParseForm()
-		cmdStr := r.FormValue("command")
-		if cmdStr == "" {
-			http.Error(w, "command required", http.StatusBadRequest)
-			return
-		}
-		command = strings.Fields(cmdStr)
-		tty = r.FormValue("tty") == "true"
-	} else {
-		var req struct {
-			Command []string          `json:"command"`
-			TTY     bool              `json:"tty,omitempty"`
-			Rows    int               `json:"rows,omitempty"`
-			Cols    int               `json:"cols,omitempty"`
-			Tags    map[string]string `json:"tags,omitempty"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		if len(req.Command) == 0 {
-			http.Error(w, "command required", http.StatusBadRequest)
-			return
-		}
-		command = req.Command
-		tty = req.TTY
+	r.ParseForm()
+	cmdStr := r.FormValue("command")
+	if cmdStr == "" {
+		http.Error(w, "command required", http.StatusBadRequest)
+		return
 	}
+	command := strings.Fields(cmdStr)
+	tty := r.FormValue("tty") == "true"
 
 	opts := backend.SessionOptions{TTY: tty}
 
@@ -132,37 +105,11 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if wantsHTML(r) || strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
-		if tty {
-			http.Redirect(w, r, "/terminal/"+sessionID, http.StatusSeeOther)
-		} else {
-			http.Redirect(w, r, "/sessions/"+sessionID, http.StatusSeeOther)
-		}
-		return
+	if tty {
+		http.Redirect(w, r, "/terminal/"+sessionID, http.StatusSeeOther)
+	} else {
+		http.Redirect(w, r, "/sessions/"+sessionID, http.StatusSeeOther)
 	}
-
-	session, err := s.getSessionByID(r.Context(), sessionID)
-	if err != nil {
-		w.Header().Set("Location", "/sessions/"+sessionID)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]string{"id": sessionID})
-		return
-	}
-
-	w.Header().Set("Location", "/sessions/"+sessionID)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(session)
-}
-
-func wantsJSON(r *http.Request) bool {
-	accept := r.Header.Get("Accept")
-	return strings.Contains(accept, "application/json") && !strings.Contains(accept, "text/html")
-}
-
-func wantsHTML(r *http.Request) bool {
-	return !wantsJSON(r)
 }
 
 func parseStarted(s string) time.Time {
@@ -181,14 +128,8 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return parseStarted(sessions[i].Started).After(parseStarted(sessions[j].Started))
 	})
 
-	if wantsHTML(r) {
-		w.Header().Set("Content-Type", "text/html")
-		templates.SessionsPage(sessions).Render(r.Context(), w)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(sessions)
+	w.Header().Set("Content-Type", "text/html")
+	templates.SessionsPage(sessions).Render(r.Context(), w)
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
@@ -199,14 +140,8 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if wantsHTML(r) {
-		w.Header().Set("Content-Type", "text/html")
-		templates.SessionDetailPage(session).Render(r.Context(), w)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(session)
+	w.Header().Set("Content-Type", "text/html")
+	templates.SessionDetailPage(session).Render(r.Context(), w)
 }
 
 func (s *Server) getSessionByID(ctx context.Context, id string) (*backend.Session, error) {
@@ -222,16 +157,6 @@ func (s *Server) getSessionByID(ctx context.Context, id string) (*backend.Sessio
 	return nil, fmt.Errorf("session %s not found", id)
 }
 
-func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
-	sessionID := r.PathValue("id")
-	if err := s.backend.StopSession(r.Context(), sessionID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
-}
-
 func (s *Server) handleKillSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 	if err := s.backend.KillSession(r.Context(), sessionID); err != nil {
@@ -239,53 +164,30 @@ func (s *Server) handleKillSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// HTMX request - return partial
 	if r.Header.Get("HX-Request") == "true" {
 		w.Header().Set("Content-Type", "text/html")
 		templates.SessionKilled().Render(r.Context(), w)
 		return
 	}
 
-	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
-		http.Redirect(w, r, "/sessions", http.StatusSeeOther)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "killed"})
+	// Form submission - redirect
+	http.Redirect(w, r, "/sessions", http.StatusSeeOther)
 }
 
 func (s *Server) handleSendInput(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
 
-	var data string
-	contentType := r.Header.Get("Content-Type")
-	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
-		r.ParseForm()
-		data = r.FormValue("data")
-	} else {
-		var req struct {
-			Data string `json:"data"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		data = req.Data
-	}
+	r.ParseForm()
+	data := r.FormValue("data")
 
-	n, err := s.backend.SendInput(r.Context(), sessionID, data)
+	_, err := s.backend.SendInput(r.Context(), sessionID, data)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") {
-		http.Redirect(w, r, "/sessions/"+sessionID, http.StatusSeeOther)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]int{"bytes": n})
+	http.Redirect(w, r, "/sessions/"+sessionID, http.StatusSeeOther)
 }
 
 func (s *Server) handleGetScreen(w http.ResponseWriter, r *http.Request) {
@@ -306,14 +208,8 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if wantsHTML(r) {
-		w.Header().Set("Content-Type", "text/html")
-		templates.HistoryPage(sessions).Render(r.Context(), w)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(sessions)
+	w.Header().Set("Content-Type", "text/html")
+	templates.HistoryPage(sessions).Render(r.Context(), w)
 }
 
 func (s *Server) handleSessionOutput(w http.ResponseWriter, r *http.Request) {
@@ -458,4 +354,44 @@ func (s *Server) handleAttach(ws *websocket.Conn) {
 			return
 		}
 	}
+}
+
+// Client is a client for the WebUI server.
+type Client struct {
+	socketPath string
+	httpClient *http.Client
+}
+
+// NewClient creates a new client for the WebUI server.
+func NewClient(socketPath string) *Client {
+	return &Client{
+		socketPath: socketPath,
+		httpClient: &http.Client{
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return net.Dial("unix", socketPath)
+				},
+			},
+			Timeout: 5 * time.Second,
+		},
+	}
+}
+
+// Health checks if the WebUI server is running.
+func (c *Client) Health(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://localhost/health", nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unhealthy: %d", resp.StatusCode)
+	}
+	return nil
 }
