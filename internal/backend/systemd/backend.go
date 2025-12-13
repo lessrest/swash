@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"swa.sh/go/swash/internal/backend"
-	"swa.sh/go/swash/internal/graph"
-	"swa.sh/go/swash/internal/host"
-	"swa.sh/go/swash/internal/journal"
-	"swa.sh/go/swash/internal/protocol"
-	"swa.sh/go/swash/pkg/oxigraph"
+	"swa.sh/internal/backend"
+	"swa.sh/internal/graph"
+	"swa.sh/internal/host"
+	"swa.sh/internal/journal"
+	"swa.sh/internal/protocol"
+	"swa.sh/pkg/oxigraph"
 )
 
 func init() {

@@ -17,8 +17,8 @@ import (
 	"sync"
 	"syscall"
 
-	"swa.sh/go/swash/internal/dirs"
-	"swa.sh/go/swash/pkg/journalfile"
+	"swa.sh/internal/dirs"
+	"swa.sh/pkg/journalfile"
 )
 
 // Daemon is a minimal journald-compatible log daemon.

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"io"
 
-	"swa.sh/go/swash/internal/protocol"
+	"swa.sh/internal/protocol"
 )
 
 // D-Bus constants for the swash host interface.

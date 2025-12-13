@@ -27,11 +27,11 @@ import (
 
 	flag "github.com/spf13/pflag"
 
-	"swa.sh/go/swash/internal/attach"
-	"swa.sh/go/swash/internal/backend"
-	_ "swa.sh/go/swash/internal/backend/all"
-	"swa.sh/go/swash/internal/host"
-	"swa.sh/go/swash/internal/protocol"
+	"swa.sh/internal/attach"
+	"swa.sh/internal/backend"
+	_ "swa.sh/internal/backend/all"
+	"swa.sh/internal/host"
+	"swa.sh/internal/protocol"
 )
 
 // Global flags

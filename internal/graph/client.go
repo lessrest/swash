@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"time"
 
-	"swa.sh/go/swash/pkg/oxigraph"
+	"swa.sh/pkg/oxigraph"
 )
 
 // Client is a client for the graph service.

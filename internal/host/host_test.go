@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"swa.sh/go/swash/internal/journal"
-	"swa.sh/go/swash/internal/protocol"
+	"swa.sh/internal/journal"
+	"swa.sh/internal/protocol"
 )
 
 // runTestTask sets up fakes, runs a task to completion, and returns the journal for assertions.

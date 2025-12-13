@@ -14,8 +14,8 @@ import (
 
 	"golang.org/x/net/websocket"
 
-	"swa.sh/go/swash/cmd/swash/templates"
-	"swa.sh/go/swash/internal/backend"
+	"swa.sh/cmd/swash/templates"
+	"swa.sh/internal/backend"
 )
 
 // Server is the WebUI server for swash.

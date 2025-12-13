@@ -1,4 +1,4 @@
-module swa.sh/go/swash
+module swa.sh
 
 go 1.25.0
 

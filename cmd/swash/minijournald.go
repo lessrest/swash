@@ -7,7 +7,7 @@ import (
 	"os"
 	"strconv"
 
-	"swa.sh/go/swash/internal/journal"
+	"swa.sh/internal/journal"
 )
 
 // cmdMinijournald runs a minimal journald-compatible daemon for the POSIX backend.

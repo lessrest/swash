@@ -1,4 +1,4 @@
-module swa.sh/go/swash/vterm
+module swa.sh/vterm
 
 go 1.25.0
 

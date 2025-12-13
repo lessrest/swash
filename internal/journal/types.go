@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"swa.sh/go/swash/pkg/oxigraph"
+	"swa.sh/pkg/oxigraph"
 )
 
 // EventRecord represents a single persisted event.

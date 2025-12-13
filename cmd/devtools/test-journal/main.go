@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"swa.sh/go/swash/pkg/journalfile"
+	"swa.sh/pkg/journalfile"
 )
 
 func main() {
