@@ -114,6 +114,7 @@ func (r *renderer) render(vt *vterm.VTerm, clear bool, cursorVisible bool) {
 	for row := range rows {
 		fmt.Printf("\x1b[%d;%dH", contentTop+row+1, contentLeft+1)
 		fmt.Print(vt.RenderRowANSI(row))
+		fmt.Print("\x1b[K") // Erase to end of line (clear old trailing characters)
 	}
 
 	// Position cursor
