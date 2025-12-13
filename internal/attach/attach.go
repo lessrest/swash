@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/term"
 
-	"swa.sh/go/vterm"
+	"swa.sh/go/swash/vterm"
 
 	"swa.sh/go/swash/internal/host"
 )

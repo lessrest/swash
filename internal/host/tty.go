@@ -14,7 +14,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/godbus/dbus/v5"
 
-	"swa.sh/go/vterm"
+	"swa.sh/go/swash/vterm"
 
 	"swa.sh/go/swash/internal/journal"
 )
