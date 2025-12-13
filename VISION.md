@@ -116,7 +116,7 @@ What's implemented:
 - `swash screen` - View current terminal state (for TTY sessions)
 - `swash kill/stop` - Terminate sessions
 - TTY mode with libvterm for interactive programs
-- mini-systemd for testing without real systemd
+- posix backend for testing without real systemd
 
 What's not yet implemented:
 

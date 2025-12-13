@@ -72,12 +72,6 @@ func main() {
 		return
 	}
 
-	// Handle "minisystemd" subcommand (minimal systemd for testing)
-	if len(os.Args) >= 2 && os.Args[1] == "minisystemd" {
-		cmdMinisystemd()
-		return
-	}
-
 	// Handle "graph" subcommand (RDF knowledge graph service)
 	if len(os.Args) >= 2 && os.Args[1] == "graph" {
 		cmdGraph(os.Args[2:])

@@ -15,8 +15,8 @@ ifeq ($(UNAME_S),Darwin)
   SWASH_TEST_MODE ?= posix
   SWASH_TEST_JOURNAL_READER ?= native
 else
-  # Linux: use mini-systemd (or real systemd) with journalctl
-  SWASH_TEST_MODE ?= mini
+  # Linux: use posix backend (isolated) with journalctl
+  SWASH_TEST_MODE ?= posix
   SWASH_TEST_JOURNAL_READER ?= journalctl
 endif
 
@@ -48,9 +48,6 @@ test-integration: build
 	go test ./integration/... -v -timeout 120s
 
 test-all-backends: build
-	@echo "=== Testing with mini-systemd backend ==="
-	SWASH_TEST_MODE=mini go test ./integration/... -v -timeout 120s
-	@echo ""
 	@echo "=== Testing with posix backend ==="
 	SWASH_TEST_MODE=posix go test ./integration/... -v -timeout 120s
 	@echo ""
@@ -70,8 +67,6 @@ coverage: generate
 	go build -cover -o bin/swash ./cmd/swash/
 	@echo "=== Coverage: unit tests ==="
 	GOCOVERDIR=$(COVERAGE_DIR)/unit go test ./pkg/... ./internal/... -cover -timeout 120s
-	@echo "=== Coverage: integration (mini-systemd) ==="
-	GOCOVERDIR=$(COVERAGE_DIR)/integration SWASH_TEST_MODE=mini go test ./integration/... -timeout 120s
 	@echo "=== Coverage: integration (posix) ==="
 	GOCOVERDIR=$(COVERAGE_DIR)/integration SWASH_TEST_MODE=posix go test ./integration/... -timeout 120s
 	@echo "=== Coverage: integration (real systemd) ==="

@@ -210,13 +210,12 @@ The vterm package (`pkg/vterm`) provides Go bindings to libvterm. It tracks
 screen state, handles scrollback callbacks, and can render the screen back to
 ANSI escape sequences for the `swash screen` command.
 
-For testing without a real systemd, `swash minisystemd` implements enough of the
-systemd D-Bus interface to run sessions. It also implements the native journal
-socket protocol, using `pkg/journalfile` to write actual journal files that
-journalctl can read. Similarly, `swash minijournald` provides a minimal journald
-daemon for the posix backend. These are built into the main swash binary as
-subcommands, so no separate binaries are needed. This lets the integration tests
-run in isolation without root privileges.
+For testing, `swash minijournald` provides a minimal journald daemon for the
+posix backend. It implements the native journal socket protocol, using
+`pkg/journalfile` to write actual journal files that journalctl can read.
+This is built into the main swash binary as a subcommand, so no separate binary
+is needed. Integration tests use the posix backend by default, which runs in
+isolation without root privileges or a real systemd.
 
 ## Building
 
@@ -233,7 +232,7 @@ CGO_CFLAGS="-I$(pwd)/cvendor" go build ./cmd/swash/
 # Run tests
 make test                       # unit + integration tests
 make test-unit                  # just unit tests
-make test-integration           # integration tests (uses mini-systemd)
+make test-integration           # integration tests (posix backend by default)
 ```
 
 You'll need Go 1.24+, a C compiler (for libvterm via cgo). The systemd headers

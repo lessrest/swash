@@ -58,21 +58,16 @@ func runTest(t *testing.T, f func(t *testing.T, e *testEnv)) {
 type testEnv struct {
 	swashBin   string
 	tmpDir     string
-	mode       string // "real" or "mini"
+	mode       string // "real" or "posix"
 	journalCmd string
 	journalDir string
 	rootSlice  string // unique slice for test isolation
 
-	// minisystemd specific
-	miniSystemdCmd *exec.Cmd
-	dbusCmd        *exec.Cmd
-	busSocket      string
-	journalSocket  string
-
 	// posix-specific
-	journaldCmd *exec.Cmd
-	stateDir    string
-	runtimeDir  string
+	journaldCmd   *exec.Cmd
+	journalSocket string
+	stateDir      string
+	runtimeDir    string
 }
 
 var (
@@ -94,10 +89,10 @@ func getEnv(t *testing.T) *testEnv {
 func setupEnv() (*testEnv, error) {
 	mode := os.Getenv("SWASH_TEST_MODE")
 	if mode == "" {
-		mode = "mini" // default to mini-systemd (isolated, no side effects)
+		mode = "posix" // default to posix (isolated, no side effects)
 	}
-	if mode != "mini" && mode != "real" && mode != "posix" {
-		return nil, fmt.Errorf("unknown SWASH_TEST_MODE: %s (use 'mini', 'real', or 'posix')", mode)
+	if mode != "real" && mode != "posix" {
+		return nil, fmt.Errorf("unknown SWASH_TEST_MODE: %s (use 'real' or 'posix')", mode)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "swash-integration-*")
@@ -122,10 +117,6 @@ func setupEnv() (*testEnv, error) {
 	env.swashBin = swashBin
 
 	switch mode {
-	case "mini":
-		if err := env.setupMiniSystemd(); err != nil {
-			return nil, err
-		}
 	case "real":
 		env.journalCmd = "journalctl --user"
 	case "posix":
@@ -181,54 +172,6 @@ func (e *testEnv) setupPosix() error {
 	return nil
 }
 
-func (e *testEnv) setupMiniSystemd() error {
-	e.journalDir = filepath.Join(e.tmpDir, "journal")
-	e.journalSocket = filepath.Join(e.tmpDir, "journal.socket")
-	e.busSocket = filepath.Join(e.tmpDir, "bus.sock")
-
-	if err := os.MkdirAll(e.journalDir, 0755); err != nil {
-		return fmt.Errorf("creating journal dir: %w", err)
-	}
-
-	// Start dbus-daemon in its own process group so we can kill all children
-	e.dbusCmd = exec.Command("dbus-daemon", "--session", "--nofork", "--address=unix:path="+e.busSocket)
-	e.dbusCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := e.dbusCmd.Start(); err != nil {
-		return fmt.Errorf("starting dbus-daemon: %w", err)
-	}
-
-	// Wait for dbus socket
-	for range 50 {
-		if _, err := os.Stat(e.busSocket); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Start "swash minisystemd" in its own process group so we can kill all children
-	e.miniSystemdCmd = exec.Command(e.swashBin, "minisystemd", "--journal-dir="+e.journalDir, "--journal-socket="+e.journalSocket)
-	e.miniSystemdCmd.Env = append(os.Environ(), "DBUS_SESSION_BUS_ADDRESS=unix:path="+e.busSocket)
-	e.miniSystemdCmd.Stdout = os.Stdout
-	e.miniSystemdCmd.Stderr = os.Stderr
-	e.miniSystemdCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := e.miniSystemdCmd.Start(); err != nil {
-		return fmt.Errorf("starting swash minisystemd: %w", err)
-	}
-
-	// Wait for journal socket
-	for range 50 {
-		if _, err := os.Stat(e.journalSocket); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	time.Sleep(200 * time.Millisecond) // extra time for D-Bus registration
-
-	e.journalCmd = fmt.Sprintf("journalctl --file=%s/*.journal", e.journalDir)
-
-	return nil
-}
-
 func (e *testEnv) cleanup() {
 	withTimeout("cleanup", 5*time.Second, func() {
 		// Stop the test slice and all children (real systemd mode)
@@ -238,18 +181,6 @@ func (e *testEnv) cleanup() {
 			runCmd(3*time.Second, "systemctl", "--user", "reset-failed")
 		}
 
-		// Gracefully stop swash processes first (SIGTERM) so coverage data is flushed,
-		// then SIGKILL the process group to ensure all children are terminated
-		if e.miniSystemdCmd != nil && e.miniSystemdCmd.Process != nil {
-			syscall.Kill(e.miniSystemdCmd.Process.Pid, syscall.SIGTERM)
-			time.Sleep(100 * time.Millisecond)
-			syscall.Kill(-e.miniSystemdCmd.Process.Pid, syscall.SIGKILL)
-			e.miniSystemdCmd.Wait()
-		}
-		if e.dbusCmd != nil && e.dbusCmd.Process != nil {
-			syscall.Kill(-e.dbusCmd.Process.Pid, syscall.SIGKILL)
-			e.dbusCmd.Wait()
-		}
 		// Gracefully stop "swash minijournald" for posix mode
 		if e.journaldCmd != nil && e.journaldCmd.Process != nil {
 			syscall.Kill(e.journaldCmd.Process.Pid, syscall.SIGTERM)
@@ -335,13 +266,6 @@ func (e *testEnv) getEnvVars() []string {
 		env = setEnv(env, "GOCOVERDIR", coverDir)
 	}
 	switch e.mode {
-	case "mini":
-		env = append(env,
-			"DBUS_SESSION_BUS_ADDRESS=unix:path="+e.busSocket,
-			"SWASH_JOURNAL_SOCKET="+e.journalSocket,
-			"SWASH_JOURNAL_DIR="+e.journalDir,
-			"SWASH_RUNTIME_DIR="+e.tmpDir,
-		)
 	case "real":
 		// Explicitly request systemd backend in case DBUS_SESSION_BUS_ADDRESS
 		// isn't set in the CI environment (which would cause auto-detection
@@ -386,20 +310,13 @@ func (e *testEnv) runJournalctl(args ...string) (string, error) {
 
 	// For "real" mode with system journal, we must use journalctl
 	if e.mode == "real" && readerMode == "native" {
-		return "", fmt.Errorf("native reader cannot read system journal; install journalctl or use SWASH_TEST_MODE=mini")
+		return "", fmt.Errorf("native reader cannot read system journal; install journalctl or use SWASH_TEST_MODE=posix")
 	}
 
-	// Collect journal files for mini/posix modes
+	// Collect journal files for posix mode
 	var journalFiles []string
-	switch e.mode {
-	case "mini":
-		files, _ := filepath.Glob(filepath.Join(e.journalDir, "*.journal"))
-		if len(files) == 0 {
-			return "", fmt.Errorf("no journal files found in %s", e.journalDir)
-		}
-		journalFiles = files
-	case "posix":
-		// Posix mode now uses a single shared journal file
+	if e.mode == "posix" {
+		// Posix mode uses a single shared journal file
 		sharedJournal := filepath.Join(e.tmpDir, "state", "swash.journal")
 		if _, err := os.Stat(sharedJournal); err != nil {
 			return "", fmt.Errorf("shared journal file not found: %s", sharedJournal)
@@ -414,8 +331,6 @@ func (e *testEnv) runJournalctl(args ...string) (string, error) {
 	// Use journalctl
 	var baseArgs []string
 	switch e.mode {
-	case "mini":
-		baseArgs = []string{"--file=" + journalFiles[0]}
 	case "posix":
 		for _, f := range journalFiles {
 			baseArgs = append(baseArgs, "--file="+f)
@@ -488,22 +403,17 @@ func TestMain(m *testing.M) {
 	// Print mode information before running tests
 	mode := os.Getenv("SWASH_TEST_MODE")
 	if mode == "" {
-		mode = "mini"
+		mode = "posix"
 	}
 	switch mode {
-	case "mini":
-		fmt.Println("=== Running with mini-systemd (isolated) ===")
-		fmt.Println("    To test with real systemd: SWASH_TEST_MODE=real go test ./integration/")
-		fmt.Println("    To test with posix backend: SWASH_TEST_MODE=posix go test ./integration/")
-		fmt.Println()
 	case "real":
 		fmt.Println("=== Running with real systemd ===")
 		fmt.Println("    This will create transient units in your user systemd.")
-		fmt.Println("    To test with isolated mini-systemd: SWASH_TEST_MODE=mini go test ./integration/")
+		fmt.Println("    To test with posix backend: SWASH_TEST_MODE=posix go test ./integration/")
 		fmt.Println()
 	case "posix":
-		fmt.Println("=== Running with posix backend (no systemd) ===")
-		fmt.Println("    To test with mini-systemd: SWASH_TEST_MODE=mini go test ./integration/")
+		fmt.Println("=== Running with posix backend (isolated) ===")
+		fmt.Println("    To test with real systemd: SWASH_TEST_MODE=real go test ./integration/")
 		fmt.Println()
 	}
 
@@ -632,9 +542,6 @@ func TestTTYAttach(t *testing.T) {
 			attachCmd = fmt.Sprintf("GOCOVERDIR=%s %s", coverDir, attachCmd)
 		}
 		switch e.mode {
-		case "mini":
-			attachCmd = fmt.Sprintf("DBUS_SESSION_BUS_ADDRESS=unix:path=%s SWASH_JOURNAL_SOCKET=%s %s",
-				e.busSocket, e.journalSocket, attachCmd)
 		case "real":
 			// Explicitly set backend in case DBUS_SESSION_BUS_ADDRESS isn't in tmux env
 			attachCmd = fmt.Sprintf("SWASH_BACKEND=systemd %s", attachCmd)
@@ -914,62 +821,6 @@ func TestContextWorkingDirectory(t *testing.T) {
 		}
 		if strings.TrimSpace(stdout) != contextDir {
 			t.Errorf("expected working dir %s, got: %s", contextDir, stdout)
-		}
-	})
-}
-
-// --- Mini-systemd only tests ---
-
-func TestDBusRegistered(t *testing.T) {
-	runTest(t, func(t *testing.T, e *testEnv) {
-		if e.mode != "mini" {
-			t.Skip("mini-systemd only test")
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		cmd := exec.CommandContext(ctx, "dbus-send", "--print-reply",
-			"--dest=org.freedesktop.DBus", "/org/freedesktop/DBus",
-			"org.freedesktop.DBus.ListNames")
-		cmd.Env = e.getEnvVars()
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("dbus-send failed: %v\n%s", err, out)
-		}
-
-		if !strings.Contains(string(out), "org.freedesktop.systemd1") {
-			t.Errorf("mini-systemd not registered on D-Bus, got: %s", out)
-		}
-	})
-}
-
-func TestJournalWriteViaDbus(t *testing.T) {
-	runTest(t, func(t *testing.T, e *testEnv) {
-		if e.mode != "mini" {
-			t.Skip("mini-systemd only test")
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		uniqueMsg := fmt.Sprintf("Test message %d", time.Now().UnixNano())
-
-		cmd := exec.CommandContext(ctx, "dbus-send", "--print-reply",
-			"--dest=org.freedesktop.systemd1", "/org/freedesktop/systemd1",
-			"sh.swa.MiniSystemd.Journal.Send",
-			"string:"+uniqueMsg,
-			"dict:string:string:TEST_KEY,test_value")
-		cmd.Env = e.getEnvVars()
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("dbus-send failed: %v\n%s", err, out)
-		}
-
-		// Read from journal
-		journalOut, _ := e.runJournalctl("-o", "short")
-
-		if !strings.Contains(journalOut, uniqueMsg) {
-			t.Errorf("expected %q in journal, got: %s", uniqueMsg, journalOut)
 		}
 	})
 }

@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build Commands
 
 ```bash
-make build              # Build bin/swash and bin/mini-systemd
+make build              # Build bin/swash
 make test               # Run all tests (unit + integration)
 make test-unit          # Run unit tests only: go test ./pkg/... ./internal/...
 make test-integration   # Run integration tests: go test ./integration/... -v -timeout 120s
@@ -50,16 +50,20 @@ Backend selection: `SWASH_BACKEND` env var, or auto-detect (probes D-Bus for `or
 - `internal/eventlog/` - Journal abstraction (journald, file-based backends)
 - `internal/process/` - Process backend abstraction (systemd, exec-based)
 - `internal/platform/systemd/` - Systemd-specific process and journal implementations
-- `internal/minisystemd/` - Fake systemd for testing (implements D-Bus + native journal protocol)
+- `internal/journald/` - Minimal journald daemon for posix backend
 
 ### Public Packages (`pkg/`)
 
 - `pkg/vterm/` - CGO bindings to libvterm for terminal emulation
-- `pkg/journalfile/` - Native systemd journal file writer (used by posix backend and mini-systemd)
+- `pkg/journalfile/` - Native systemd journal file writer (used by posix backend)
 
 ### Testing
 
-Integration tests use `mini-systemd` (in `cmd/mini-systemd/`) which implements enough of systemd's D-Bus interface and the native journal socket protocol to run sessions without root or a real systemd. Tests create isolated journal files readable by `journalctl`.
+Integration tests run in two modes:
+- **posix** (default): Isolated test environment using the posix backend with `swash minijournald`
+- **real**: Tests against real systemd (creates transient units in user systemd)
+
+Use `SWASH_TEST_MODE=real` to test with real systemd, or leave unset for isolated posix testing.
 
 ## Session Modes
 
