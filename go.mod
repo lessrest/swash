@@ -6,7 +6,6 @@ toolchain go1.25.5
 
 require (
 	github.com/a-h/templ v0.3.960
-	github.com/coreos/go-systemd/v22 v22.6.0
 	github.com/creack/pty v1.1.24
 	github.com/dchest/siphash v1.2.3
 	github.com/godbus/dbus/v5 v5.2.0
@@ -21,8 +20,8 @@ require (
 require (
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/fsnotify/fsnotify v1.9.0
+	swa.sh/systemd v0.0.0-20251213214309-4327974344fb
+	swa.sh/vterm v0.0.0-20251213213151-d532cc6939a9
 )
 
 require github.com/andybalholm/cascadia v1.3.3 // indirect
-
-replace github.com/coreos/go-systemd/v22 => github.com/mbrock/go-systemd/v22 v22.6.2-swash

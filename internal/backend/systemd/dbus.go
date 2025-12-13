@@ -7,7 +7,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/coreos/go-systemd/v22/dbus"
+	"swa.sh/systemd/dbus"
 	godbus "github.com/godbus/dbus/v5"
 )
 

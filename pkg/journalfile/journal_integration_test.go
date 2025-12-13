@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coreos/go-systemd/v22/sdjournal"
+	"swa.sh/systemd/sdjournal"
 	"golang.org/x/sys/unix"
 )
 

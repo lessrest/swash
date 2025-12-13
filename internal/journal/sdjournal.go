@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/coreos/go-systemd/v22/sdjournal"
+	"swa.sh/systemd/sdjournal"
 )
 
 // SDJournalSource implements EventSource using go-systemd/sdjournal (CGO).
