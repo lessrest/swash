@@ -3,8 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mbrock/swash/internal/backend"
@@ -58,7 +61,18 @@ func cmdGraphServe(args []string) {
 		}
 	}
 
-	ctx := context.Background()
+	// Use a cancellable context so background goroutines can stop on shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Set up signal handling early so we can handle SIGTERM during loading
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
+		<-sigCh
+		slog.Info("graph serve received shutdown signal")
+		cancel()
+	}()
 
 	// Initialize backend to access lifecycle events
 	bk, err := backend.Default(ctx)

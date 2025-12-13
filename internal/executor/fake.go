@@ -55,6 +55,13 @@ func (p *fakeProcess) Kill() error {
 	return nil
 }
 
+func (p *fakeProcess) Signal(sig syscall.Signal) error {
+	if sig == syscall.SIGTERM || sig == syscall.SIGKILL {
+		p.cancel()
+	}
+	return nil
+}
+
 // Start implements Executor.Start for FakeExecutor.
 func (e *FakeExecutor) Start(cmdArgs []string, stdin io.Reader, stdout, stderr io.Writer) (Process, error) {
 	if len(cmdArgs) == 0 {

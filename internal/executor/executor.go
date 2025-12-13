@@ -3,6 +3,7 @@ package executor
 
 import (
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"syscall"
@@ -15,6 +16,8 @@ type Process interface {
 	Wait() (exitCode int, err error)
 	// Kill sends SIGKILL to the process.
 	Kill() error
+	// Signal sends a signal to the process.
+	Signal(sig syscall.Signal) error
 }
 
 // Executor starts processes.
@@ -49,27 +52,42 @@ func (p *execProcess) Wait() (int, error) {
 
 func (p *execProcess) Kill() error {
 	if p.cmd.Process == nil {
+		slog.Debug("execProcess.Kill no process")
 		return nil
 	}
+	slog.Warn("execProcess.Kill sending SIGKILL", "pid", p.cmd.Process.Pid)
 	return p.cmd.Process.Kill()
+}
+
+func (p *execProcess) Signal(sig syscall.Signal) error {
+	if p.cmd.Process == nil {
+		slog.Debug("execProcess.Signal no process", "signal", sig)
+		return nil
+	}
+	slog.Debug("execProcess.Signal", "pid", p.cmd.Process.Pid, "signal", sig)
+	return p.cmd.Process.Signal(sig)
 }
 
 // Start implements Executor.Start using os/exec.
 func (e *ExecExecutor) Start(cmdArgs []string, stdin io.Reader, stdout, stderr io.Writer) (Process, error) {
+	slog.Debug("ExecExecutor.Start", "cmd", cmdArgs)
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
+		slog.Debug("ExecExecutor.Start failed", "error", err)
 		return nil, err
 	}
 
+	slog.Debug("ExecExecutor.Start success", "pid", cmd.Process.Pid)
 	return &execProcess{cmd: cmd}, nil
 }
 
 // StartPTY implements Executor.StartPTY using os/exec with PTY setup.
 func (e *ExecExecutor) StartPTY(cmdArgs []string, slave *os.File) (Process, error) {
+	slog.Debug("ExecExecutor.StartPTY", "cmd", cmdArgs)
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	cmd.Stdin = slave
@@ -81,9 +99,11 @@ func (e *ExecExecutor) StartPTY(cmdArgs []string, slave *os.File) (Process, erro
 	}
 
 	if err := cmd.Start(); err != nil {
+		slog.Debug("ExecExecutor.StartPTY failed", "error", err)
 		return nil, err
 	}
 
+	slog.Debug("ExecExecutor.StartPTY success", "pid", cmd.Process.Pid)
 	return &execProcess{cmd: cmd}, nil
 }
 

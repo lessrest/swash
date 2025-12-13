@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"os"
 	"os/signal"
@@ -115,14 +116,35 @@ func (h *Host) SendInput(data string) (int, error) {
 }
 
 // Kill sends SIGKILL to the task process.
+// This should only be used for restart; for shutdown use GracefulKill.
 func (h *Host) Kill() error {
+	slog.Debug("Host.Kill called", "session", h.sessionID)
 	h.mu.Lock()
 	proc := h.proc
 	h.mu.Unlock()
 	if proc == nil {
+		slog.Debug("Host.Kill no process")
 		return fmt.Errorf("no process running")
 	}
+	slog.Warn("Host.Kill sending SIGKILL", "session", h.sessionID)
 	return proc.Kill()
+}
+
+// GracefulKill sends SIGTERM to the task process and waits for it to exit.
+// The doneChan should signal when the process has exited.
+// This allows the child process to flush coverage data before exiting.
+func (h *Host) GracefulKill(doneChan <-chan struct{}) {
+	slog.Debug("Host.GracefulKill called", "session", h.sessionID)
+	h.mu.Lock()
+	proc := h.proc
+	h.mu.Unlock()
+	if proc == nil {
+		slog.Debug("Host.GracefulKill no process")
+		return
+	}
+	slog.Debug("Host.GracefulKill sending SIGTERM")
+	proc.Signal(syscall.SIGTERM)
+	// Wait for process to exit - the caller will handle timeout via doneChan
 }
 
 // closePipes closes the pipe read ends to unblock any readers.
@@ -164,8 +186,11 @@ func (h *Host) Restart() error {
 
 // Run starts the D-Bus host and runs until the task exits or a signal is received.
 func (h *Host) Run() error {
+	slog.Debug("Host.Run starting", "session", h.sessionID, "command", h.command)
+
 	conn, err := dbus.ConnectSessionBus()
 	if err != nil {
+		slog.Debug("Host.Run D-Bus connect failed", "error", err)
 		return fmt.Errorf("connecting to D-Bus: %w", err)
 	}
 	defer conn.Close()
@@ -173,8 +198,10 @@ func (h *Host) Run() error {
 	busName := fmt.Sprintf("%s.%s", session.DBusNamePrefix, h.sessionID)
 	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
 	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
+		slog.Debug("Host.Run bus name request failed", "busName", busName, "error", err)
 		return fmt.Errorf("requesting bus name: %w", err)
 	}
+	slog.Debug("Host.Run acquired bus name", "busName", busName)
 
 	conn.ExportAll(h, dbus.ObjectPath(session.DBusPath), session.DBusNamePrefix)
 
@@ -187,22 +214,26 @@ func (h *Host) Run() error {
 	go func() {
 		select {
 		case sig := <-sigChan:
-			fmt.Fprintf(os.Stderr, "Received %v, killing task\n", sig)
+			slog.Debug("Host.Run received signal, cancelling context", "signal", sig, "session", h.sessionID)
 			cancel()
 		case <-ctx.Done():
 		}
 	}()
 
+	slog.Debug("Host.Run starting task", "session", h.sessionID)
 	err = h.RunTask(ctx)
+	slog.Debug("Host.Run task finished", "session", h.sessionID, "error", err)
 
 	// Emit exit signal before closing D-Bus connection
 	h.mu.Lock()
 	exitCode := h.exitCode
 	h.mu.Unlock()
 	if exitCode != nil {
+		slog.Debug("Host.Run emitting exit signal", "session", h.sessionID, "exitCode", *exitCode)
 		conn.Emit(dbus.ObjectPath(session.DBusPath), session.DBusNamePrefix+".Exited", int32(*exitCode))
 	}
 
+	slog.Debug("Host.Run exiting", "session", h.sessionID)
 	return err
 }
 
@@ -210,14 +241,18 @@ func (h *Host) Run() error {
 // This is the core logic without D-Bus setup or signal handling,
 // suitable for testing.
 func (h *Host) RunTask(ctx context.Context) error {
+	slog.Debug("Host.RunTask starting", "session", h.sessionID)
+
 	// Create restart channel
 	h.mu.Lock()
 	h.restartCh = make(chan struct{}, 1)
 	h.mu.Unlock()
 
 	for {
+		slog.Debug("Host.RunTask starting task process", "session", h.sessionID)
 		doneChan, err := h.startTaskProcess()
 		if err != nil {
+			slog.Debug("Host.RunTask failed to start process", "session", h.sessionID, "error", err)
 			return fmt.Errorf("starting process: %w", err)
 		}
 
@@ -230,24 +265,28 @@ func (h *Host) RunTask(ctx context.Context) error {
 			return fmt.Errorf("emitting started event: %w", err)
 		}
 
+		slog.Debug("Host.RunTask waiting for task", "session", h.sessionID)
 		select {
 		case <-doneChan:
 			// Task exited normally
+			slog.Debug("Host.RunTask task exited normally", "session", h.sessionID)
 			return nil
 		case <-h.restartCh:
 			// Restart requested - kill current task and loop
-			fmt.Fprintf(os.Stderr, "Restart requested, killing task\n")
+			slog.Debug("Host.RunTask restart requested", "session", h.sessionID)
 			h.Kill()
 			// Close pipes to unblock readers
 			h.closePipes()
 			<-doneChan // Wait for task to actually exit
-			fmt.Fprintf(os.Stderr, "Starting new task\n")
+			slog.Debug("Host.RunTask restarting", "session", h.sessionID)
 			// Loop continues to start new task
 		case <-ctx.Done():
-			h.Kill()
+			slog.Debug("Host.RunTask context done, gracefully killing task", "session", h.sessionID)
+			h.GracefulKill(doneChan)
 			// Close pipes to unblock readers so doneChan can complete
 			h.closePipes()
 			<-doneChan
+			slog.Debug("Host.RunTask task exited after SIGTERM", "session", h.sessionID)
 			return ctx.Err()
 		}
 	}
@@ -255,6 +294,8 @@ func (h *Host) RunTask(ctx context.Context) error {
 
 // startTaskProcess starts the task subprocess via the executor.
 func (srv *Host) startTaskProcess() (chan struct{}, error) {
+	slog.Debug("Host.startTaskProcess", "session", srv.sessionID, "command", srv.command)
+
 	// Create pipes for stdio
 	stdinRead, stdinWrite, err := os.Pipe()
 	if err != nil {
@@ -335,6 +376,11 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 	go func() {
 		// Wait for process to exit and get exit code
 		exitCode, _ := proc.Wait()
+		if exitCode != 0 {
+			slog.Warn("Host.startTaskProcess task exited abnormally", "session", srv.sessionID, "exitCode", exitCode, "command", srv.command)
+		} else {
+			slog.Debug("Host.startTaskProcess task process exited", "session", srv.sessionID, "exitCode", exitCode)
+		}
 
 		// Wait for pipes to finish reading
 		wg.Wait()
@@ -351,7 +397,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 
 		// Emit lifecycle event
 		if err := eventlog.EmitExited(srv.events, srv.sessionID, exitCode, srv.command); err != nil {
-			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
+			slog.Debug("Host.startTaskProcess failed to emit exited event", "error", err)
 		}
 
 		close(doneChan)

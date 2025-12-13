@@ -62,22 +62,33 @@ test-all-backends: build
 clean:
 	rm -rf bin/ coverage/
 
-# Coverage report from integration tests (runs all backends)
+# Coverage report from unit + integration tests (runs all backends)
 COVERAGE_DIR := $(CURDIR)/coverage
 coverage: generate
 	@rm -rf $(COVERAGE_DIR)
-	@mkdir -p $(COVERAGE_DIR)
+	@mkdir -p $(COVERAGE_DIR)/unit $(COVERAGE_DIR)/integration $(COVERAGE_DIR)/merged
 	go build -cover -o bin/swash ./cmd/swash/
-	@echo "=== Coverage: mini-systemd backend ==="
-	GOCOVERDIR=$(COVERAGE_DIR) SWASH_TEST_MODE=mini go test ./integration/... -timeout 120s
-	@echo "=== Coverage: posix backend ==="
-	GOCOVERDIR=$(COVERAGE_DIR) SWASH_TEST_MODE=posix go test ./integration/... -timeout 120s
-	@echo "=== Coverage: real systemd backend ==="
-	GOCOVERDIR=$(COVERAGE_DIR) SWASH_TEST_MODE=real go test ./integration/... -timeout 120s
-	go tool covdata textfmt -i=$(COVERAGE_DIR) -o=$(COVERAGE_DIR)/coverage.out
+	@echo "=== Coverage: unit tests ==="
+	GOCOVERDIR=$(COVERAGE_DIR)/unit go test ./pkg/... ./internal/... -cover -timeout 120s
+	@echo "=== Coverage: integration (mini-systemd) ==="
+	GOCOVERDIR=$(COVERAGE_DIR)/integration SWASH_TEST_MODE=mini go test ./integration/... -timeout 120s
+	@echo "=== Coverage: integration (posix) ==="
+	GOCOVERDIR=$(COVERAGE_DIR)/integration SWASH_TEST_MODE=posix go test ./integration/... -timeout 120s
+	@echo "=== Coverage: integration (real systemd) ==="
+	GOCOVERDIR=$(COVERAGE_DIR)/integration SWASH_TEST_MODE=real go test ./integration/... -timeout 120s
+	@echo "=== Merging coverage ==="
+	go tool covdata merge -i=$(COVERAGE_DIR)/unit,$(COVERAGE_DIR)/integration -o=$(COVERAGE_DIR)/merged -pcombine
+	go tool covdata textfmt -i=$(COVERAGE_DIR)/merged -o=$(COVERAGE_DIR)/coverage.out
 	go tool cover -html=$(COVERAGE_DIR)/coverage.out -o $(COVERAGE_DIR)/coverage.html
 	@go tool cover -func=$(COVERAGE_DIR)/coverage.out | tail -1
 	@echo "HTML report: $(COVERAGE_DIR)/coverage.html"
+	@echo ""
+	@$(MAKE) --no-print-directory coverage-report
+
+# Show per-file coverage percentages (requires running 'make coverage' first)
+coverage-report:
+	@if [ ! -f $(COVERAGE_DIR)/coverage.html ]; then echo "Run 'make coverage' first"; exit 1; fi
+	@grep -oP 'option value="file\d+"[^>]*>\K[^<]+' $(COVERAGE_DIR)/coverage.html | sed 's/(\(.*\))/\1/' | awk '{pct=$$NF; $$NF=""; printf "%7s  %s\n", pct, $$0}' | sort -rn
 
 # Build oxigraph WASI module (compressed blob is embedded in pkg/oxigraph)
 OXIGRAPH_WASM_ZST := pkg/oxigraph/oxigraph.wasm.zst

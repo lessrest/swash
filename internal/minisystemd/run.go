@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -131,5 +132,9 @@ func Run(ctx context.Context, opts Options) error {
 	fmt.Printf("mini-systemd running on %s\n", busName)
 	<-ctx.Done()
 	fmt.Println("mini-systemd shutting down")
+
+	// Gracefully stop all units so they can flush coverage data
+	mgr.StopAllUnits(2 * time.Second)
+
 	return nil
 }

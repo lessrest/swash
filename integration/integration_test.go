@@ -340,12 +340,17 @@ func (e *testEnv) getEnvVars() []string {
 			"DBUS_SESSION_BUS_ADDRESS=unix:path="+e.busSocket,
 			"SWASH_JOURNAL_SOCKET="+e.journalSocket,
 			"SWASH_JOURNAL_DIR="+e.journalDir,
+			"SWASH_RUNTIME_DIR="+e.tmpDir,
 		)
 	case "real":
 		// Explicitly request systemd backend in case DBUS_SESSION_BUS_ADDRESS
 		// isn't set in the CI environment (which would cause auto-detection
 		// to choose posix instead).
-		env = append(env, "SWASH_BACKEND=systemd")
+		// Also isolate runtime dir so graph tests don't use system's graph service.
+		env = append(env,
+			"SWASH_BACKEND=systemd",
+			"SWASH_RUNTIME_DIR="+e.tmpDir,
+		)
 	case "posix":
 		env = append(env,
 			"SWASH_BACKEND=posix",

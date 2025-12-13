@@ -53,6 +53,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 	slog.Info("graph server starting", "socket", s.socketPath)
 
+	// Ignore SIGPIPE so pipe closure doesn't kill us before graceful shutdown
+	signal.Ignore(syscall.SIGPIPE)
+
 	// Handle signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)

@@ -166,6 +166,53 @@ func NewManager(conn *dbus.Conn, journal *JournalService) *Manager {
 	}
 }
 
+// StopAllUnits gracefully stops all running units by sending SIGTERM and waiting.
+// This allows child processes to flush coverage data before exit.
+func (m *Manager) StopAllUnits(timeout time.Duration) {
+	m.mu.RLock()
+	var running []*Unit
+	for _, unit := range m.units {
+		if unit.Cmd != nil && unit.Cmd.Process != nil && unit.State == "running" {
+			running = append(running, unit)
+		}
+	}
+	m.mu.RUnlock()
+
+	if len(running) == 0 {
+		return
+	}
+
+	// Send SIGTERM to all running units
+	for _, unit := range running {
+		if unit.Cmd.Process != nil {
+			unit.Cmd.Process.Signal(syscall.SIGTERM)
+		}
+	}
+
+	// Wait for all to exit with timeout
+	done := make(chan struct{})
+	go func() {
+		for _, unit := range running {
+			if unit.Cmd != nil {
+				unit.Cmd.Wait()
+			}
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		// Force kill remaining - this indicates a problem with graceful shutdown
+		for _, unit := range running {
+			if unit.Cmd != nil && unit.Cmd.Process != nil {
+				slog.Warn("StopAllUnits timeout, sending SIGKILL", "unit", unit.Name, "pid", unit.Cmd.Process.Pid)
+				unit.Cmd.Process.Kill()
+			}
+		}
+	}
+}
+
 // emitJobRemoved sends the JobRemoved signal that go-systemd waits for
 func (m *Manager) emitJobRemoved(jobID uint32, jobPath dbus.ObjectPath, unitName string, result string) {
 	m.conn.Emit("/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager.JobRemoved",
@@ -210,6 +257,8 @@ type PropertyCollection struct {
 // StartTransientUnit creates and starts a new transient unit (D-Bus method)
 // Signature: StartTransientUnit(name string, mode string, properties []Property, aux []PropertyCollection) -> (job ObjectPath)
 func (m *Manager) StartTransientUnit(name string, mode string, properties []Property, aux []PropertyCollection) (dbus.ObjectPath, *dbus.Error) {
+	slog.Debug("StartTransientUnit called", "unit", name, "mode", mode)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -326,6 +375,9 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 	if stderrFD != nil {
 		stderrFile = os.NewFile(uintptr(*stderrFD), "stderr")
 		cmd.Stderr = stderrFile
+	} else if os.Getenv("SWASH_DEBUG") != "" {
+		// In debug mode, forward child stderr to our stderr so logs are visible
+		cmd.Stderr = os.Stderr
 	} else {
 		stderr, err := cmd.StderrPipe()
 		if err != nil {
@@ -354,6 +406,8 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 	unit.Cmd = cmd
 	unit.PID = cmd.Process.Pid
 	unit.StartedAt = time.Now()
+
+	slog.Debug("StartTransientUnit process started", "unit", name, "pid", unit.PID, "cmd", unit.Command)
 
 	m.units[name] = unit
 
@@ -391,34 +445,76 @@ func (m *Manager) StartTransientUnit(name string, mode string, properties []Prop
 
 // StopUnit stops a unit (D-Bus method)
 func (m *Manager) StopUnit(name string, mode string) (dbus.ObjectPath, *dbus.Error) {
+	slog.Debug("StopUnit called", "unit", name, "mode", mode)
+
 	m.mu.Lock()
 	unit, ok := m.units[name]
 	m.mu.Unlock()
 
 	if !ok {
+		slog.Debug("StopUnit unit not found", "unit", name)
 		return "", dbus.NewError("org.freedesktop.DBus.Error.UnknownObject", []any{"unit not found"})
 	}
 
 	if unit.Cmd != nil && unit.Cmd.Process != nil {
+		slog.Debug("StopUnit sending SIGTERM", "unit", name, "pid", unit.Cmd.Process.Pid)
 		unit.Cmd.Process.Signal(syscall.SIGTERM)
+	} else {
+		slog.Debug("StopUnit no process to stop", "unit", name)
 	}
 
-	jobPath := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/systemd1/job/%d", time.Now().UnixNano()))
+	m.jobID++
+	jobID := m.jobID
+	jobPath := dbus.ObjectPath(fmt.Sprintf("/org/freedesktop/systemd1/job/%d", jobID))
+
+	// Emit JobRemoved after a short delay to allow process to exit
+	// go-systemd waits for this signal before returning from StopUnit
+	go func() {
+		// Wait for process to actually exit (with timeout)
+		done := make(chan struct{})
+		go func() {
+			if unit.Cmd != nil {
+				unit.Cmd.Wait()
+			}
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			slog.Debug("StopUnit process exited", "unit", name)
+		case <-time.After(5 * time.Second):
+			slog.Warn("StopUnit timeout waiting for exit, sending SIGKILL", "unit", name)
+			if unit.Cmd != nil && unit.Cmd.Process != nil {
+				unit.Cmd.Process.Kill()
+			}
+			<-done
+		}
+
+		slog.Debug("StopUnit emitting JobRemoved", "unit", name, "jobID", jobID)
+		m.emitJobRemoved(jobID, jobPath, name, "done")
+	}()
+
 	return jobPath, nil
 }
 
 // KillUnit sends a signal to a unit (D-Bus method)
 func (m *Manager) KillUnit(name string, who string, signal int32) *dbus.Error {
+	slog.Debug("KillUnit called", "unit", name, "who", who, "signal", signal)
+
 	m.mu.Lock()
 	unit, ok := m.units[name]
 	m.mu.Unlock()
 
 	if !ok {
+		slog.Debug("KillUnit unit not found", "unit", name)
 		return dbus.NewError("org.freedesktop.DBus.Error.UnknownObject", []any{"unit not found"})
 	}
 
 	if unit.Cmd != nil && unit.Cmd.Process != nil {
+		slog.Debug("KillUnit sending signal", "unit", name, "pid", unit.Cmd.Process.Pid, "signal", signal)
 		unit.Cmd.Process.Signal(syscall.Signal(signal))
+	} else {
+		slog.Debug("KillUnit no process", "unit", name)
 	}
 
 	return nil
@@ -618,12 +714,12 @@ func (m *Manager) waitForExit(unitName string) {
 			unit.State = "failed"
 			activeState = "failed"
 			serviceResult = "exit-code"
-			slog.Debug("process exited", "unit", unitName, "exitCode", exitErr.ExitCode(), "state", unit.State)
+			slog.Warn("process exited abnormally", "unit", unitName, "exitCode", exitErr.ExitCode())
 		} else {
 			unit.State = "failed"
 			activeState = "failed"
 			serviceResult = "failed"
-			slog.Debug("process failed", "unit", unitName, "error", err, "state", unit.State)
+			slog.Warn("process failed", "unit", unitName, "error", err)
 		}
 	} else {
 		unit.ExitStatus = 0

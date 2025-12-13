@@ -5,6 +5,7 @@ package graph
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -31,8 +32,12 @@ type Config struct {
 
 // DefaultConfig returns the default service configuration.
 func DefaultConfig() Config {
+	socketPath := os.Getenv("SWASH_GRAPH_SOCKET")
+	if socketPath == "" {
+		socketPath = filepath.Join(dirs.RuntimeDir(), "graph.sock")
+	}
 	return Config{
-		SocketPath: filepath.Join(dirs.RuntimeDir(), "graph.sock"),
+		SocketPath: socketPath,
 	}
 }
 
