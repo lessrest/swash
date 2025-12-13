@@ -16,11 +16,9 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
-	"github.com/mbrock/swash/internal/executor"
-	"github.com/mbrock/swash/internal/job"
+	"github.com/mbrock/swash/internal/cli"
 	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/internal/protocol"
-	"github.com/mbrock/swash/internal/tty"
 )
 
 // Host is the D-Bus host for a swash session.
@@ -31,10 +29,10 @@ type Host struct {
 	tags      map[string]string
 
 	events   journal.EventLog
-	executor executor.Executor
+	executor Executor
 
 	mu        sync.Mutex
-	proc      executor.Process // the running task process
+	proc      Process // the running task process
 	stdin     io.WriteCloser
 	running   bool
 	exitCode  *int
@@ -53,7 +51,7 @@ type HostConfig struct {
 	Protocol  protocol.Protocol
 	Tags      map[string]string
 	Events    journal.EventLog
-	Executor  executor.Executor // Optional; defaults to ExecExecutor if nil
+	Executor  Executor // Optional; defaults to ExecExecutor if nil
 }
 
 // NewHost creates a new Host with the given configuration.
@@ -65,7 +63,7 @@ func NewHost(cfg HostConfig) *Host {
 
 	execImpl := cfg.Executor
 	if execImpl == nil {
-		execImpl = executor.Default()
+		execImpl = Default()
 	}
 
 	return &Host{
@@ -78,7 +76,7 @@ func NewHost(cfg HostConfig) *Host {
 	}
 }
 
-type HostStatus = job.HostStatus
+type HostStatus = cli.HostStatus
 
 // Gist returns the current session status.
 func (h *Host) Gist() (HostStatus, error) {
@@ -192,7 +190,7 @@ func (h *Host) Run() error {
 	}
 	defer conn.Close()
 
-	busName := fmt.Sprintf("%s.%s", job.DBusNamePrefix, h.sessionID)
+	busName := fmt.Sprintf("%s.%s", cli.DBusNamePrefix, h.sessionID)
 	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
 	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
 		slog.Debug("Host.Run bus name request failed", "busName", busName, "error", err)
@@ -200,7 +198,7 @@ func (h *Host) Run() error {
 	}
 	slog.Debug("Host.Run acquired bus name", "busName", busName)
 
-	conn.ExportAll(h, dbus.ObjectPath(job.DBusPath), job.DBusNamePrefix)
+	conn.ExportAll(h, dbus.ObjectPath(cli.DBusPath), cli.DBusNamePrefix)
 
 	// Set up context that cancels on SIGTERM/SIGINT
 	ctx, cancel := context.WithCancel(context.Background())
@@ -227,7 +225,7 @@ func (h *Host) Run() error {
 	h.mu.Unlock()
 	if exitCode != nil {
 		slog.Debug("Host.Run emitting exit signal", "session", h.sessionID, "exitCode", *exitCode)
-		conn.Emit(dbus.ObjectPath(job.DBusPath), job.DBusNamePrefix+".Exited", int32(*exitCode))
+		conn.Emit(dbus.ObjectPath(cli.DBusPath), cli.DBusNamePrefix+".Exited", int32(*exitCode))
 	}
 
 	slog.Debug("Host.Run exiting", "session", h.sessionID)
@@ -289,7 +287,7 @@ func (h *Host) RunTask(ctx context.Context) error {
 	}
 }
 
-// startTaskProcess starts the task subprocess via the executor.
+// startTaskProcess starts the task subprocess via the
 func (srv *Host) startTaskProcess() (chan struct{}, error) {
 	slog.Debug("Host.startTaskProcess", "session", srv.sessionID, "command", srv.command)
 
@@ -471,7 +469,7 @@ func RunHost() error {
 		}()
 
 		if *ttyFlag {
-			h := tty.NewTTYHost(tty.TTYHostConfig{
+			h := NewTTYHost(TTYHostConfig{
 				SessionID: *sessionIDFlag,
 				Command:   command,
 				Rows:      *rowsFlag,
@@ -516,7 +514,7 @@ func RunHost() error {
 
 	// Use TTYHost for --tty mode, otherwise use regular Host
 	if *ttyFlag {
-		host := tty.NewTTYHost(tty.TTYHostConfig{
+		host := NewTTYHost(TTYHostConfig{
 			SessionID: *sessionIDFlag,
 			Command:   command,
 			Rows:      *rowsFlag,

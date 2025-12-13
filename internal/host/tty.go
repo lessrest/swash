@@ -1,4 +1,4 @@
-package tty
+package host
 
 import (
 	"context"
@@ -14,13 +14,10 @@ import (
 	"github.com/creack/pty"
 	"github.com/godbus/dbus/v5"
 
-	"github.com/mbrock/swash/internal/executor"
-	"github.com/mbrock/swash/internal/job"
+	"github.com/mbrock/swash/internal/cli"
 	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/pkg/vterm"
 )
-
-type HostStatus = job.HostStatus
 
 // PTYPair represents a bidirectional connection for terminal I/O.
 // This abstraction allows testing with fake PTYs.
@@ -159,10 +156,10 @@ type TTYHost struct {
 	tags       map[string]string
 
 	events   journal.EventLog
-	executor executor.Executor
+	executor Executor
 
 	mu              sync.Mutex
-	proc            executor.Process // the running task process
+	proc            Process // the running task process
 	vt              *vterm.VTerm
 	ptyPair         PTYPair // PTY pair (for Resize access)
 	running         bool
@@ -191,7 +188,7 @@ type TTYHostConfig struct {
 	Rows, Cols int
 	Tags       map[string]string
 	Events     journal.EventLog
-	Executor   executor.Executor // Optional; defaults to ExecExecutor if nil
+	Executor   Executor // Optional; defaults to ExecExecutor if nil
 
 	// OpenPTY is optional; defaults to OpenRealPTY if nil.
 	// Provide a custom implementation for testing.
@@ -215,7 +212,7 @@ func NewTTYHost(cfg TTYHostConfig) *TTYHost {
 
 	execImpl := cfg.Executor
 	if execImpl == nil {
-		execImpl = executor.Default()
+		execImpl = Default()
 	}
 
 	// Merge session ID into tags so output lines can be filtered
@@ -653,7 +650,7 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 	}
 }
 
-// startTTYProcess starts the task subprocess with PTY via the executor.
+// startTTYProcess starts the task subprocess with PTY via the
 func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 	// Create PTY pair using the injected opener
 	ptyPair, err := h.openPTY()
@@ -776,13 +773,13 @@ func (h *TTYHost) Run() error {
 	}
 	defer conn.Close()
 
-	busName := fmt.Sprintf("%s.%s", job.DBusNamePrefix, h.sessionID)
+	busName := fmt.Sprintf("%s.%s", cli.DBusNamePrefix, h.sessionID)
 	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
 	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
 		return fmt.Errorf("requesting bus name: %w", err)
 	}
 
-	conn.ExportAll(h, dbus.ObjectPath(job.DBusPath), job.DBusNamePrefix)
+	conn.ExportAll(h, dbus.ObjectPath(cli.DBusPath), cli.DBusNamePrefix)
 
 	// Set up context that cancels on SIGTERM/SIGINT
 	ctx, cancel := context.WithCancel(context.Background())
@@ -806,7 +803,7 @@ func (h *TTYHost) Run() error {
 	exitCode := h.exitCode
 	h.mu.Unlock()
 	if exitCode != nil {
-		conn.Emit(dbus.ObjectPath(job.DBusPath), job.DBusNamePrefix+".Exited", int32(*exitCode))
+		conn.Emit(dbus.ObjectPath(cli.DBusPath), cli.DBusNamePrefix+".Exited", int32(*exitCode))
 	}
 
 	return err

@@ -11,8 +11,8 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
+	"github.com/mbrock/swash/internal/cli"
 	"github.com/mbrock/swash/internal/dirs"
-	"github.com/mbrock/swash/internal/job"
 	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
@@ -56,8 +56,8 @@ type Backend interface {
 
 	GetScreen(ctx context.Context, sessionID string) (string, error)
 
-	ConnectSession(sessionID string) (job.Client, error)
-	ConnectTTYSession(sessionID string) (job.TTYClient, error)
+	ConnectSession(sessionID string) (cli.Client, error)
+	ConnectTTYSession(sessionID string) (cli.TTYClient, error)
 
 	// Context management
 	CreateContext(ctx context.Context) (contextID string, dir string, err error)

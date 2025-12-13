@@ -1,4 +1,4 @@
-package job
+package cli
 
 import (
 	"crypto/rand"
@@ -148,7 +148,7 @@ func (c *dbusClient) Gist() (HostStatus, error) {
 }
 
 // TTYClient extends Client with terminal-specific methods.
-// These are only available for sessions started with --tty.
+// These are only available for sessions started with --host.
 type TTYClient interface {
 	Client
 

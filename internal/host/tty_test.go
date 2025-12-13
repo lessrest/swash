@@ -1,4 +1,4 @@
-package tty
+package host
 
 import (
 	"context"
@@ -9,15 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbrock/swash/internal/executor"
 	journal "github.com/mbrock/swash/internal/journal"
 )
 
 type FakeJournal = journal.FakeJournal
-type FakeCommand = executor.FakeCommand
 
-func NewTestFakes() (*executor.FakeExecutor, *FakeJournal) {
-	return executor.NewFakeExecutor(), journal.NewFakeJournal()
+func NewTestFakes() (*FakeExecutor, *FakeJournal) {
+	return NewFakeExecutor(), journal.NewFakeJournal()
 }
 
 func TestTTYHost_NewTTYHost(t *testing.T) {

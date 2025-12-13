@@ -1,5 +1,5 @@
 // Package executor provides an abstraction for starting processes.
-package executor
+package host
 
 import (
 	"io"

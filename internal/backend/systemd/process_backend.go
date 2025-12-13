@@ -4,8 +4,6 @@ import (
 	"context"
 	"strings"
 	"syscall"
-
-	"github.com/mbrock/swash/internal/process"
 )
 
 // ProcessManager adapts the low-level Systemd interface to the semantic ProcessBackend.
@@ -13,7 +11,7 @@ type ProcessManager struct {
 	systemd Systemd
 }
 
-var _ process.ProcessBackend = (*ProcessManager)(nil)
+var _ ProcessBackend = (*ProcessManager)(nil)
 
 // NewProcessManager wraps a Systemd connection in a ProcessBackend.
 func NewProcessManager(sd Systemd) *ProcessManager {
@@ -21,7 +19,7 @@ func NewProcessManager(sd Systemd) *ProcessManager {
 }
 
 // Start launches a workload by translating a ProcessSpec into a transient unit.
-func (b *ProcessManager) Start(ctx context.Context, spec process.ProcessSpec) error {
+func (b *ProcessManager) Start(ctx context.Context, spec ProcessSpec) error {
 	unit := unitNameForRef(spec.Ref)
 	slice := SessionSlice(spec.Ref.SessionID)
 
@@ -48,7 +46,7 @@ func (b *ProcessManager) Start(ctx context.Context, spec process.ProcessSpec) er
 	}
 
 	switch spec.LaunchKind {
-	case process.LaunchKindService:
+	case LaunchKindService:
 		tSpec.ServiceType = "dbus"
 		tSpec.BusName = spec.BusName
 	default:
@@ -68,22 +66,22 @@ func (b *ProcessManager) Start(ctx context.Context, spec process.ProcessSpec) er
 }
 
 // Stop stops a workload.
-func (b *ProcessManager) Stop(ctx context.Context, ref process.ProcessRef) error {
+func (b *ProcessManager) Stop(ctx context.Context, ref ProcessRef) error {
 	return b.systemd.StopUnit(ctx, unitNameForRef(ref))
 }
 
 // Kill sends a signal to a workload.
-func (b *ProcessManager) Kill(ctx context.Context, ref process.ProcessRef, signal syscall.Signal) error {
+func (b *ProcessManager) Kill(ctx context.Context, ref ProcessRef, signal syscall.Signal) error {
 	return b.systemd.KillUnit(ctx, unitNameForRef(ref), signal)
 }
 
 // ResetFailed resets a failed workload so it can be restarted.
-func (b *ProcessManager) ResetFailed(ctx context.Context, ref process.ProcessRef) error {
+func (b *ProcessManager) ResetFailed(ctx context.Context, ref ProcessRef) error {
 	return b.systemd.ResetFailedUnit(ctx, unitNameForRef(ref))
 }
 
 // List lists workloads matching the filter.
-func (b *ProcessManager) List(ctx context.Context, filter process.ProcessFilter) ([]process.ProcessStatus, error) {
+func (b *ProcessManager) List(ctx context.Context, filter ProcessFilter) ([]ProcessStatus, error) {
 	patterns := patternsForRoles(filter.Roles)
 	states := statesForFilter(filter.States)
 
@@ -97,7 +95,7 @@ func (b *ProcessManager) List(ctx context.Context, filter process.ProcessFilter)
 	// normal listings (which expect swash-*.slice).
 	slicePrefix := rootSlicePrefix() + "-"
 
-	var result []process.ProcessStatus
+	var result []ProcessStatus
 	for _, u := range units {
 		// Filter by slice - unit's slice should start with our root slice prefix
 		if !strings.HasPrefix(u.Slice, slicePrefix) {
@@ -108,7 +106,7 @@ func (b *ProcessManager) List(ctx context.Context, filter process.ProcessFilter)
 		if !ok {
 			continue
 		}
-		result = append(result, process.ProcessStatus{
+		result = append(result, ProcessStatus{
 			Ref:         ref,
 			State:       processStateFromUnit(u.State, u.ExitStatus),
 			Description: u.Description,
@@ -123,14 +121,14 @@ func (b *ProcessManager) List(ctx context.Context, filter process.ProcessFilter)
 }
 
 // Describe returns a single workload status.
-func (b *ProcessManager) Describe(ctx context.Context, ref process.ProcessRef) (*process.ProcessStatus, error) {
+func (b *ProcessManager) Describe(ctx context.Context, ref ProcessRef) (*ProcessStatus, error) {
 	unit := unitNameForRef(ref)
 	u, err := b.systemd.GetUnit(ctx, unit)
 	if err != nil {
 		return nil, err
 	}
 
-	return &process.ProcessStatus{
+	return &ProcessStatus{
 		Ref:         ref,
 		State:       processStateFromUnit(u.State, u.ExitStatus),
 		Description: u.Description,
@@ -149,27 +147,27 @@ func (b *ProcessManager) Close() error {
 	return b.systemd.Close()
 }
 
-func unitNameForRef(ref process.ProcessRef) UnitName {
+func unitNameForRef(ref ProcessRef) UnitName {
 	switch ref.Role {
-	case process.ProcessRoleHost:
+	case ProcessRoleHost:
 		return HostUnit(ref.SessionID)
 	default:
 		return TaskUnit(ref.SessionID)
 	}
 }
 
-func refFromUnit(name UnitName) (process.ProcessRef, bool) {
+func refFromUnit(name UnitName) (ProcessRef, bool) {
 	switch name.Type() {
 	case UnitTypeHost:
-		return process.HostProcess(name.SessionID()), true
+		return HostProcess(name.SessionID()), true
 	case UnitTypeTask:
-		return process.TaskProcess(name.SessionID()), true
+		return TaskProcess(name.SessionID()), true
 	default:
-		return process.ProcessRef{}, false
+		return ProcessRef{}, false
 	}
 }
 
-func patternsForRoles(roles []process.ProcessRole) []UnitName {
+func patternsForRoles(roles []ProcessRole) []UnitName {
 	if len(roles) == 0 {
 		return []UnitName{"swash-host-*.service", "swash-task-*.service"}
 	}
@@ -177,16 +175,16 @@ func patternsForRoles(roles []process.ProcessRole) []UnitName {
 	var patterns []UnitName
 	for _, role := range roles {
 		switch role {
-		case process.ProcessRoleHost:
+		case ProcessRoleHost:
 			patterns = append(patterns, "swash-host-*.service")
-		case process.ProcessRoleTask:
+		case ProcessRoleTask:
 			patterns = append(patterns, "swash-task-*.service")
 		}
 	}
 	return patterns
 }
 
-func statesForFilter(states []process.ProcessState) []UnitState {
+func statesForFilter(states []ProcessState) []UnitState {
 	if len(states) == 0 {
 		return nil
 	}
@@ -194,31 +192,31 @@ func statesForFilter(states []process.ProcessState) []UnitState {
 	var out []UnitState
 	for _, st := range states {
 		switch st {
-		case process.ProcessStateRunning:
+		case ProcessStateRunning:
 			out = append(out, UnitStateActive)
-		case process.ProcessStateStarting:
+		case ProcessStateStarting:
 			out = append(out, UnitStateActivating)
-		case process.ProcessStateExited:
+		case ProcessStateExited:
 			out = append(out, UnitStateInactive)
-		case process.ProcessStateFailed:
+		case ProcessStateFailed:
 			out = append(out, UnitStateFailed)
 		}
 	}
 	return out
 }
 
-func processStateFromUnit(state UnitState, exitStatus int32) process.ProcessState {
+func processStateFromUnit(state UnitState, exitStatus int32) ProcessState {
 	switch state {
 	case UnitStateActive:
-		return process.ProcessStateRunning
+		return ProcessStateRunning
 	case UnitStateActivating:
-		return process.ProcessStateStarting
+		return ProcessStateStarting
 	case UnitStateFailed:
-		return process.ProcessStateFailed
+		return ProcessStateFailed
 	default:
 		if exitStatus == 0 {
-			return process.ProcessStateExited
+			return ProcessStateExited
 		}
-		return process.ProcessStateFailed
+		return ProcessStateFailed
 	}
 }

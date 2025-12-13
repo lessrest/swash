@@ -9,16 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbrock/swash/internal/executor"
 	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/internal/protocol"
 )
 
 // runTestTask sets up fakes, runs a task to completion, and returns the journal for assertions.
-func runTestTask(t *testing.T, cmd executor.FakeCommand, proto protocol.Protocol) *journal.FakeJournal {
+func runTestTask(t *testing.T, cmd FakeCommand, proto protocol.Protocol) *journal.FakeJournal {
 	t.Helper()
 
-	exec := executor.NewFakeExecutor()
+	exec := NewFakeExecutor()
 	fj := journal.NewFakeJournal()
 	exec.RegisterCommand("test-cmd", cmd)
 
@@ -42,7 +41,7 @@ func runTestTask(t *testing.T, cmd executor.FakeCommand, proto protocol.Protocol
 
 // startTestTask starts a task in a goroutine and returns the Host for interaction.
 // The caller must wait on the done channel for task completion.
-func startTestTask(t *testing.T, exec *executor.FakeExecutor, fj *journal.FakeJournal, cmd executor.FakeCommand, proto protocol.Protocol) (*Host, <-chan error) {
+func startTestTask(t *testing.T, exec *FakeExecutor, fj *journal.FakeJournal, cmd FakeCommand, proto protocol.Protocol) (*Host, <-chan error) {
 	t.Helper()
 
 	exec.RegisterCommand("test-cmd", cmd)
@@ -159,7 +158,7 @@ func TestHost_LifecycleEvents(t *testing.T) {
 }
 
 func TestHost_SendInput(t *testing.T) {
-	exec := executor.NewFakeExecutor()
+	exec := NewFakeExecutor()
 	fj := journal.NewFakeJournal()
 
 	// Command that reads from stdin and echoes to stdout
@@ -260,7 +259,7 @@ func countOpenFDs(t *testing.T) int {
 
 func TestHost_StartTaskProcess_NoFDLeakOnStartError(t *testing.T) {
 	fj := journal.NewFakeJournal()
-	exec := executor.NewFakeExecutor()
+	exec := NewFakeExecutor()
 	// Don't register the command; FakeExecutor will fail with "executable not found".
 
 	host := NewHost(HostConfig{
@@ -292,7 +291,7 @@ func TestHost_StartTaskProcess_NoFDLeakOnStartError(t *testing.T) {
 }
 
 func TestHost_Kill(t *testing.T) {
-	exec := executor.NewFakeExecutor()
+	exec := NewFakeExecutor()
 	fj := journal.NewFakeJournal()
 
 	// Command that blocks until context is cancelled
@@ -324,7 +323,7 @@ func TestHost_Kill(t *testing.T) {
 }
 
 func TestHost_Gist(t *testing.T) {
-	exec := executor.NewFakeExecutor()
+	exec := NewFakeExecutor()
 	fj := journal.NewFakeJournal()
 
 	// Command that blocks until context is cancelled

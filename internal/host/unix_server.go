@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
-
-	"github.com/mbrock/swash/internal/tty"
 )
 
 type basicSession interface {
@@ -30,7 +28,7 @@ type UnixServer struct {
 	srv        *http.Server
 }
 
-func ServeUnix(socketPath string, sess basicSession, ttyHost *tty.TTYHost) (*UnixServer, error) {
+func ServeUnix(socketPath string, sess basicSession, ttyHost *TTYHost) (*UnixServer, error) {
 	if socketPath == "" {
 		return nil, fmt.Errorf("unix socket path is empty")
 	}
@@ -116,7 +114,7 @@ func (s *UnixServer) Close() error {
 	return nil
 }
 
-func registerTTYHandlers(mux *http.ServeMux, h *tty.TTYHost) {
+func registerTTYHandlers(mux *http.ServeMux, h *TTYHost) {
 	mux.HandleFunc("GET /tty/screen", func(w http.ResponseWriter, r *http.Request) {
 		format := r.URL.Query().Get("format")
 		switch format {
@@ -220,7 +218,7 @@ func registerTTYHandlers(mux *http.ServeMux, h *tty.TTYHost) {
 	mux.HandleFunc("GET /tty/attach", func(w http.ResponseWriter, r *http.Request) {
 		rows, _ := strconv.Atoi(r.URL.Query().Get("rows"))
 		cols, _ := strconv.Atoi(r.URL.Query().Get("cols"))
-		outR, inW, remoteRows, remoteCols, screenANSI, clientID, err := tty.AttachIO(h, int32(rows), int32(cols))
+		outR, inW, remoteRows, remoteCols, screenANSI, clientID, err := AttachIO(h, int32(rows), int32(cols))
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
