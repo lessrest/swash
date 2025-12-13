@@ -107,14 +107,27 @@ func (r *renderer) render(vt *vterm.VTerm, clear bool, cursorVisible bool) {
 	r.drawBorder()
 
 	// Render vterm content
-	rows, _ := vt.GetSize()
+	rows, cols := vt.GetSize()
 	contentTop := r.borderTop + 1
 	contentLeft := r.borderLeft + 1
 
 	for row := range rows {
+		// Position cursor at start of content area
 		fmt.Printf("\x1b[%d;%dH", contentTop+row+1, contentLeft+1)
-		fmt.Print(vt.RenderRowANSI(row))
-		fmt.Print("\x1b[K") // Erase to end of line (clear old trailing characters)
+
+		// Reset attributes and render row content
+		fmt.Print("\x1b[0m")
+		content := vt.RenderRowANSI(row)
+		fmt.Print(content)
+
+		// Calculate how many visible characters were output (approximate by looking at content without escapes)
+		// For safety, we'll just clear the remaining width by positioning at end and clearing
+		// This ensures we clear the entire content area without going past the border
+		contentLen := visibleLen(content)
+		if contentLen < cols {
+			// Output spaces to fill the remaining content area
+			fmt.Print(strings.Repeat(" ", cols-contentLen))
+		}
 	}
 
 	// Position cursor
@@ -168,6 +181,27 @@ func (r *renderer) drawBorder() {
 	}
 	bottomBorder.WriteString("┘")
 	fmt.Printf("\x1b[%d;%dH%s", r.borderTop+r.remoteRows+2, r.borderLeft+1, bottomBorder.String())
+}
+
+// visibleLen returns the visible length of a string, excluding ANSI escape sequences.
+// This is used to calculate how much padding is needed to fill a row.
+func visibleLen(s string) int {
+	length := 0
+	inEscape := false
+	for _, r := range s {
+		if inEscape {
+			if r == 'm' {
+				inEscape = false
+			}
+			continue
+		}
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		length++
+	}
+	return length
 }
 
 // runVtermOwner runs the goroutine that owns the vterm
