@@ -323,19 +323,10 @@ func (v *VTerm) cellsToANSI(count int, getCell func(i int) *C.VTermScreenCell) s
 	var lastAttrs CellAttrs
 	var lastFg, lastBg Color
 	firstCell := true
-	emittedANSI := false // Track if we emitted any escape sequences
+	emittedANSI := false
 
-	// First pass: find line end (last non-space cell)
-	lineEnd := 0
+	// Output all cells (no trimming - we need to overwrite the full row)
 	for i := 0; i < count; i++ {
-		cell := getCell(i)
-		if cell.chars[0] != 0 && cell.chars[0] != ' ' && cell.chars[0] != 0xFFFFFFFF {
-			lineEnd = i + 1
-		}
-	}
-
-	// Second pass: output with ANSI codes
-	for i := 0; i < lineEnd; i++ {
 		cell := getCell(i)
 
 		// Skip padding cells for wide characters
@@ -368,7 +359,7 @@ func (v *VTerm) cellsToANSI(count int, getCell func(i int) *C.VTermScreenCell) s
 		}
 	}
 
-	// Reset attributes at end only if we emitted styling
+	// Reset attributes at end if we emitted any ANSI codes
 	if emittedANSI {
 		result = append(result, "\x1b[0m"...)
 	}
@@ -398,6 +389,13 @@ func (v *VTerm) ansiForCell(cell Cell, lastAttrs CellAttrs, lastFg, lastBg Color
 			needReset = true
 		}
 		if lastAttrs.Reverse && !cell.Attrs.Reverse {
+			needReset = true
+		}
+		// If going back to default colors from non-default, we need reset
+		if !lastFg.DefaultFg && cell.Fg.DefaultFg {
+			needReset = true
+		}
+		if !lastBg.DefaultBg && cell.Bg.DefaultBg {
 			needReset = true
 		}
 	}

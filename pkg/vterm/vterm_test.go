@@ -286,8 +286,9 @@ func TestGetScreenANSI(t *testing.T) {
 		t.Error("GetScreenANSI() should contain 'Bold'")
 	}
 
-	// Should end with reset
-	if !strings.HasSuffix(strings.TrimRight(ansi, "\r\n"), "\x1b[0m") {
-		t.Error("GetScreenANSI() should end with reset sequence")
+	// Row with colored text should end with reset (first row before \r\n)
+	firstRow := strings.Split(ansi, "\r\n")[0]
+	if !strings.HasSuffix(firstRow, "\x1b[0m") {
+		t.Errorf("Colored row should end with reset sequence, got: %q", firstRow)
 	}
 }
