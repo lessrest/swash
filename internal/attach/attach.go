@@ -13,7 +13,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/mbrock/swash/internal/host"
-	"github.com/mbrock/swash/pkg/vterm"
+	"github.com/mbrock/swash/vterm"
 )
 
 // ConnectFunc is the function type for connecting to a TTY session.

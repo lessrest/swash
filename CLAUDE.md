@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 make build              # Build bin/swash
 make test               # Run all tests (unit + integration)
-make test-unit          # Run unit tests only: go test ./pkg/... ./internal/...
+make test-unit          # Run unit tests only: go test ./pkg/... ./internal/... ./vterm/...
 make test-integration   # Run integration tests: go test ./integration/... -v -timeout 120s
 make generate           # Run go generate for templ files
 make clean              # Remove bin/
@@ -19,7 +19,7 @@ make clean              # Remove bin/
 
 **Important**: Building requires CGO with vendored systemd headers. Use `make` or `./build.sh` which set `CGO_CFLAGS=-I$(pwd)/cvendor`. Direct `go build` without this flag will fail.
 
-Single test: `go test ./pkg/vterm -run TestScreenRender -v`
+Single test: `go test ./vterm -run TestVTerm -v`
 
 ## Architecture
 
@@ -45,16 +45,21 @@ Backend selection: `SWASH_BACKEND` env var, or auto-detect (probes D-Bus for `or
 ### Key Internal Packages
 
 - `internal/host/` - Pipe-based session host (D-Bus server for non-TTY sessions)
-- `internal/tty/` - TTYHost using PTY + libvterm for interactive programs
+- `internal/tty/` - TTYHost using PTY + vterm module for interactive programs
 - `internal/session/` - Client-side session management and TTY attach logic
 - `internal/eventlog/` - Journal abstraction (journald, file-based backends)
 - `internal/process/` - Process backend abstraction (systemd, exec-based)
 - `internal/platform/systemd/` - Systemd-specific process and journal implementations
 - `internal/journald/` - Minimal journald daemon for posix backend
 
+### Workspace Modules
+
+This is a Go multi-module workspace (`go.work`):
+- `.` - Main swash module
+- `vterm/` - Independent terminal emulation module (WASM-based libvterm bindings)
+
 ### Public Packages (`pkg/`)
 
-- `pkg/vterm/` - CGO bindings to libvterm for terminal emulation
 - `pkg/journalfile/` - Native systemd journal file writer (used by posix backend)
 
 ### Testing

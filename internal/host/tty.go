@@ -15,7 +15,7 @@ import (
 	"github.com/godbus/dbus/v5"
 
 	"github.com/mbrock/swash/internal/journal"
-	"github.com/mbrock/swash/pkg/vterm"
+	"github.com/mbrock/swash/vterm"
 )
 
 // PTYPair represents a bidirectional connection for terminal I/O.

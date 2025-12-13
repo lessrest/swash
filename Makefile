@@ -41,7 +41,7 @@ install:
 test: test-unit test-integration
 
 test-unit:
-	go test ./pkg/... ./internal/...
+	go test ./pkg/... ./internal/... ./vterm/...
 
 test-integration: build
 	@echo "Test mode: $(SWASH_TEST_MODE), journal reader: $(SWASH_TEST_JOURNAL_READER)"
@@ -66,7 +66,7 @@ coverage: generate
 	@mkdir -p $(COVERAGE_DIR)/unit $(COVERAGE_DIR)/integration $(COVERAGE_DIR)/merged
 	go build -cover -o bin/swash ./cmd/swash/
 	@echo "=== Coverage: unit tests ==="
-	GOCOVERDIR=$(COVERAGE_DIR)/unit go test ./pkg/... ./internal/... -cover -timeout 120s
+	GOCOVERDIR=$(COVERAGE_DIR)/unit go test ./pkg/... ./internal/... ./vterm/... -cover -timeout 120s
 	@echo "=== Coverage: integration (posix) ==="
 	GOCOVERDIR=$(COVERAGE_DIR)/integration SWASH_TEST_MODE=posix go test ./integration/... -timeout 120s
 	@echo "=== Coverage: integration (real systemd) ==="
@@ -95,11 +95,11 @@ $(OXIGRAPH_WASM_ZST): $(OXIGRAPH_SOURCES)
 	cd oxigraph-wasi-ffi && cargo build --target wasm32-wasip1 --release
 	zstd -f oxigraph-wasi-ffi/target/wasm32-wasip1/release/oxigraph_wasi_ffi.wasm -o $@
 
-# Build libvterm WASI module (compressed blob is embedded in pkg/vterm)
-VTERM_WASM_ZST := pkg/vterm/vterm.wasm.zst
-VTERM_SOURCES := $(wildcard pkg/vterm/libvterm/src/*.c) pkg/vterm/libvterm/wasm_callbacks.c
+# Build libvterm WASI module (compressed blob is embedded in vterm/)
+VTERM_WASM_ZST := vterm/vterm.wasm.zst
+VTERM_SOURCES := $(wildcard vterm/libvterm/src/*.c) vterm/libvterm/wasm_callbacks.c
 
 vterm-wasm: $(VTERM_WASM_ZST)
 
 $(VTERM_WASM_ZST): $(VTERM_SOURCES)
-	$(MAKE) -C pkg/vterm/libvterm -f Makefile.wasm
+	$(MAKE) -C vterm/libvterm -f Makefile.wasm
