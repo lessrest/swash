@@ -1,4 +1,4 @@
-package cli
+package posix
 
 import (
 	"bufio"
@@ -14,9 +14,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mbrock/swash/internal/host"
 )
 
-// unixClient implements Client over HTTP+JSON on a unix socket.
+// unixClient implements host.Client over HTTP+JSON on a unix socket.
 type unixClient struct {
 	sessionID   string
 	socketPath  string
@@ -26,17 +28,17 @@ type unixClient struct {
 	closedError error
 }
 
-var _ Client = (*unixClient)(nil)
+var _ host.Client = (*unixClient)(nil)
 
-// unixTTYClient implements TTYClient over HTTP+JSON on a unix socket.
+// unixTTYClient implements host.TTYClient over HTTP+JSON on a unix socket.
 type unixTTYClient struct {
 	*unixClient
 }
 
-var _ TTYClient = (*unixTTYClient)(nil)
+var _ host.TTYClient = (*unixTTYClient)(nil)
 
-// ConnectUnix connects to a session control socket.
-func ConnectUnix(sessionID, socketPath string) (Client, error) {
+// Connect connects to a session control socket.
+func Connect(sessionID, socketPath string) (host.Client, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session ID is empty")
 	}
@@ -53,9 +55,9 @@ func ConnectUnix(sessionID, socketPath string) (Client, error) {
 	return c, nil
 }
 
-// ConnectUnixTTYSession connects to a TTY session control socket.
-func ConnectUnixTTY(sessionID, socketPath string) (TTYClient, error) {
-	c, err := ConnectUnix(sessionID, socketPath)
+// ConnectTTY connects to a TTY session control socket.
+func ConnectTTY(sessionID, socketPath string) (host.TTYClient, error) {
+	c, err := Connect(sessionID, socketPath)
 	if err != nil {
 		return nil, err
 	}
@@ -78,16 +80,15 @@ func (c *unixClient) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.closed)
 	})
-	// http.Client has no Close; connections will close when idle or on process exit.
 	return c.closedError
 }
 
 func (c *unixClient) SessionID() (string, error) { return c.sessionID, nil }
 
-func (c *unixClient) Gist() (HostStatus, error) {
-	var out HostStatus
+func (c *unixClient) Gist() (host.HostStatus, error) {
+	var out host.HostStatus
 	if err := c.doJSON(context.Background(), http.MethodGet, "/gist", nil, &out); err != nil {
-		return HostStatus{}, err
+		return host.HostStatus{}, err
 	}
 	return out, nil
 }
@@ -165,19 +166,12 @@ func (c *unixTTYClient) Resize(rows, cols int32) error {
 	return c.doJSON(context.Background(), http.MethodPost, "/tty/resize", body, nil)
 }
 
-func (c *unixTTYClient) Attach(clientRows, clientCols int32) (*TTYAttachment, error) {
-	// We implement Attach as a simple HTTP tunnel:
-	// - Client sends GET /tty/attach?rows=..&cols=..
-	// - Server replies with headers containing size + client ID and a Content-Length body
-	//   containing the initial screen snapshot (ANSI)
-	// - After the body, the connection becomes a raw bidirectional byte stream
-	//   (read = PTY output, write = PTY input)
+func (c *unixTTYClient) Attach(clientRows, clientCols int32) (*host.TTYAttachment, error) {
 	conn, err := net.Dial("unix", c.socketPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build request line manually so we can keep using the connection as a stream.
 	u := &url.URL{Path: "/tty/attach"}
 	q := u.Query()
 	q.Set("rows", fmt.Sprintf("%d", clientRows))
@@ -215,10 +209,9 @@ func (c *unixTTYClient) Attach(clientRows, clientCols int32) (*TTYAttachment, er
 		return nil, err
 	}
 
-	// After consuming the body, br may still have buffered bytes that are part of the stream.
 	stream := &bufferedConn{Conn: conn, r: br}
 
-	return &TTYAttachment{
+	return &host.TTYAttachment{
 		Conn:       stream,
 		Rows:       int32(rows),
 		Cols:       int32(cols),

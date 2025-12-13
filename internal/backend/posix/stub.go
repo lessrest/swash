@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/mbrock/swash/internal/backend"
-	"github.com/mbrock/swash/internal/cli"
 	"github.com/mbrock/swash/internal/graph"
+	"github.com/mbrock/swash/internal/host"
 	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/pkg/oxigraph"
 )
@@ -326,7 +326,7 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		return "", fmt.Errorf("ensuring journald: %w", err)
 	}
 
-	sessionID := cli.GenID()
+	sessionID := host.GenID()
 
 	sessionDir := b.sessionDir(sessionID)
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
@@ -342,7 +342,7 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	args := append([]string{}, b.cfg.HostCommand...)
 	args = append(args,
 		"--session", sessionID,
-		"--command-json", cli.MustJSON(command),
+		"--command-json", host.MustJSON(command),
 		"--unix-socket", socketPath,
 	)
 
@@ -351,7 +351,7 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		args = append(args, "--protocol", string(opts.Protocol))
 	}
 	if len(opts.Tags) > 0 {
-		args = append(args, "--tags-json", cli.MustJSON(opts.Tags))
+		args = append(args, "--tags-json", host.MustJSON(opts.Tags))
 	}
 	if opts.TTY {
 		args = append(args, "--tty")
@@ -439,7 +439,7 @@ func (b *PosixBackend) waitReady(ctx context.Context, sessionID string, pid int,
 		}
 
 		if _, err := os.Stat(socketPath); err == nil {
-			c, err := cli.ConnectUnix(sessionID, socketPath)
+			c, err := Connect(sessionID, socketPath)
 			if err == nil {
 				_, err = c.Gist()
 				_ = c.Close()
@@ -630,20 +630,20 @@ func (b *PosixBackend) GetScreen(ctx context.Context, sessionID string) (string,
 	return entries[len(entries)-1].Message, nil
 }
 
-func (b *PosixBackend) ConnectSession(sessionID string) (cli.Client, error) {
+func (b *PosixBackend) ConnectSession(sessionID string) (host.Client, error) {
 	sock := b.socketPath(sessionID)
 	if _, err := os.Stat(sock); err != nil {
 		return nil, err
 	}
-	return cli.ConnectUnix(sessionID, sock)
+	return Connect(sessionID, sock)
 }
 
-func (b *PosixBackend) ConnectTTYSession(sessionID string) (cli.TTYClient, error) {
+func (b *PosixBackend) ConnectTTYSession(sessionID string) (host.TTYClient, error) {
 	sock := b.socketPath(sessionID)
 	if _, err := os.Stat(sock); err != nil {
 		return nil, err
 	}
-	return cli.ConnectUnixTTY(sessionID, sock)
+	return ConnectTTY(sessionID, sock)
 }
 
 // -----------------------------------------------------------------------------
@@ -655,7 +655,7 @@ func (b *PosixBackend) contextDir(contextID string) string {
 }
 
 func (b *PosixBackend) CreateContext(ctx context.Context) (string, string, error) {
-	contextID := cli.GenID()
+	contextID := host.GenID()
 	dir := b.contextDir(contextID)
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {

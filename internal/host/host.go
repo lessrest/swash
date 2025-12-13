@@ -16,7 +16,6 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
-	"github.com/mbrock/swash/internal/cli"
 	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/internal/protocol"
 )
@@ -75,8 +74,6 @@ func NewHost(cfg HostConfig) *Host {
 		executor:  execImpl,
 	}
 }
-
-type HostStatus = cli.HostStatus
 
 // Gist returns the current session status.
 func (h *Host) Gist() (HostStatus, error) {
@@ -190,7 +187,7 @@ func (h *Host) Run() error {
 	}
 	defer conn.Close()
 
-	busName := fmt.Sprintf("%s.%s", cli.DBusNamePrefix, h.sessionID)
+	busName := fmt.Sprintf("%s.%s", DBusNamePrefix, h.sessionID)
 	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
 	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
 		slog.Debug("Host.Run bus name request failed", "busName", busName, "error", err)
@@ -198,7 +195,7 @@ func (h *Host) Run() error {
 	}
 	slog.Debug("Host.Run acquired bus name", "busName", busName)
 
-	conn.ExportAll(h, dbus.ObjectPath(cli.DBusPath), cli.DBusNamePrefix)
+	conn.ExportAll(h, dbus.ObjectPath(DBusPath), DBusNamePrefix)
 
 	// Set up context that cancels on SIGTERM/SIGINT
 	ctx, cancel := context.WithCancel(context.Background())
@@ -225,7 +222,7 @@ func (h *Host) Run() error {
 	h.mu.Unlock()
 	if exitCode != nil {
 		slog.Debug("Host.Run emitting exit signal", "session", h.sessionID, "exitCode", *exitCode)
-		conn.Emit(dbus.ObjectPath(cli.DBusPath), cli.DBusNamePrefix+".Exited", int32(*exitCode))
+		conn.Emit(dbus.ObjectPath(DBusPath), DBusNamePrefix+".Exited", int32(*exitCode))
 	}
 
 	slog.Debug("Host.Run exiting", "session", h.sessionID)

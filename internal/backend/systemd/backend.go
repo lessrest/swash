@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/mbrock/swash/internal/backend"
-	"github.com/mbrock/swash/internal/cli"
 	"github.com/mbrock/swash/internal/graph"
+	"github.com/mbrock/swash/internal/host"
 	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/internal/protocol"
 	"github.com/mbrock/swash/pkg/oxigraph"
@@ -138,12 +138,12 @@ func (b *SystemdBackend) GetScreen(ctx context.Context, sessionID string) (strin
 
 // StartSession starts a new swash session with the given command and options.
 func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opts backend.SessionOptions) (string, error) {
-	sessionID := cli.GenID()
+	sessionID := host.GenID()
 	cwd := opts.WorkingDir
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
-	dbusName := fmt.Sprintf("%s.%s", cli.DBusNamePrefix, sessionID)
+	dbusName := fmt.Sprintf("%s.%s", host.DBusNamePrefix, sessionID)
 	cmdStr := strings.Join(command, " ")
 
 	// Resolve command[0] to absolute path so systemd can find it
@@ -169,7 +169,7 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 	serverCmd := append([]string{}, b.hostCommand...)
 	serverCmd = append(serverCmd,
 		"--session", sessionID,
-		"--command-json", cli.MustJSON(command),
+		"--command-json", host.MustJSON(command),
 	)
 
 	// Add protocol if not default (only for non-TTY mode)
@@ -179,7 +179,7 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 
 	// Add tags if present
 	if len(opts.Tags) > 0 {
-		serverCmd = append(serverCmd, "--tags-json", cli.MustJSON(opts.Tags))
+		serverCmd = append(serverCmd, "--tags-json", host.MustJSON(opts.Tags))
 	}
 
 	// Add TTY mode options
@@ -374,12 +374,12 @@ func (b *SystemdBackend) ListHistory(ctx context.Context) ([]backend.HistorySess
 	return sessions, nil
 }
 
-func (b *SystemdBackend) ConnectSession(sessionID string) (cli.Client, error) {
-	return cli.Connect(sessionID)
+func (b *SystemdBackend) ConnectSession(sessionID string) (host.Client, error) {
+	return Connect(sessionID)
 }
 
-func (b *SystemdBackend) ConnectTTYSession(sessionID string) (cli.TTYClient, error) {
-	return cli.ConnectTTY(sessionID)
+func (b *SystemdBackend) ConnectTTYSession(sessionID string) (host.TTYClient, error) {
+	return ConnectTTY(sessionID)
 }
 
 func unitNameStringForRef(ref ProcessRef) string {
@@ -400,7 +400,7 @@ func (b *SystemdBackend) contextDir(stateDir, contextID string) string {
 }
 
 func (b *SystemdBackend) CreateContext(ctx context.Context) (string, string, error) {
-	contextID := cli.GenID()
+	contextID := host.GenID()
 
 	// Get state directory - we need to look it up since systemd backend doesn't store cfg
 	stateDir := defaultStateDir()

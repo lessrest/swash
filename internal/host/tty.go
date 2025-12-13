@@ -14,7 +14,6 @@ import (
 	"github.com/creack/pty"
 	"github.com/godbus/dbus/v5"
 
-	"github.com/mbrock/swash/internal/cli"
 	"github.com/mbrock/swash/internal/journal"
 	"github.com/mbrock/swash/pkg/vterm"
 )
@@ -773,13 +772,13 @@ func (h *TTYHost) Run() error {
 	}
 	defer conn.Close()
 
-	busName := fmt.Sprintf("%s.%s", cli.DBusNamePrefix, h.sessionID)
+	busName := fmt.Sprintf("%s.%s", DBusNamePrefix, h.sessionID)
 	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
 	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
 		return fmt.Errorf("requesting bus name: %w", err)
 	}
 
-	conn.ExportAll(h, dbus.ObjectPath(cli.DBusPath), cli.DBusNamePrefix)
+	conn.ExportAll(h, dbus.ObjectPath(DBusPath), DBusNamePrefix)
 
 	// Set up context that cancels on SIGTERM/SIGINT
 	ctx, cancel := context.WithCancel(context.Background())
@@ -803,7 +802,7 @@ func (h *TTYHost) Run() error {
 	exitCode := h.exitCode
 	h.mu.Unlock()
 	if exitCode != nil {
-		conn.Emit(dbus.ObjectPath(cli.DBusPath), cli.DBusNamePrefix+".Exited", int32(*exitCode))
+		conn.Emit(dbus.ObjectPath(DBusPath), DBusNamePrefix+".Exited", int32(*exitCode))
 	}
 
 	return err
