@@ -27,6 +27,7 @@ import (
 
 	flag "github.com/spf13/pflag"
 
+	"github.com/mbrock/swash/internal/attach"
 	"github.com/mbrock/swash/internal/backend"
 	_ "github.com/mbrock/swash/internal/backend/all"
 	"github.com/mbrock/swash/internal/host"
@@ -449,7 +450,7 @@ func cmdRunTTY(command []string) {
 	initBackend()
 	defer bk.Close()
 
-	rows, cols := GetContentSize()
+	rows, cols := attach.GetContentSize()
 	opts := backend.SessionOptions{
 		Protocol:  protocol.Protocol(protocolFlag),
 		Tags:      parseTags(tagFlags),
