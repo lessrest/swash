@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -17,9 +18,13 @@ import (
 	"sync"
 	"syscall"
 
+	"golang.org/x/sys/unix"
+
 	"swa.sh/internal/dirs"
 	"swa.sh/pkg/journalfile"
 )
+
+const maxPassedEntrySize = 16 << 20
 
 // Daemon is a minimal journald-compatible log daemon.
 type Daemon struct {
@@ -156,6 +161,7 @@ func (d *Daemon) readLoop() {
 	slog.Debug("journald read loop starting")
 
 	buf := make([]byte, 64*1024) // journald uses 64KB max
+	oob := make([]byte, unix.CmsgSpace(4))
 	entryCount := 0
 
 	for {
@@ -166,7 +172,7 @@ func (d *Daemon) readLoop() {
 		default:
 		}
 
-		n, _, err := d.conn.ReadFromUnix(buf)
+		n, oobn, _, _, err := d.conn.ReadMsgUnix(buf, oob)
 		if err != nil {
 			// Check if we're shutting down
 			select {
@@ -180,7 +186,16 @@ func (d *Daemon) readLoop() {
 			continue
 		}
 
-		fields, err := parseJournalMessage(buf[:n])
+		data := buf[:n]
+		if oobn > 0 {
+			data, err = readPassedEntry(oob[:oobn])
+			if err != nil {
+				slog.Warn("journald passed-entry error", "error", err)
+				continue
+			}
+		}
+
+		fields, err := parseJournalMessage(data)
 		if err != nil {
 			slog.Warn("journald parse error", "error", err)
 			continue
@@ -212,6 +227,36 @@ func (d *Daemon) readLoop() {
 		}
 		d.mu.Unlock()
 	}
+}
+
+func readPassedEntry(oob []byte) ([]byte, error) {
+	messages, err := unix.ParseSocketControlMessage(oob)
+	if err != nil {
+		return nil, fmt.Errorf("parsing socket control message: %w", err)
+	}
+	for i := range messages {
+		fds, err := unix.ParseUnixRights(&messages[i])
+		if err != nil {
+			continue
+		}
+		for _, fd := range fds {
+			file := os.NewFile(uintptr(fd), "passed-journal-entry")
+			if file == nil {
+				unix.Close(fd)
+				continue
+			}
+			data, readErr := io.ReadAll(io.LimitReader(file, maxPassedEntrySize+1))
+			file.Close()
+			if readErr != nil {
+				return nil, fmt.Errorf("reading passed journal entry: %w", readErr)
+			}
+			if len(data) > maxPassedEntrySize {
+				return nil, fmt.Errorf("passed journal entry exceeds %d bytes", maxPassedEntrySize)
+			}
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("socket message contained no file descriptor")
 }
 
 // truncate returns at most n characters of s, adding "..." if truncated.

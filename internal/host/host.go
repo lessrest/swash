@@ -13,12 +13,15 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 
 	"swa.sh/internal/journal"
 	"swa.sh/internal/protocol"
 )
+
+const taskTerminationGrace = 2 * time.Second
 
 // Host is the D-Bus host for a swash session.
 type Host struct {
@@ -107,7 +110,7 @@ func (h *Host) SendInput(data string) (int, error) {
 	return stdin.Write([]byte(data))
 }
 
-// Kill sends SIGKILL to the task process.
+// Kill sends SIGKILL to the task process session.
 // This should only be used for restart; for shutdown use GracefulKill.
 func (h *Host) Kill() error {
 	slog.Debug("Host.Kill called", "session", h.sessionID)
@@ -122,10 +125,9 @@ func (h *Host) Kill() error {
 	return proc.Kill()
 }
 
-// GracefulKill sends SIGTERM to the task process and waits for it to exit.
-// The doneChan should signal when the process has exited.
-// This allows the child process to flush coverage data before exiting.
-func (h *Host) GracefulKill(doneChan <-chan struct{}) {
+// GracefulKill sends SIGTERM to the task process session. The caller decides
+// how long to wait before escalating, allowing cooperative tasks to flush.
+func (h *Host) GracefulKill() {
 	slog.Debug("Host.GracefulKill called", "session", h.sessionID)
 	h.mu.Lock()
 	proc := h.proc
@@ -136,7 +138,22 @@ func (h *Host) GracefulKill(doneChan <-chan struct{}) {
 	}
 	slog.Debug("Host.GracefulKill sending SIGTERM")
 	proc.Signal(syscall.SIGTERM)
-	// Wait for process to exit - the caller will handle timeout via doneChan
+}
+
+func (h *Host) terminateTask(doneChan <-chan struct{}) {
+	h.GracefulKill()
+	select {
+	case <-doneChan:
+		return
+	case <-time.After(taskTerminationGrace):
+		slog.Warn("task ignored SIGTERM; sending SIGKILL to process session",
+			"session", h.sessionID)
+		_ = h.Kill()
+		// A deliberately escaped descendant may still hold an inherited pipe.
+		// Stop waiting for output after the owned process session has been killed.
+		h.closePipes()
+		<-doneChan
+	}
 }
 
 // closePipes closes the pipe read ends to unblock any readers.
@@ -274,11 +291,8 @@ func (h *Host) RunTask(ctx context.Context) error {
 			// Loop continues to start new task
 		case <-ctx.Done():
 			slog.Debug("Host.RunTask context done, gracefully killing task", "session", h.sessionID)
-			h.GracefulKill(doneChan)
-			// Close pipes to unblock readers so doneChan can complete
-			h.closePipes()
-			<-doneChan
-			slog.Debug("Host.RunTask task exited after SIGTERM", "session", h.sessionID)
+			h.terminateTask(doneChan)
+			slog.Debug("Host.RunTask task tree terminated", "session", h.sessionID)
 			return ctx.Err()
 		}
 	}

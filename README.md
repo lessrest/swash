@@ -62,7 +62,11 @@ systemd-specific components:
 
 - **Control**: Unix domain socket instead of D-Bus
 - **Output**: Single shared journal file via `swash minijournald` daemon (native systemd format, readable by `journalctl --file=...`)
-- **Process management**: Direct fork/exec with POSIX signals instead of transient units
+- **Process management**: Each task starts as a new POSIX session. On Linux and
+  macOS, stop/restart/kill sweep every process still in that session, including
+  descendants that created their own process groups. A descendant that calls
+  `setsid` deliberately escapes Swash's ownership boundary. Other POSIX systems
+  retain process-group signaling as the portable fallback.
 
 To use the posix backend explicitly: `SWASH_BACKEND=posix swash run ...`
 

@@ -3,15 +3,21 @@ package journal
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // DefaultSocketPath is the standard journald socket location.
 const DefaultSocketPath = "/run/systemd/journal/socket"
+
+const portableDatagramLimit = 1800
 
 // SocketSink implements EventSink by writing to a journald-compatible socket.
 // This works with both real journald and mini-journal.
@@ -50,7 +56,14 @@ func (s *SocketSink) Write(message string, fields map[string]string) error {
 	// Build the datagram
 	data := s.encodeEntry(message, fields)
 
+	if len(data) > portableDatagramLimit && s.socketPath != DefaultSocketPath {
+		return s.writeLargeEntry(data)
+	}
+
 	_, err := s.conn.Write(data)
+	if errors.Is(err, syscall.EMSGSIZE) && s.socketPath != DefaultSocketPath {
+		return s.writeLargeEntry(data)
+	}
 	if err != nil {
 		// Connection may have gone stale, close and let next write reconnect
 		s.conn.Close()
@@ -58,6 +71,44 @@ func (s *SocketSink) Write(message string, fields map[string]string) error {
 		return fmt.Errorf("writing to journal socket: %w", err)
 	}
 
+	return nil
+}
+
+// writeLargeEntry passes an unlinked file descriptor to Swash's portable
+// journal daemon. Local datagrams are capped at 2048 bytes on macOS, which is
+// too small for terminal snapshots. The system journal's equivalent is memfd.
+func (s *SocketSink) writeLargeEntry(data []byte) error {
+	entry, err := os.CreateTemp("", ".swash-journal-entry-*")
+	if err != nil {
+		return fmt.Errorf("creating large journal entry: %w", err)
+	}
+	name := entry.Name()
+	defer entry.Close()
+	_ = os.Remove(name)
+
+	if _, err := entry.Write(data); err != nil {
+		return fmt.Errorf("writing large journal entry: %w", err)
+	}
+	if _, err := entry.Seek(0, 0); err != nil {
+		return fmt.Errorf("rewinding large journal entry: %w", err)
+	}
+
+	rights := unix.UnixRights(int(entry.Fd()))
+	rawConn, err := s.conn.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("accessing journal socket: %w", err)
+	}
+	var sendErr error
+	if err := rawConn.Control(func(fd uintptr) {
+		_, sendErr = unix.SendmsgN(int(fd), []byte{0}, rights, nil, 0)
+	}); err != nil {
+		return fmt.Errorf("accessing journal socket descriptor: %w", err)
+	}
+	if sendErr != nil {
+		s.conn.Close()
+		s.conn = nil
+		return fmt.Errorf("passing large journal entry: %w", sendErr)
+	}
 	return nil
 }
 

@@ -37,6 +37,7 @@ type ExecExecutor struct{}
 // execProcess wraps exec.Cmd to implement Process.
 type execProcess struct {
 	cmd *exec.Cmd
+	sid int
 }
 
 func (p *execProcess) Wait() (int, error) {
@@ -51,21 +52,21 @@ func (p *execProcess) Wait() (int, error) {
 }
 
 func (p *execProcess) Kill() error {
-	if p.cmd.Process == nil {
+	if p.sid <= 0 {
 		slog.Debug("execProcess.Kill no process")
 		return nil
 	}
-	slog.Warn("execProcess.Kill sending SIGKILL", "pid", p.cmd.Process.Pid)
-	return p.cmd.Process.Kill()
+	slog.Warn("execProcess.Kill sending SIGKILL to process session", "sid", p.sid)
+	return signalProcessSession(p.sid, syscall.SIGKILL)
 }
 
 func (p *execProcess) Signal(sig syscall.Signal) error {
-	if p.cmd.Process == nil {
+	if p.sid <= 0 {
 		slog.Debug("execProcess.Signal no process", "signal", sig)
 		return nil
 	}
-	slog.Debug("execProcess.Signal", "pid", p.cmd.Process.Pid, "signal", sig)
-	return p.cmd.Process.Signal(sig)
+	slog.Debug("execProcess.Signal process session", "sid", p.sid, "signal", sig)
+	return signalProcessSession(p.sid, sig)
 }
 
 // Start implements Executor.Start using os/exec.
@@ -75,6 +76,10 @@ func (e *ExecExecutor) Start(cmdArgs []string, stdin io.Reader, stdout, stderr i
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	// A task is one killable ownership domain. Descendants inherit this new
+	// session even if they create additional process groups. Calling setsid
+	// deliberately escapes that domain.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
 		slog.Debug("ExecExecutor.Start failed", "error", err)
@@ -82,7 +87,7 @@ func (e *ExecExecutor) Start(cmdArgs []string, stdin io.Reader, stdout, stderr i
 	}
 
 	slog.Debug("ExecExecutor.Start success", "pid", cmd.Process.Pid)
-	return &execProcess{cmd: cmd}, nil
+	return &execProcess{cmd: cmd, sid: cmd.Process.Pid}, nil
 }
 
 // StartPTY implements Executor.StartPTY using os/exec with PTY setup.
@@ -104,7 +109,7 @@ func (e *ExecExecutor) StartPTY(cmdArgs []string, slave *os.File) (Process, erro
 	}
 
 	slog.Debug("ExecExecutor.StartPTY success", "pid", cmd.Process.Pid)
-	return &execProcess{cmd: cmd}, nil
+	return &execProcess{cmd: cmd, sid: cmd.Process.Pid}, nil
 }
 
 // Default returns the default ExecExecutor.

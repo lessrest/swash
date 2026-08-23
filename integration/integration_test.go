@@ -430,9 +430,9 @@ func TestMain(m *testing.M) {
 
 func TestSwashStart(t *testing.T) {
 	runTest(t, func(t *testing.T, e *testEnv) {
-		stdout, _, err := e.runSwash("start", "echo", "hello")
+		stdout, stderr, err := e.runSwash("start", "echo", "hello")
 		if err != nil {
-			t.Fatalf("swash start failed: %v", err)
+			t.Fatalf("swash start failed: %v\nstderr: %s", err, stderr)
 		}
 
 		if !strings.Contains(stdout, "started") {
@@ -497,9 +497,9 @@ func TestTTYModeOutput(t *testing.T) {
 		e.runSwash("follow", sessionID)
 
 		// Check screen output - should work even after session ended
-		screenOut, _, err := e.runSwash("screen", sessionID)
+		screenOut, screenErr, err := e.runSwash("screen", sessionID)
 		if err != nil {
-			t.Fatalf("screen command failed: %v", err)
+			t.Fatalf("screen command failed: %v\nstderr: %s", err, screenErr)
 		}
 
 		if !strings.Contains(screenOut, "TTY_TEST_OUTPUT") {
@@ -819,7 +819,10 @@ func TestContextWorkingDirectory(t *testing.T) {
 		if err != nil {
 			t.Fatalf("swash run pwd failed: %v", err)
 		}
-		if strings.TrimSpace(stdout) != contextDir {
+		actualDir := strings.TrimSpace(stdout)
+		expectedInfo, expectedErr := os.Stat(contextDir)
+		actualInfo, actualErr := os.Stat(actualDir)
+		if expectedErr != nil || actualErr != nil || !os.SameFile(expectedInfo, actualInfo) {
 			t.Errorf("expected working dir %s, got: %s", contextDir, stdout)
 		}
 	})

@@ -2,6 +2,7 @@ package posix
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"iter"
@@ -20,6 +21,23 @@ import (
 	"swa.sh/internal/journal"
 	"swa.sh/pkg/oxigraph"
 )
+
+const conservativeUnixSocketPathLimit = 100
+
+func unixSocketPath(runtimeDir, name string) string {
+	candidate := filepath.Join(runtimeDir, name)
+	if len(candidate) <= conservativeUnixSocketPathLimit {
+		return candidate
+	}
+
+	sum := sha256.Sum256([]byte(runtimeDir))
+	shortName := fmt.Sprintf("swash-%x-%s", sum[:6], name)
+	candidate = filepath.Join(os.TempDir(), shortName)
+	if len(candidate) <= conservativeUnixSocketPathLimit {
+		return candidate
+	}
+	return filepath.Join("/tmp", shortName)
+}
 
 func init() {
 	backend.Register(backend.KindPosix, Open)
@@ -173,7 +191,11 @@ func (b *PosixBackend) metaPath(sessionID string) string {
 }
 
 func (b *PosixBackend) socketPath(sessionID string) string {
-	return filepath.Join(b.sessionDir(sessionID), "control.sock")
+	return unixSocketPath(b.cfg.RuntimeDir, sessionID+".sock")
+}
+
+func (b *PosixBackend) hostLogPath(sessionID string) string {
+	return filepath.Join(b.sessionDir(sessionID), "host.log")
 }
 
 func (b *PosixBackend) readMeta(sessionID string) (*meta, error) {
@@ -376,21 +398,30 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	)
 
 	devNull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	hostLog, logErr := os.OpenFile(b.hostLogPath(sessionID), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if logErr != nil {
+		if devNull != nil {
+			devNull.Close()
+		}
+		return "", fmt.Errorf("opening host startup log: %w", logErr)
+	}
 	if devNull != nil {
 		cmd.Stdin = devNull
-		cmd.Stdout = devNull
-		cmd.Stderr = devNull
 	}
+	cmd.Stdout = hostLog
+	cmd.Stderr = hostLog
 
 	if err := cmd.Start(); err != nil {
 		if devNull != nil {
 			devNull.Close()
 		}
+		hostLog.Close()
 		return "", err
 	}
 	if devNull != nil {
 		devNull.Close()
 	}
+	hostLog.Close()
 
 	m := meta{
 		ID:         sessionID,
@@ -407,6 +438,9 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 
 	// Wait for the control socket to appear and respond.
 	if err := b.waitReady(ctx, sessionID, cmd.Process.Pid, socketPath); err != nil {
+		if raw, readErr := os.ReadFile(b.hostLogPath(sessionID)); readErr == nil && len(raw) > 0 {
+			return "", fmt.Errorf("%w; host log: %s", err, strings.TrimSpace(string(raw)))
+		}
 		return "", err
 	}
 
