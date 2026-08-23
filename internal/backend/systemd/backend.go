@@ -302,7 +302,7 @@ func (b *SystemdBackend) FollowSession(ctx context.Context, sessionID string, ti
 		defer cancel()
 	}
 
-	for e := range b.events.Follow(ctx, filters) {
+	for e := range b.events.Follow(ctx, filters, "") {
 		// Check for exit event
 		if e.Fields[journal.FieldEvent] == journal.EventExited {
 			exitCode := 0
@@ -568,10 +568,18 @@ func (b *SystemdBackend) PollLifecycleEvents(ctx context.Context, cursor string)
 
 func (b *SystemdBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[journal.EventRecord] {
 	filters := journal.LifecycleEventFilters()
-	return b.events.Follow(ctx, filters)
+	return b.events.Follow(ctx, filters, "")
 }
 
 func (b *SystemdBackend) EmitSessionEvent(ctx context.Context, sessionID, event, message string, fields map[string]string) error {
 	_ = ctx
 	return journal.EmitSessionEvent(b.events, sessionID, event, message, fields)
+}
+
+func (b *SystemdBackend) PollEvents(ctx context.Context, filters []backend.EventFilter, cursor string) ([]journal.EventRecord, string, error) {
+	return b.events.Poll(ctx, filters, cursor)
+}
+
+func (b *SystemdBackend) FollowEvents(ctx context.Context, filters []backend.EventFilter, cursor string) iter.Seq[journal.EventRecord] {
+	return b.events.Follow(ctx, filters, cursor)
 }

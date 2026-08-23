@@ -55,8 +55,9 @@ type EventSource interface {
 	// Poll reads entries matching filters since cursor.
 	Poll(ctx context.Context, filters []EventFilter, cursor string) ([]EventRecord, string, error)
 
-	// Follow returns an iterator over entries matching filters.
-	Follow(ctx context.Context, filters []EventFilter) iter.Seq[EventRecord]
+	// Follow returns entries matching filters after cursor, then waits for new
+	// ones. An empty cursor starts at the journal head.
+	Follow(ctx context.Context, filters []EventFilter, cursor string) iter.Seq[EventRecord]
 
 	// Close releases any resources.
 	Close() error

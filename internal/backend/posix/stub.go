@@ -607,7 +607,7 @@ func (b *PosixBackend) FollowSession(ctx context.Context, sessionID string, time
 		defer cancel()
 	}
 
-	for e := range el.Follow(ctx, filters) {
+	for e := range el.Follow(ctx, filters, "") {
 		if e.Fields[journal.FieldEvent] == journal.EventExited {
 			exitCode := 0
 			if codeStr := e.Fields[journal.FieldExitCode]; codeStr != "" {
@@ -902,7 +902,7 @@ func (b *PosixBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[journ
 		return func(yield func(journal.EventRecord) bool) {}
 	}
 	filters := journal.LifecycleEventFilters()
-	return log.Follow(ctx, filters)
+	return log.Follow(ctx, filters, "")
 }
 
 func (b *PosixBackend) EmitSessionEvent(ctx context.Context, sessionID, event, message string, fields map[string]string) error {
@@ -911,4 +911,20 @@ func (b *PosixBackend) EmitSessionEvent(ctx context.Context, sessionID, event, m
 		return err
 	}
 	return journal.EmitSessionEvent(log, sessionID, event, message, fields)
+}
+
+func (b *PosixBackend) PollEvents(ctx context.Context, filters []backend.EventFilter, cursor string) ([]journal.EventRecord, string, error) {
+	log, err := b.ensureSharedLog(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	return log.Poll(ctx, filters, cursor)
+}
+
+func (b *PosixBackend) FollowEvents(ctx context.Context, filters []backend.EventFilter, cursor string) iter.Seq[journal.EventRecord] {
+	log, err := b.ensureSharedLog(ctx)
+	if err != nil {
+		return func(yield func(journal.EventRecord) bool) {}
+	}
+	return log.Follow(ctx, filters, cursor)
 }

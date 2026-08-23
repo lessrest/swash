@@ -3,8 +3,10 @@
 package integration
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -479,6 +481,125 @@ func TestEmitSemanticEvent(t *testing.T) {
 		}
 		if strings.TrimSpace(port) != "Slynk is ready" {
 			t.Fatalf("emitted port event message = %q", port)
+		}
+
+		eventsJSON, eventsErr, err := e.runSwash(
+			"events", "--session", sessionID,
+			"--event", "slynk-ready",
+			"--field", "LUV_ROOT=/work/luv",
+			"--json",
+		)
+		if err != nil {
+			t.Fatalf("swash events failed: %v\nstderr: %s", err, eventsErr)
+		}
+		var readyEvent struct {
+			Cursor  string            `json:"cursor"`
+			Message string            `json:"message"`
+			Fields  map[string]string `json:"fields"`
+		}
+		if err := json.Unmarshal([]byte(eventsJSON), &readyEvent); err != nil {
+			t.Fatalf("decoding events JSON %q: %v", eventsJSON, err)
+		}
+		if readyEvent.Cursor == "" || readyEvent.Message != "Slynk is ready" || readyEvent.Fields["LUV_SLYNK_PORT"] != "4172" {
+			t.Fatalf("unexpected ready event: %#v", readyEvent)
+		}
+
+		_, stderr, err = e.runSwash(
+			"emit", sessionID,
+			"--event", "eval-completed",
+			"--field", "LUV_PACKAGE=CL-USER",
+		)
+		if err != nil {
+			t.Fatalf("second swash emit failed: %v\nstderr: %s", err, stderr)
+		}
+		afterJSON, afterErr, err := e.runSwash(
+			"events", "--session", sessionID,
+			"--cursor", readyEvent.Cursor,
+			"--json",
+		)
+		if err != nil {
+			t.Fatalf("cursor query failed: %v\nstderr: %s", err, afterErr)
+		}
+		var afterEvent struct {
+			Message string            `json:"message"`
+			Fields  map[string]string `json:"fields"`
+		}
+		if err := json.Unmarshal([]byte(afterJSON), &afterEvent); err != nil {
+			t.Fatalf("decoding cursor query %q: %v", afterJSON, err)
+		}
+		if afterEvent.Fields["SWASH_EVENT"] != "eval-completed" || afterEvent.Fields["LUV_PACKAGE"] != "CL-USER" {
+			t.Fatalf("unexpected event after cursor: %#v", afterEvent)
+		}
+
+		lastJSON, lastErr, err := e.runSwash(
+			"events", "--session", sessionID,
+			"--last", "1",
+			"--json",
+		)
+		if err != nil {
+			t.Fatalf("last-event query failed: %v\nstderr: %s", err, lastErr)
+		}
+		var lastEvent struct {
+			Fields map[string]string `json:"fields"`
+		}
+		if err := json.Unmarshal([]byte(lastJSON), &lastEvent); err != nil {
+			t.Fatalf("decoding last-event query %q: %v", lastJSON, err)
+		}
+		if lastEvent.Fields["SWASH_EVENT"] != "eval-completed" {
+			t.Fatalf("last event = %#v", lastEvent)
+		}
+
+		followID := sessionID + "F"
+		followCtx, cancelFollow := context.WithCancel(context.Background())
+		defer cancelFollow()
+		followCmd := exec.CommandContext(
+			followCtx, e.swashBin,
+			"events", "--session", followID, "--follow", "--json",
+		)
+		followCmd.Env = e.getEnvVars()
+		followOut, err := followCmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var followErr bytes.Buffer
+		followCmd.Stderr = &followErr
+		if err := followCmd.Start(); err != nil {
+			t.Fatalf("starting event follower: %v", err)
+		}
+		lineCh := make(chan string, 1)
+		go func() {
+			line, _ := bufio.NewReader(followOut).ReadString('\n')
+			lineCh <- line
+		}()
+
+		_, stderr, err = e.runSwash(
+			"emit", followID,
+			"--event", "health",
+			"--field", "LUV_HEALTH=ready",
+		)
+		if err != nil {
+			cancelFollow()
+			followCmd.Wait()
+			t.Fatalf("emit for follower failed: %v\nstderr: %s", err, stderr)
+		}
+
+		select {
+		case line := <-lineCh:
+			cancelFollow()
+			_ = followCmd.Wait()
+			var followed struct {
+				Fields map[string]string `json:"fields"`
+			}
+			if err := json.Unmarshal([]byte(line), &followed); err != nil {
+				t.Fatalf("decoding followed event %q: %v", line, err)
+			}
+			if followed.Fields["SWASH_EVENT"] != "health" || followed.Fields["LUV_HEALTH"] != "ready" {
+				t.Fatalf("unexpected followed event: %#v", followed)
+			}
+		case <-time.After(2 * time.Second):
+			cancelFollow()
+			_ = followCmd.Wait()
+			t.Fatalf("timed out following semantic event; stderr: %s", followErr.String())
 		}
 	})
 }

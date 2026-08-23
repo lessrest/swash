@@ -99,7 +99,7 @@ func (s *SDJournalSource) Poll(ctx context.Context, filters []EventFilter, curso
 // Follow returns an iterator over entries matching filters.
 // Uses the file descriptor-based API for efficient, non-blocking waits
 // that integrate properly with Go's runtime scheduler.
-func (s *SDJournalSource) Follow(ctx context.Context, filters []EventFilter) iter.Seq[EventRecord] {
+func (s *SDJournalSource) Follow(ctx context.Context, filters []EventFilter, cursor string) iter.Seq[EventRecord] {
 	return func(yield func(EventRecord) bool) {
 		// Apply matches
 		s.journal.FlushMatches()
@@ -109,7 +109,13 @@ func (s *SDJournalSource) Follow(ctx context.Context, filters []EventFilter) ite
 			}
 		}
 
-		s.journal.SeekHead()
+		if cursor == "" {
+			s.journal.SeekHead()
+		} else if err := s.journal.SeekCursor(cursor); err == nil {
+			s.journal.Next() // Skip the cursor entry itself.
+		} else {
+			s.journal.SeekHead()
+		}
 
 		// Get the journal file descriptor for polling
 		fd, err := s.journal.GetFD()

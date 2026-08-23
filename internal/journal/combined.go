@@ -68,8 +68,8 @@ func (c *CombinedEventLog) Poll(ctx context.Context, filters []EventFilter, curs
 }
 
 // Follow returns an iterator over entries matching filters.
-func (c *CombinedEventLog) Follow(ctx context.Context, filters []EventFilter) iter.Seq[EventRecord] {
-	return c.source.Follow(ctx, filters)
+func (c *CombinedEventLog) Follow(ctx context.Context, filters []EventFilter, cursor string) iter.Seq[EventRecord] {
+	return c.source.Follow(ctx, filters, cursor)
 }
 
 // Close releases resources from both sink and source.

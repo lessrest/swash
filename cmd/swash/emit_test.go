@@ -19,6 +19,28 @@ func TestParseEventFields(t *testing.T) {
 	}
 }
 
+func TestParseEventFiltersAllowsReservedQueryFields(t *testing.T) {
+	filters, err := parseEventFilters([]string{
+		"SWASH_SESSION=LISP01",
+		"SWASH_EVENT=slynk-ready",
+		"_PID=123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(filters) != 3 || filters[0].Value != "LISP01" || filters[1].Value != "slynk-ready" || filters[2].Value != "123" {
+		t.Fatalf("unexpected filters: %#v", filters)
+	}
+}
+
+func TestParseEventFiltersRejectsMalformedFields(t *testing.T) {
+	for _, value := range []string{"lower=value", "MISSING_EQUALS"} {
+		if _, err := parseEventFilters([]string{value}); err == nil {
+			t.Fatalf("parseEventFilters(%q) succeeded", value)
+		}
+	}
+}
+
 func TestParseEventFieldsRejectsReservedAndMalformedNames(t *testing.T) {
 	for _, value := range []string{
 		"SWASH_SESSION=wrong",

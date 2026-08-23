@@ -81,7 +81,7 @@ func (s *JournalfileSource) Poll(ctx context.Context, filters []EventFilter, cur
 
 // Follow returns an iterator over entries matching filters.
 // Uses the Reader's Wait method for efficient file change detection.
-func (s *JournalfileSource) Follow(ctx context.Context, filters []EventFilter) iter.Seq[EventRecord] {
+func (s *JournalfileSource) Follow(ctx context.Context, filters []EventFilter, cursor string) iter.Seq[EventRecord] {
 	return func(yield func(EventRecord) bool) {
 		slog.Debug("JournalfileSource.Follow starting", "path", s.path, "filters", len(filters))
 
@@ -91,7 +91,11 @@ func (s *JournalfileSource) Follow(ctx context.Context, filters []EventFilter) i
 			s.reader.AddMatch(f.Field, f.Value)
 		}
 
-		s.reader.SeekHead()
+		if cursor == "" {
+			s.reader.SeekHead()
+		} else if err := s.reader.SeekCursor(cursor); err != nil {
+			s.reader.SeekHead()
+		}
 
 		for {
 			entry, err := s.reader.Next()

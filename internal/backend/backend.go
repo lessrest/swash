@@ -53,6 +53,8 @@ type Backend interface {
 	// EmitSessionEvent appends structured application state independently of
 	// process output.
 	EmitSessionEvent(ctx context.Context, sessionID, event, message string, fields map[string]string) error
+	PollEvents(ctx context.Context, filters []EventFilter, cursor string) ([]journal.EventRecord, string, error)
+	FollowEvents(ctx context.Context, filters []EventFilter, cursor string) iter.Seq[journal.EventRecord]
 
 	PollSessionOutput(ctx context.Context, sessionID, cursor string) ([]Event, string, error)
 	FollowSession(ctx context.Context, sessionID string, timeout time.Duration, outputLimit int) (exitCode int, result FollowResult)

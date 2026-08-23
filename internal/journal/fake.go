@@ -102,9 +102,19 @@ func (f *FakeJournal) Poll(ctx context.Context, matches []EventFilter, cursor st
 }
 
 // Follow returns an iterator over entries matching filters.
-func (f *FakeJournal) Follow(ctx context.Context, matches []EventFilter) iter.Seq[EventRecord] {
+func (f *FakeJournal) Follow(ctx context.Context, matches []EventFilter, cursor string) iter.Seq[EventRecord] {
 	return func(yield func(EventRecord) bool) {
 		idx := 0
+		if cursor != "" {
+			f.mu.RLock()
+			for i, entry := range f.entries {
+				if entry.Cursor == cursor {
+					idx = i + 1
+					break
+				}
+			}
+			f.mu.RUnlock()
+		}
 		for {
 			select {
 			case <-ctx.Done():

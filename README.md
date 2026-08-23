@@ -173,6 +173,19 @@ with `--field`. Field names use the journal's uppercase `KEY=VALUE` convention.
 Semantic events are append-only application state: consumers can reconstruct a
 current view by folding the events for a session in timestamp order.
 
+Query the same events portably with exact field filters:
+
+```bash
+swash events --session ABC123 --event slynk-ready
+swash events --field LUV_ROOT=/work/luv --last 10 --json
+swash events --session ABC123 --cursor 's=42;...' --follow --json
+```
+
+`--json` emits one object per line, including the event cursor. `--cursor`
+resumes strictly after that event, and `--follow` continues waiting after
+existing matches have been printed. An unfiltered query requires explicit
+`--all`, since the systemd backend may otherwise expose the entire user journal.
+
 ### Contexts
 
 Contexts group related sessions with a shared working directory. This is useful
