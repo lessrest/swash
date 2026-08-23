@@ -1,6 +1,7 @@
 package journalfile
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -414,6 +415,108 @@ func TestReaderFiltering(t *testing.T) {
 	if len(messages) >= 2 {
 		if messages[0] != "a1" || messages[1] != "a2" {
 			t.Errorf("Wrong messages: %v", messages)
+		}
+	}
+}
+
+func TestReaderFilteringDecodesEachEntryOnce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.journal")
+
+	var machineID, bootID ID128
+	copy(machineID[:], []byte("0123456789abcdef"))
+	copy(bootID[:], []byte("fedcba9876543210"))
+
+	jf, err := Create(path, machineID, bootID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const entryCount = 128
+	for i := range entryCount {
+		if err := jf.AppendEntry(map[string]string{
+			"MESSAGE": fmt.Sprintf("entry-%d", i),
+		}); err != nil {
+			t.Fatalf("AppendEntry %d: %v", i, err)
+		}
+	}
+	if err := jf.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	r, err := OpenRead(path)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	defer r.Close()
+	r.AddMatch("SWASH_EVENT", "does-not-exist")
+
+	if _, err := r.Next(); err != io.EOF {
+		t.Fatalf("Next: got %v, want io.EOF", err)
+	}
+	if r.decodedEntries != entryCount {
+		t.Fatalf("decoded %d entries while scanning %d; reader rescanned entries",
+			r.decodedEntries, entryCount)
+	}
+}
+
+func TestReaderRefreshContinuesFromTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.journal")
+
+	var machineID, bootID ID128
+	copy(machineID[:], []byte("0123456789abcdef"))
+	copy(bootID[:], []byte("fedcba9876543210"))
+
+	jf, err := Create(path, machineID, bootID)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer jf.Close()
+	for i := range 16 {
+		if err := jf.AppendEntry(map[string]string{
+			"MESSAGE": fmt.Sprintf("entry-%d", i),
+		}); err != nil {
+			t.Fatalf("AppendEntry %d: %v", i, err)
+		}
+	}
+	if err := jf.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	r, err := OpenRead(path)
+	if err != nil {
+		t.Fatalf("OpenRead: %v", err)
+	}
+	defer r.Close()
+	for range 16 {
+		if _, err := r.Next(); err != nil {
+			t.Fatalf("Next initial entries: %v", err)
+		}
+	}
+	if _, err := r.Next(); err != io.EOF {
+		t.Fatalf("Next at initial tail: got %v, want io.EOF", err)
+	}
+
+	for _, message := range []string{"new-array", "same-array"} {
+		if err := jf.AppendEntry(map[string]string{"MESSAGE": message}); err != nil {
+			t.Fatalf("AppendEntry %q: %v", message, err)
+		}
+		if err := jf.Sync(); err != nil {
+			t.Fatalf("Sync %q: %v", message, err)
+		}
+		if err := r.Refresh(); err != nil {
+			t.Fatalf("Refresh %q: %v", message, err)
+		}
+		entry, err := r.Next()
+		if err != nil {
+			t.Fatalf("Next %q: %v", message, err)
+		}
+		if got := entry.Fields["MESSAGE"]; got != message {
+			t.Fatalf("Next after refresh: got %q, want %q", got, message)
+		}
+		if _, err := r.Next(); err != io.EOF {
+			t.Fatalf("Next after %q: got %v, want io.EOF", message, err)
 		}
 	}
 }

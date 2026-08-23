@@ -23,8 +23,15 @@ type Reader struct {
 	path   string
 	header Header
 
-	// Current position for iteration
-	currentSeqnum uint64
+	// Current logical and physical positions for iteration. Entry arrays are
+	// cached so advancing to the next entry does not rescan the journal head.
+	currentSeqnum        uint64
+	entryArrayOffset     uint64
+	entryArrayEntries    []uint64
+	entryArrayIndex      int
+	nextEntryArrayOffset uint64
+	iterationInitialized bool
+	decodedEntries       uint64
 
 	// Filters (field=value pairs that must match)
 	matches []match
@@ -94,6 +101,7 @@ func (r *Reader) FlushMatches() {
 // SeekHead positions the reader at the beginning.
 func (r *Reader) SeekHead() {
 	r.currentSeqnum = 0
+	r.resetIteration()
 }
 
 // SeekCursor positions the reader after the given cursor.
@@ -104,6 +112,27 @@ func (r *Reader) SeekCursor(cursor string) error {
 		return err
 	}
 	r.currentSeqnum = seqnum
+	r.resetIteration()
+	return nil
+}
+
+func (r *Reader) resetIteration() {
+	r.entryArrayOffset = 0
+	r.entryArrayEntries = nil
+	r.entryArrayIndex = 0
+	r.nextEntryArrayOffset = 0
+	r.iterationInitialized = false
+}
+
+func (r *Reader) loadEntryArray(offset uint64) error {
+	entries, nextArray, err := r.readEntryArray(offset)
+	if err != nil {
+		return err
+	}
+	r.entryArrayOffset = offset
+	r.entryArrayEntries = entries
+	r.entryArrayIndex = 0
+	r.nextEntryArrayOffset = nextArray
 	return nil
 }
 
@@ -152,27 +181,29 @@ func (r *Reader) matchesEntry(e *Entry) bool {
 
 // nextEntry reads the next entry regardless of filters.
 func (r *Reader) nextEntry() (*Entry, error) {
-	// Walk entry arrays to find entries
-	arrayOffset := r.header.EntryArrayOffset
-	if arrayOffset == 0 {
-		return nil, io.EOF
-	}
-
-	for arrayOffset != 0 {
-		entries, nextArray, err := r.readEntryArray(arrayOffset)
-		if err != nil {
+	if !r.iterationInitialized {
+		r.iterationInitialized = true
+		if r.header.EntryArrayOffset == 0 {
+			return nil, io.EOF
+		}
+		if err := r.loadEntryArray(r.header.EntryArrayOffset); err != nil {
 			return nil, err
 		}
+	}
 
-		for _, entryOffset := range entries {
+	for r.entryArrayOffset != 0 {
+		for r.entryArrayIndex < len(r.entryArrayEntries) {
+			entryOffset := r.entryArrayEntries[r.entryArrayIndex]
 			if entryOffset == 0 {
-				continue
+				break
 			}
+			r.entryArrayIndex++
 
 			entry, err := r.readEntry(entryOffset)
 			if err != nil {
 				return nil, err
 			}
+			r.decodedEntries++
 
 			// Skip entries we've already seen
 			if entry.Seqnum <= r.currentSeqnum {
@@ -183,7 +214,30 @@ func (r *Reader) nextEntry() (*Entry, error) {
 			return entry, nil
 		}
 
-		arrayOffset = nextArray
+		if r.nextEntryArrayOffset != 0 {
+			if err := r.loadEntryArray(r.nextEntryArrayOffset); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		// Refresh may reveal an entry appended to the current array, or a newly
+		// linked array. Reload only this tail array and resume at the old slot.
+		if r.currentSeqnum < r.header.TailEntrySeqnum {
+			index := r.entryArrayIndex
+			offset := r.entryArrayOffset
+			if err := r.loadEntryArray(offset); err != nil {
+				return nil, err
+			}
+			r.entryArrayIndex = index
+			if (r.entryArrayIndex < len(r.entryArrayEntries) &&
+				r.entryArrayEntries[r.entryArrayIndex] != 0) ||
+				r.nextEntryArrayOffset != 0 {
+				continue
+			}
+		}
+
+		return nil, io.EOF
 	}
 
 	return nil, io.EOF
