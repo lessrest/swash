@@ -270,7 +270,7 @@ func (h *Host) RunTask(ctx context.Context) error {
 		h.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := journal.EmitStarted(h.events, h.sessionID, h.command); err != nil {
+		if err := journal.EmitStarted(h.events, h.sessionID, h.command, h.tags); err != nil {
 			return fmt.Errorf("emitting started event: %w", err)
 		}
 
@@ -402,7 +402,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		srv.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := journal.EmitExited(srv.events, srv.sessionID, exitCode, srv.command); err != nil {
+		if err := journal.EmitExited(srv.events, srv.sessionID, exitCode, srv.command, srv.tags); err != nil {
 			slog.Debug("Host.startTaskProcess failed to emit exited event", "error", err)
 		}
 

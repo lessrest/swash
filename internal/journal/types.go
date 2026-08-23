@@ -100,22 +100,24 @@ const (
 )
 
 // EmitStarted writes a session started event to the log.
-func EmitStarted(log EventLog, sessionID string, command []string) error {
-	return log.WriteSync("Session started", map[string]string{
-		FieldEvent:   EventStarted,
-		FieldSession: sessionID,
-		FieldCommand: strings.Join(command, " "),
-	})
+func EmitStarted(log EventLog, sessionID string, command []string, tags map[string]string) error {
+	fields := make(map[string]string, len(tags)+3)
+	maps.Copy(fields, tags)
+	fields[FieldEvent] = EventStarted
+	fields[FieldSession] = sessionID
+	fields[FieldCommand] = strings.Join(command, " ")
+	return log.WriteSync("Session started", fields)
 }
 
 // EmitExited writes a session exited event to the log.
-func EmitExited(log EventLog, sessionID string, exitCode int, command []string) error {
-	return log.WriteSync("Session exited", map[string]string{
-		FieldEvent:    EventExited,
-		FieldSession:  sessionID,
-		FieldExitCode: strconv.Itoa(exitCode),
-		FieldCommand:  strings.Join(command, " "),
-	})
+func EmitExited(log EventLog, sessionID string, exitCode int, command []string, tags map[string]string) error {
+	fields := make(map[string]string, len(tags)+4)
+	maps.Copy(fields, tags)
+	fields[FieldEvent] = EventExited
+	fields[FieldSession] = sessionID
+	fields[FieldExitCode] = strconv.Itoa(exitCode)
+	fields[FieldCommand] = strings.Join(command, " ")
+	return log.WriteSync("Session exited", fields)
 }
 
 // WriteOutput writes process output to the log with FD and extra fields.

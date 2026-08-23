@@ -627,7 +627,7 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 		h.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := journal.EmitStarted(h.events, h.sessionID, h.command); err != nil {
+		if err := journal.EmitStarted(h.events, h.sessionID, h.command, h.tags); err != nil {
 			return fmt.Errorf("emitting started event: %w", err)
 		}
 
@@ -736,7 +736,7 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		}
 
 		// Emit lifecycle event
-		if err := journal.EmitExited(h.events, h.sessionID, exitCode, h.command); err != nil {
+		if err := journal.EmitExited(h.events, h.sessionID, exitCode, h.command, h.tags); err != nil {
 			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
 		}
 
