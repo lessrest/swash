@@ -41,7 +41,7 @@ install:
 test: test-unit test-integration
 
 test-unit:
-	go test ./pkg/... ./internal/... ./vterm/...
+	go test ./cmd/... ./pkg/... ./internal/... ./vterm/...
 
 test-integration: build
 	@echo "Test mode: $(SWASH_TEST_MODE), journal reader: $(SWASH_TEST_JOURNAL_READER)"
@@ -66,7 +66,7 @@ coverage: generate
 	@mkdir -p $(COVERAGE_DIR)/unit $(COVERAGE_DIR)/integration $(COVERAGE_DIR)/merged
 	go build -cover -o bin/swash ./cmd/swash/
 	@echo "=== Coverage: unit tests ==="
-	GOCOVERDIR=$(COVERAGE_DIR)/unit go test ./pkg/... ./internal/... ./vterm/... -cover -timeout 120s
+	GOCOVERDIR=$(COVERAGE_DIR)/unit go test ./cmd/... ./pkg/... ./internal/... ./vterm/... -cover -timeout 120s
 	@echo "=== Coverage: integration (posix) ==="
 	GOCOVERDIR=$(COVERAGE_DIR)/integration SWASH_TEST_MODE=posix go test ./integration/... -timeout 120s
 	@echo "=== Coverage: integration (real systemd) ==="

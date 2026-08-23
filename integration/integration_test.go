@@ -448,6 +448,41 @@ func TestSwashStart(t *testing.T) {
 	})
 }
 
+func TestEmitSemanticEvent(t *testing.T) {
+	runTest(t, func(t *testing.T, e *testEnv) {
+		sessionID := fmt.Sprintf("EMIT%d", os.Getpid())
+		stdout, stderr, err := e.runSwash(
+			"emit", sessionID,
+			"--event", "slynk-ready",
+			"--message", "Slynk is ready",
+			"--field", "LUV_ROOT=/work/luv",
+			"--field", "LUV_SLYNK_PORT=4172",
+		)
+		if err != nil {
+			t.Fatalf("swash emit failed: %v\nstderr: %s", err, stderr)
+		}
+		if strings.TrimSpace(stdout) != sessionID+" slynk-ready" {
+			t.Fatalf("unexpected emit output: %q", stdout)
+		}
+
+		root, err := e.runJournalctl("-o", "cat", "SWASH_SESSION="+sessionID, "SWASH_EVENT=slynk-ready", "LUV_ROOT=/work/luv")
+		if err != nil {
+			t.Fatalf("querying emitted event: %v", err)
+		}
+		if strings.TrimSpace(root) != "Slynk is ready" {
+			t.Fatalf("emitted event message = %q", root)
+		}
+
+		port, err := e.runJournalctl("-o", "cat", "SWASH_SESSION="+sessionID, "LUV_SLYNK_PORT=4172")
+		if err != nil {
+			t.Fatalf("querying emitted port field: %v", err)
+		}
+		if strings.TrimSpace(port) != "Slynk is ready" {
+			t.Fatalf("emitted port event message = %q", port)
+		}
+	})
+}
+
 func TestSwashRun(t *testing.T) {
 	runTest(t, func(t *testing.T, e *testEnv) {
 		stdout, stderr, err := e.runSwash("run", "echo", "hello world")

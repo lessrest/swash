@@ -50,6 +50,9 @@ type Backend interface {
 	StopSession(ctx context.Context, sessionID string) error
 	KillSession(ctx context.Context, sessionID string) error
 	SendInput(ctx context.Context, sessionID, input string) (int, error)
+	// EmitSessionEvent appends structured application state independently of
+	// process output.
+	EmitSessionEvent(ctx context.Context, sessionID, event, message string, fields map[string]string) error
 
 	PollSessionOutput(ctx context.Context, sessionID, cursor string) ([]Event, string, error)
 	FollowSession(ctx context.Context, sessionID string, timeout time.Duration, outputLimit int) (exitCode int, result FollowResult)

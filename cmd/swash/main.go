@@ -73,6 +73,13 @@ func main() {
 		return
 	}
 
+	// Handle "emit" before global flag parsing so it can have its own
+	// repeatable --field flags and a deliberately small command surface.
+	if len(os.Args) >= 2 && os.Args[1] == "emit" {
+		cmdEmit(os.Args[2:])
+		return
+	}
+
 	// Handle "graph" subcommand (RDF knowledge graph service)
 	if len(os.Args) >= 2 && os.Args[1] == "graph" {
 		cmdGraph(os.Args[2:])
@@ -111,6 +118,7 @@ Usage:
   swash screen <session_id>          Show TTY session screen
   swash attach <session_id>          Attach to TTY session interactively
   swash history                      Show session history
+  swash emit ID --event NAME         Append a semantic session event
   swash context new                  Create a new context
   swash context list                 List all contexts
   swash context dir <context_id>     Print context directory

@@ -570,3 +570,8 @@ func (b *SystemdBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[jou
 	filters := journal.LifecycleEventFilters()
 	return b.events.Follow(ctx, filters)
 }
+
+func (b *SystemdBackend) EmitSessionEvent(ctx context.Context, sessionID, event, message string, fields map[string]string) error {
+	_ = ctx
+	return journal.EmitSessionEvent(b.events, sessionID, event, message, fields)
+}

@@ -904,3 +904,11 @@ func (b *PosixBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[journ
 	filters := journal.LifecycleEventFilters()
 	return log.Follow(ctx, filters)
 }
+
+func (b *PosixBackend) EmitSessionEvent(ctx context.Context, sessionID, event, message string, fields map[string]string) error {
+	log, err := b.ensureSharedLog(ctx)
+	if err != nil {
+		return err
+	}
+	return journal.EmitSessionEvent(log, sessionID, event, message, fields)
+}

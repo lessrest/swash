@@ -166,6 +166,16 @@ func EmitServiceType(log EventLog, sessionID, serviceType string) error {
 	})
 }
 
+// EmitSessionEvent appends an application-defined semantic event. Arbitrary
+// fields describe the event, while Swash retains ownership of its identity.
+func EmitSessionEvent(log EventLog, sessionID, event, message string, extraFields map[string]string) error {
+	fields := make(map[string]string, len(extraFields)+2)
+	maps.Copy(fields, extraFields)
+	fields[FieldEvent] = event
+	fields[FieldSession] = sessionID
+	return log.WriteSync(message, fields)
+}
+
 // FilterByService creates a filter for a service's SWASH_SERVICE field.
 func FilterByService(serviceType string) EventFilter {
 	return EventFilter{Field: FieldService, Value: serviceType}

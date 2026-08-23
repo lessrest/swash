@@ -156,6 +156,23 @@ The `--protocol` flag controls how stdout is parsed. The default `shell`
 protocol treats each line as a separate journal entry. The `sse` protocol
 parses Server-Sent Events format, extracting the content from `data:` lines.
 
+### Semantic Events
+
+Processes and clients can append structured events independently of process
+output. Events use the same journal on both the systemd and POSIX backends:
+
+```bash
+swash emit ABC123 --event slynk-ready \
+  --message "Slynk is ready" \
+  --field LUV_ROOT=/work/luv \
+  --field LUV_SLYNK_PORT=4172
+```
+
+`SWASH_SESSION` and `SWASH_EVENT` identify the event and cannot be overridden
+with `--field`. Field names use the journal's uppercase `KEY=VALUE` convention.
+Semantic events are append-only application state: consumers can reconstruct a
+current view by folding the events for a session in timestamp order.
+
 ### Contexts
 
 Contexts group related sessions with a shared working directory. This is useful
