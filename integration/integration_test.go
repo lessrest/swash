@@ -160,14 +160,18 @@ func (e *testEnv) setupPosix() error {
 		return fmt.Errorf("starting swash minijournald: %w", err)
 	}
 
-	// Wait for socket to appear
-	for range 50 {
+	// The helper may need a moment to start on a busy machine. Keep this below
+	// the suite's five-second timeout, but do not assume sub-second startup.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
 		if _, err := os.Stat(e.journalSocket); err == nil {
-			break
+			return nil
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if _, err := os.Stat(e.journalSocket); err != nil {
+		_ = syscall.Kill(-e.journaldCmd.Process.Pid, syscall.SIGKILL)
+		_ = e.journaldCmd.Wait()
 		return fmt.Errorf("swash minijournald socket did not appear: %w", err)
 	}
 
@@ -613,6 +617,25 @@ func TestSwashRun(t *testing.T) {
 
 		if !strings.Contains(stdout, "hello world") {
 			t.Errorf("expected 'hello world' in output, got: %s", stdout)
+		}
+	})
+}
+
+func TestTaskReceivesSwashSessionID(t *testing.T) {
+	runTest(t, func(t *testing.T, e *testEnv) {
+		stdout, stderr, err := e.runSwash("run", "--", "/bin/sh", "-c", "printf '%s\\n' \"$SWASH_SESSION\"")
+		if err != nil {
+			t.Fatalf("swash run failed: %v\nstderr: %s", err, stderr)
+		}
+		sessionID := strings.TrimSpace(stdout)
+		if len(sessionID) != 6 {
+			t.Fatalf("SWASH_SESSION = %q, want six-character session ID", sessionID)
+		}
+		for i, character := range sessionID {
+			if (i < 3 && (character < 'A' || character > 'Z')) ||
+				(i >= 3 && (character < '0' || character > '9')) {
+				t.Fatalf("SWASH_SESSION = %q, want LLLDDD", sessionID)
+			}
 		}
 	})
 }

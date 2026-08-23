@@ -164,6 +164,7 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 			env[e[:idx]] = e[idx+1:]
 		}
 	}
+	env["SWASH_SESSION"] = sessionID
 
 	// Build the actual command: hostCommand... --session ID --command-json [...] [--protocol ...] [--tags-json ...]
 	serverCmd := append([]string{}, b.hostCommand...)

@@ -393,6 +393,7 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 
 	// Pass journal socket path to host via environment
 	cmd.Env = append(os.Environ(),
+		"SWASH_SESSION="+sessionID,
 		"SWASH_JOURNAL_SOCKET="+b.journaldConfig.SocketPath,
 		"SWASH_JOURNAL_PATH="+b.journaldConfig.JournalPath,
 	)
