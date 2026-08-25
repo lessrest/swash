@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# This repository has no services or per-user authentication to restore.
+echo "Orb resume complete"

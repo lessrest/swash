@@ -24,3 +24,6 @@ result
 oxigraph-wasi-ffi/target/
 
 coverage/
+
+# Amp orb runtime files
+.amp/portals/*
