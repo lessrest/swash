@@ -44,7 +44,6 @@ var (
 	colsFlag              int
 	detachAfterFlag       time.Duration
 	detachAfterOutputFlag int
-	allFlag               bool
 )
 
 // Global backend (initialized for commands that need it)
@@ -78,12 +77,6 @@ func main() {
 		return
 	}
 
-	// Handle "graph" subcommand (RDF knowledge graph service)
-	if len(os.Args) >= 2 && os.Args[1] == "graph" {
-		cmdGraph(os.Args[2:])
-		return
-	}
-
 	// Handle "webui" subcommand (has its own flags)
 	if len(os.Args) >= 2 && os.Args[1] == "webui" {
 		cmdWebUI(os.Args[2:])
@@ -99,7 +92,6 @@ func main() {
 	flag.IntVar(&colsFlag, "cols", 80, "Terminal columns (for --tty mode)")
 	flag.DurationVarP(&detachAfterFlag, "detach-after", "d", 3*time.Second, "Detach after duration (0 = immediate)")
 	flag.IntVar(&detachAfterOutputFlag, "detach-after-output", 80*24, "Detach after this many bytes of output (0 = unlimited)")
-	flag.BoolVarP(&allFlag, "all", "a", false, "Show all sessions (ignore SWASH_CONTEXT filter)")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `swash - Interactive process sessions over D-Bus
@@ -118,21 +110,9 @@ Usage:
   swash history                      Show session history
   swash emit ID --event NAME         Append a semantic session event
   swash events [filters]             Query structured journal events
-  swash context new                  Create a new context
-  swash context list                 List all contexts
-  swash context dir <context_id>     Print context directory
-  swash context shell <context_id>   Enter context shell
-  swash http                         Run HTTP API server
-  swash http install [port]          Install HTTP server as systemd socket service
-  swash http uninstall               Uninstall HTTP server
-  swash http status                  Show HTTP server status
-  swash graph                        Show graph service status
-  swash graph serve                  Run the RDF graph service
-  swash graph install                Install as systemd socket service
-  swash graph uninstall              Uninstall systemd service
-  swash graph query <sparql>         Execute SPARQL query
-  swash graph quads [-s S] [-p P] [-o O]  Query quads by pattern
-  swash graph load [-f format] [file]    Load RDF data
+  swash webui start                  Start the web UI service
+  swash webui stop                   Stop the web UI service
+  swash webui status                 Show web UI service status
   swash host                         (internal) Run as task host
 
 Flags:
@@ -206,12 +186,6 @@ Flags:
 		cmdHost()
 	case "webui":
 		cmdWebUI(cmdArgs)
-	case "context":
-		cmdContext(cmdArgs)
-	case "graph":
-		cmdGraph(cmdArgs)
-	case "prompt":
-		cmdPrompt()
 	default:
 		fatal("unknown command: %s", cmd)
 	}
@@ -290,97 +264,25 @@ func cmdStatus() {
 	initBackend()
 	defer bk.Close()
 
-	filterContext := getContextFilter()
-	sessions, sessionContext := getFilteredSessions(filterContext)
+	sessions, err := bk.ListSessions(context.Background())
+	if err != nil {
+		fatal("listing sessions: %v", err)
+	}
 
 	if len(sessions) == 0 {
-		if filterContext != "" {
-			fmt.Printf("no sessions in context %s\n", filterContext)
-			fmt.Println("swash run <command>")
-			fmt.Println("swash -a              (show all sessions)")
-		} else {
-			fmt.Println("no sessions")
-			fmt.Println("swash run <command>")
-		}
+		fmt.Println("no sessions")
+		fmt.Println("swash run <command>")
 		return
 	}
 
-	// Print filter notice
-	if filterContext != "" {
-		fmt.Printf("showing sessions in context %s (use -a for all)\n\n", filterContext)
-	}
-
 	// Print header
-	fmt.Printf("%-8s %-8s %-8s %-8s %-8s %s\n", "ID", "CONTEXT", "STATUS", "AGE", "PID", "COMMAND")
+	fmt.Printf("%-8s %-8s %-8s %-8s %s\n", "ID", "STATUS", "AGE", "PID", "COMMAND")
 
 	for _, s := range sessions {
 		age := formatAge(s.Started)
 		cmd := truncate(s.Command, 40)
-		ctx := sessionContext[s.ID]
-		if ctx == "" {
-			ctx = "-"
-		}
-		fmt.Printf("%-8s %-8s %-8s %-8s %-8d %s\n", s.ID, ctx, s.Status, age, s.PID, cmd)
+		fmt.Printf("%-8s %-8s %-8s %-8d %s\n", s.ID, s.Status, age, s.PID, cmd)
 	}
-}
-
-func buildSessionContextMap() map[string]string {
-	result := make(map[string]string)
-
-	contexts, err := bk.ListContexts(context.Background())
-	if err != nil {
-		return result
-	}
-
-	for _, ctx := range contexts {
-		sessions, err := bk.ListContextSessions(context.Background(), ctx.ID)
-		if err != nil {
-			continue
-		}
-		for _, sid := range sessions {
-			result[sid] = ctx.ID
-		}
-	}
-
-	return result
-}
-
-// getContextFilter returns the context ID to filter by, or empty if no filter.
-// Returns empty if --all flag is set.
-func getContextFilter() string {
-	if allFlag {
-		return ""
-	}
-	return os.Getenv("SWASH_CONTEXT")
-}
-
-// getFilteredSessions returns running sessions, optionally filtered by context.
-// Also returns the session-to-context map for display purposes.
-func getFilteredSessions(filterContext string) ([]backend.Session, map[string]string) {
-	sessions, err := bk.ListSessions(context.Background())
-	if err != nil {
-		return nil, nil
-	}
-
-	sessionContext := buildSessionContextMap()
-
-	if filterContext == "" {
-		return sessions, sessionContext
-	}
-
-	filtered := make([]backend.Session, 0)
-	for _, s := range sessions {
-		if sessionContext[s.ID] == filterContext {
-			filtered = append(filtered, s)
-		}
-	}
-	return filtered, sessionContext
-}
-
-// countRunningInContext returns the number of currently running sessions in a context.
-func countRunningInContext(contextID string) int {
-	sessions, _ := getFilteredSessions(contextID)
-	return len(sessions)
 }
 
 func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
@@ -389,19 +291,11 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 
 	// Build session options from flags
 	opts := backend.SessionOptions{
-		Protocol:  protocol.Protocol(protocolFlag),
-		Tags:      parseTags(tagFlags),
-		TTY:       ttyFlag,
-		Rows:      rowsFlag,
-		Cols:      colsFlag,
-		ContextID: os.Getenv("SWASH_CONTEXT"),
-	}
-
-	// Use context directory as working directory if in a context
-	if opts.ContextID != "" {
-		if dir, err := bk.GetContextDir(context.Background(), opts.ContextID); err == nil {
-			opts.WorkingDir = dir
-		}
+		Protocol: protocol.Protocol(protocolFlag),
+		Tags:     parseTags(tagFlags),
+		TTY:      ttyFlag,
+		Rows:     rowsFlag,
+		Cols:     colsFlag,
 	}
 
 	sessionID, err := bk.StartSession(context.Background(), command, opts)
@@ -459,19 +353,11 @@ func cmdRunTTY(command []string) {
 
 	rows, cols := attach.GetContentSize()
 	opts := backend.SessionOptions{
-		Protocol:  protocol.Protocol(protocolFlag),
-		Tags:      parseTags(tagFlags),
-		TTY:       true,
-		Rows:      rows,
-		Cols:      cols,
-		ContextID: os.Getenv("SWASH_CONTEXT"),
-	}
-
-	// Use context directory as working directory if in a context
-	if opts.ContextID != "" {
-		if dir, err := bk.GetContextDir(context.Background(), opts.ContextID); err == nil {
-			opts.WorkingDir = dir
-		}
+		Protocol: protocol.Protocol(protocolFlag),
+		Tags:     parseTags(tagFlags),
+		TTY:      true,
+		Rows:     rows,
+		Cols:     cols,
 	}
 
 	sessionID, err := bk.StartSession(context.Background(), command, opts)
@@ -566,38 +452,13 @@ func cmdHistory() {
 		fatal("listing history: %v", err)
 	}
 
-	// Build session-to-context map for display and filtering
-	sessionContext := buildSessionContextMap()
-
-	// Filter by context if SWASH_CONTEXT is set
-	filterContext := getContextFilter()
-	if filterContext != "" {
-		var filtered []backend.HistorySession
-		for _, s := range sessions {
-			if sessionContext[s.ID] == filterContext {
-				filtered = append(filtered, s)
-			}
-		}
-		sessions = filtered
-	}
-
 	if len(sessions) == 0 {
-		if filterContext != "" {
-			fmt.Printf("no history in context %s\n", filterContext)
-			fmt.Println("swash history -a      (show all history)")
-		} else {
-			fmt.Println("no history")
-		}
+		fmt.Println("no history")
 		return
 	}
 
-	// Print filter notice
-	if filterContext != "" {
-		fmt.Printf("showing history in context %s (use -a for all)\n\n", filterContext)
-	}
-
 	// Print header
-	fmt.Printf("%-8s %-8s %-8s %-6s %-8s %s\n", "ID", "CONTEXT", "STATUS", "EXIT", "AGE", "COMMAND")
+	fmt.Printf("%-8s %-8s %-6s %-8s %s\n", "ID", "STATUS", "EXIT", "AGE", "COMMAND")
 
 	for _, s := range sessions {
 		age := formatAge(s.Started)
@@ -606,10 +467,6 @@ func cmdHistory() {
 			exitStr = fmt.Sprintf("%d", *s.ExitCode)
 		}
 		cmd := truncate(s.Command, 40)
-		ctx := sessionContext[s.ID]
-		if ctx == "" {
-			ctx = "-"
-		}
-		fmt.Printf("%-8s %-8s %-8s %-6s %-8s %s\n", s.ID, ctx, s.Status, exitStr, age, cmd)
+		fmt.Printf("%-8s %-8s %-6s %-8s %s\n", s.ID, s.Status, exitStr, age, cmd)
 	}
 }

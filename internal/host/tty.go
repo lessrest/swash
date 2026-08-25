@@ -688,11 +688,19 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		return nil, fmt.Errorf("setting pty size: %w", err)
 	}
 
-	// Get the slave file for the executor
-	slave := os.NewFile(uintptr(ptyPair.SlaveFd()), "pty-slave")
+	// Give the executor its own descriptor. Wrapping SlaveFd directly would
+	// create two os.File owners for one descriptor, allowing the wrapper's
+	// finalizer to close an unrelated file after that descriptor is reused.
+	slaveFD, err := syscall.Dup(ptyPair.SlaveFd())
+	if err != nil {
+		ptyPair.Close()
+		return nil, fmt.Errorf("duplicating pty slave: %w", err)
+	}
+	slave := os.NewFile(uintptr(slaveFD), "pty-slave")
 
 	// Start the process using the executor
 	proc, err := h.executor.StartPTY(h.command, slave)
+	slave.Close()
 	if err != nil {
 		ptyPair.Close()
 		return nil, fmt.Errorf("starting process: %w", err)

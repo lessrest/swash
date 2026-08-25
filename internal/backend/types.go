@@ -1,8 +1,6 @@
 package backend
 
 import (
-	"time"
-
 	"swa.sh/internal/journal"
 	"swa.sh/internal/protocol"
 )
@@ -33,16 +31,8 @@ type SessionOptions struct {
 	TTY         bool              // Use PTY mode with terminal emulation
 	Rows        int               // Terminal rows (for TTY mode)
 	Cols        int               // Terminal columns (for TTY mode)
-	ContextID   string            // Context this session belongs to (optional)
 	WorkingDir  string            // Working directory for the session (optional, defaults to cwd)
-	ServiceType string            // Service type for daemon sessions (e.g., "graph")
-}
-
-// Context represents a swash context (a namespace for grouping sessions).
-type Context struct {
-	ID      string    `json:"id"`
-	Dir     string    `json:"dir"`
-	Created time.Time `json:"created"`
+	ServiceType string            // Service type for daemon sessions
 }
 
 // EventFilter is a semantic event query filter.

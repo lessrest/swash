@@ -38,7 +38,7 @@ The `Backend` interface abstracts over two complete implementations:
 - **systemd** (`internal/backend/systemd/`): D-Bus + transient units + journald
 - **posix** (`internal/backend/posix/`): Unix sockets + a shared SQLite WAL database
 
-Both backends support all features (TTY mode, contexts, follow, etc.). The posix backend writes structured events directly to SQLite without a journal daemon.
+Both backends support TTY mode, session control, history, and structured events. The posix backend writes structured events directly to SQLite without a journal daemon.
 
 Backend selection: `SWASH_BACKEND` env var, or instant auto-detection from the user D-Bus address and systemd user-manager runtime endpoint.
 
@@ -78,10 +78,6 @@ Use `SWASH_TEST_MODE=real` to test with real systemd, or leave unset for isolate
 ## Journal Fields
 
 Sessions write structured fields: `SWASH_SESSION`, `SWASH_EVENT` (started/exited/screen), `FD` (1=stdout, 2=stderr). Query with: `journalctl --user SWASH_SESSION=<ID>`.
-
-## Context System
-
-Contexts group sessions with shared working directories (`~/.local/state/swash/contexts/<ID>/`). The `swash context shell <ID>` command enters a bash shell with `SWASH_CONTEXT` set. All sessions started within inherit this env var, allowing `swash` and `swash history` to filter by context (use `-a` to see all).
 
 ## HTTP API
 

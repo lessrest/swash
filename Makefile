@@ -12,7 +12,7 @@ export CGO_CFLAGS
 SWASH_TEST_MODE ?= posix
 export SWASH_TEST_MODE
 
-.PHONY: all build test test-unit test-integration test-all-backends install clean generate oxigraph-wasm vterm-wasm coverage
+.PHONY: all build test test-unit test-integration test-all-backends install clean generate vterm-wasm coverage
 
 all: build
 
@@ -73,16 +73,6 @@ coverage: generate
 coverage-report:
 	@if [ ! -f $(COVERAGE_DIR)/coverage.html ]; then echo "Run 'make coverage' first"; exit 1; fi
 	@grep -oP 'option value="file\d+"[^>]*>\K[^<]+' $(COVERAGE_DIR)/coverage.html | sed 's/(\(.*\))/\1/' | awk '{pct=$$NF; $$NF=""; printf "%7s  %s\n", pct, $$0}' | sort -rn
-
-# Build oxigraph WASI module (compressed blob is embedded in pkg/oxigraph)
-OXIGRAPH_WASM_ZST := pkg/oxigraph/oxigraph.wasm.zst
-OXIGRAPH_SOURCES := oxigraph-wasi-ffi/src/lib.rs oxigraph-wasi-ffi/Cargo.toml
-
-oxigraph-wasm: $(OXIGRAPH_WASM_ZST)
-
-$(OXIGRAPH_WASM_ZST): $(OXIGRAPH_SOURCES)
-	cd oxigraph-wasi-ffi && cargo build --target wasm32-wasip1 --release
-	zstd -f oxigraph-wasi-ffi/target/wasm32-wasip1/release/oxigraph_wasi_ffi.wasm -o $@
 
 # Build libvterm WASI module (compressed blob is embedded in vterm/)
 VTERM_WASM_ZST := vterm/vterm.wasm.zst

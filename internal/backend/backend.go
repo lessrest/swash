@@ -13,7 +13,6 @@ import (
 	"swa.sh/internal/dirs"
 	"swa.sh/internal/host"
 	"swa.sh/internal/journal"
-	"swa.sh/pkg/oxigraph"
 )
 
 // Kind identifies a backend implementation.
@@ -62,21 +61,6 @@ type Backend interface {
 
 	ConnectSession(sessionID string) (host.Client, error)
 	ConnectTTYSession(sessionID string) (host.TTYClient, error)
-
-	// Context management
-	CreateContext(ctx context.Context) (contextID string, dir string, err error)
-	ListContexts(ctx context.Context) ([]Context, error)
-	GetContextDir(ctx context.Context, contextID string) (string, error)
-	ListContextSessions(ctx context.Context, contextID string) ([]string, error)
-
-	// Graph (RDF knowledge graph)
-	GraphQuery(ctx context.Context, sparql string) ([]oxigraph.Solution, error)
-	GraphSerialize(ctx context.Context, pattern oxigraph.Pattern, format oxigraph.Format) ([]byte, error)
-	GraphLoad(ctx context.Context, data []byte, format oxigraph.Format) error
-
-	// Lifecycle events (for graph population)
-	PollLifecycleEvents(ctx context.Context, cursor string) ([]journal.EventRecord, string, error)
-	FollowLifecycleEvents(ctx context.Context) iter.Seq[journal.EventRecord]
 }
 
 type opener func(ctx context.Context, cfg Config) (Backend, error)

@@ -11,11 +11,9 @@ import (
 	"time"
 
 	"swa.sh/internal/backend"
-	"swa.sh/internal/graph"
 	"swa.sh/internal/host"
 	"swa.sh/internal/journal"
 	"swa.sh/internal/protocol"
-	"swa.sh/pkg/oxigraph"
 )
 
 func init() {
@@ -209,14 +207,6 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 		return "", err
 	}
 
-	// Emit session-context relation if context is set
-	if opts.ContextID != "" {
-		if err := journal.EmitSessionContext(b.events, sessionID, opts.ContextID); err != nil {
-			// Log but don't fail - session already started
-			fmt.Fprintf(os.Stderr, "warning: failed to emit session-context: %v\n", err)
-		}
-	}
-
 	// Emit service type if set
 	if opts.ServiceType != "" {
 		if err := journal.EmitServiceType(b.events, sessionID, opts.ServiceType); err != nil {
@@ -390,186 +380,6 @@ func unitNameStringForRef(ref ProcessRef) string {
 	default:
 		return fmt.Sprintf("swash-task-%s.service", ref.SessionID)
 	}
-}
-
-// -----------------------------------------------------------------------------
-// Context management
-// -----------------------------------------------------------------------------
-
-func (b *SystemdBackend) contextDir(stateDir, contextID string) string {
-	return stateDir + "/contexts/" + contextID
-}
-
-func (b *SystemdBackend) CreateContext(ctx context.Context) (string, string, error) {
-	contextID := host.GenID()
-
-	// Get state directory - we need to look it up since systemd backend doesn't store cfg
-	stateDir := defaultStateDir()
-	dir := b.contextDir(stateDir, contextID)
-
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", "", fmt.Errorf("creating context directory: %w", err)
-	}
-
-	if err := journal.EmitContextCreated(b.events, contextID, dir); err != nil {
-		return "", "", fmt.Errorf("emitting context-created event: %w", err)
-	}
-
-	return contextID, dir, nil
-}
-
-func (b *SystemdBackend) ListContexts(ctx context.Context) ([]backend.Context, error) {
-	filters := []journal.EventFilter{journal.FilterByEvent(journal.EventContextCreated)}
-	entries, _, err := b.events.Poll(ctx, filters, "")
-	if err != nil {
-		return nil, err
-	}
-
-	var contexts []backend.Context
-	for _, e := range entries {
-		contexts = append(contexts, backend.Context{
-			ID:      e.Fields[journal.FieldContext],
-			Dir:     e.Fields["DIR"],
-			Created: e.Timestamp,
-		})
-	}
-	return contexts, nil
-}
-
-func (b *SystemdBackend) GetContextDir(ctx context.Context, contextID string) (string, error) {
-	stateDir := defaultStateDir()
-	dir := b.contextDir(stateDir, contextID)
-	if _, err := os.Stat(dir); err != nil {
-		return "", fmt.Errorf("context %s not found", contextID)
-	}
-	return dir, nil
-}
-
-func (b *SystemdBackend) ListContextSessions(ctx context.Context, contextID string) ([]string, error) {
-	filters := []journal.EventFilter{
-		journal.FilterByEvent(journal.EventSessionContext),
-		journal.FilterByContext(contextID),
-	}
-	entries, _, err := b.events.Poll(ctx, filters, "")
-	if err != nil {
-		return nil, err
-	}
-
-	var sessionIDs []string
-	for _, e := range entries {
-		if sid := e.Fields[journal.FieldSession]; sid != "" {
-			sessionIDs = append(sessionIDs, sid)
-		}
-	}
-	return sessionIDs, nil
-}
-
-func defaultStateDir() string {
-	if v := os.Getenv("SWASH_STATE_DIR"); v != "" {
-		return v
-	}
-	if base := os.Getenv("XDG_STATE_HOME"); base != "" {
-		return base + "/swash"
-	}
-	if home := os.Getenv("HOME"); home != "" {
-		return home + "/.local/state/swash"
-	}
-	return os.TempDir() + "/swash-state"
-}
-
-// -----------------------------------------------------------------------------
-// Graph (RDF knowledge graph)
-// -----------------------------------------------------------------------------
-
-func (b *SystemdBackend) graphClient() *graph.Client {
-	cfg := graph.DefaultConfig()
-	return graph.NewClient(cfg.SocketPath)
-}
-
-// ensureGraph starts the graph service if it's not already running.
-func (b *SystemdBackend) ensureGraph(ctx context.Context) error {
-	client := b.graphClient()
-
-	// Check if already running
-	if err := client.Health(ctx); err == nil {
-		return nil
-	}
-
-	// Start the graph service as a swash session
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("finding executable: %w", err)
-	}
-
-	_, err = b.StartSession(ctx, []string{exe, "graph", "serve"}, backend.SessionOptions{
-		ServiceType: "graph",
-	})
-	if err != nil {
-		return fmt.Errorf("starting graph service: %w", err)
-	}
-
-	// Wait for health check to pass
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for graph service to start")
-		}
-		if err := client.Health(ctx); err == nil {
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func (b *SystemdBackend) GraphQuery(ctx context.Context, sparql string) ([]oxigraph.Solution, error) {
-	if err := b.ensureGraph(ctx); err != nil {
-		return nil, err
-	}
-
-	client := b.graphClient()
-	return client.Query(ctx, sparql)
-}
-
-func (b *SystemdBackend) GraphSerialize(ctx context.Context, pattern oxigraph.Pattern, format oxigraph.Format) ([]byte, error) {
-	if err := b.ensureGraph(ctx); err != nil {
-		return nil, err
-	}
-
-	client := b.graphClient()
-
-	// Map format to string for HTTP API
-	formatStr := ""
-	if format == oxigraph.NQuads {
-		formatStr = "nquads"
-	}
-
-	return client.Quads(ctx, pattern, formatStr)
-}
-
-func (b *SystemdBackend) GraphLoad(ctx context.Context, data []byte, format oxigraph.Format) error {
-	if err := b.ensureGraph(ctx); err != nil {
-		return err
-	}
-
-	client := b.graphClient()
-	return client.Load(ctx, data, format)
-}
-
-// -----------------------------------------------------------------------------
-// Lifecycle events (for graph population)
-// -----------------------------------------------------------------------------
-
-func (b *SystemdBackend) PollLifecycleEvents(ctx context.Context, cursor string) ([]journal.EventRecord, string, error) {
-	filters := journal.LifecycleEventFilters()
-	return b.events.Poll(ctx, filters, cursor)
-}
-
-func (b *SystemdBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[journal.EventRecord] {
-	filters := journal.LifecycleEventFilters()
-	return b.events.Follow(ctx, filters, "")
 }
 
 func (b *SystemdBackend) EmitSessionEvent(ctx context.Context, sessionID, event, message string, fields map[string]string) error {

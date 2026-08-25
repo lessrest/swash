@@ -1,324 +1,164 @@
 # swash
 
-Persistent process sessions with detach/reattach and structured output logging.
+Run commands as sessions you can leave and come back to.
 
-swash runs commands in the background and captures their output to a structured
-log. Each session gets a control interface for sending input, killing the
-process, and querying status. You can disconnect and reconnect without losing
-the session.
+swash keeps a command running independently of the terminal that started it.
+You can follow its output, reconnect to an interactive program, send input, or
+stop it later. Completed sessions remain available in history with their output
+and exit status.
 
-Two backends are available:
+This is useful for builds, test suites, development servers, remote work, and
+any command that may outlive the shell—or the tool—that launched it.
 
-- **systemd** (default on Linux with D-Bus): Sessions run as systemd transient
-  units with D-Bus control and journal-based output. Provides cgroup isolation,
-  automatic cleanup, and integration with standard systemd tooling.
+```console
+$ swash start -- make test
+KXO284 started
 
-- **posix** (portable): Sessions run as background processes with Unix socket
-  control and file-based output logging. Works on any POSIX system without
-  systemd dependencies.
+$ swash
+# KXO284 is listed while it runs
 
-## Architecture
+$ swash follow KXO284
+# streams saved output and waits for the command to exit
 
-### systemd backend
-
-```mermaid
-flowchart TD
-    CLI[swash CLI]
-    SYSTEMD[systemd --user]
-    JOURNAL[(systemd journal)]
-
-    CLI -->|"D-Bus: StartTransientUnit"| SYSTEMD
-    CLI -->|"D-Bus: SendInput, Kill"| HOST
-
-    subgraph SLICE[swash.slice]
-        subgraph SESSION[swash-ABC123.slice]
-            HOST[swash-host-ABC123.service]
-            TASK[swash-task-ABC123.service]
-        end
-    end
-
-    SYSTEMD --> HOST
-    HOST -->|spawns| TASK
-    TASK -.->|stdout/stderr| HOST
-    HOST -->|"SWASH_SESSION=ABC123"| JOURNAL
+$ swash history
+# KXO284 remains available after it finishes
 ```
 
-When you run `swash run echo hello`, the CLI asks systemd to start a transient
-service called `swash-host-ABC123.service`. This host service owns a D-Bus name
-(`sh.swa.Swash.ABC123`) and exposes methods for sending input, killing the
-process, and querying status. The host then starts another transient unit,
-`swash-task-ABC123.service`, which runs the actual command. Both units live
-inside `swash-ABC123.slice` for resource grouping.
+## Install
 
-The host captures stdout and stderr from the task and writes each line to the
-systemd journal with `SWASH_SESSION=ABC123`. This means output survives even if
-the original client disconnects - you can reconnect later and query the journal
-to see what happened.
-
-### posix backend
-
-The posix backend uses the same host process architecture but replaces
-systemd-specific components:
-
-- **Control**: Unix domain socket instead of D-Bus
-- **Output**: A shared SQLite database in WAL mode, written directly by hosts
-- **Process management**: Each task starts as a new POSIX session. On Linux and
-  macOS, stop/restart/kill sweep every process still in that session, including
-  descendants that created their own process groups. A descendant that calls
-  `setsid` deliberately escapes Swash's ownership boundary. Other POSIX systems
-  retain process-group signaling as the portable fallback.
-
-To use the posix backend explicitly: `SWASH_BACKEND=posix swash run ...`
-
-swash auto-detects without a blocking probe: it selects systemd when the user
-D-Bus address and systemd user-manager runtime endpoint are present, and POSIX
-otherwise. If those endpoints are present but broken, the systemd backend fails
-loudly rather than silently changing execution models.
-
-## Usage
+There are no packaged releases yet. Build swash from source with Go 1.25+, a C
+compiler, and GNU Make:
 
 ```bash
-swash run echo "hello world"    # run command, show output, wait for exit
-swash run -d 10s ./slow-script  # wait up to 10s, then detach if still running
-swash run --tty htop            # run interactively with TTY
-swash start ./background-job    # start and detach immediately
-swash                           # list running sessions
-swash follow ABC123             # stream output until exit
-swash attach ABC123             # attach to TTY session (Ctrl+\ to detach)
-swash send ABC123 "input"       # send to stdin
-swash stop ABC123               # graceful stop
-swash kill ABC123               # terminate immediately
-swash history                   # show past sessions from journal
+git clone https://github.com/lessrest/swash.git
+cd swash
+make install
 ```
 
-`swash run` executes a command, streams its output, and waits for it to complete
-(with a default 3-second timeout). If the command finishes in time, swash exits
-with the command's exit code. If the timeout expires, it detaches and prints the
-session ID so you can reconnect with `swash follow`.
+The systemd headers and terminal-emulation sources needed by the build are
+included in the repository.
 
-`swash start` is equivalent to `swash run -d 0` - it starts the session and
-returns immediately without waiting.
+## Use
 
-### TTY Mode
-
-For interactive programs, swash can allocate a pseudo-terminal and emulate a
-full terminal using libvterm. This handles colors, cursor movement, alternate
-screen mode (used by vim, htop, etc.), and other terminal features correctly.
+### Run a command
 
 ```bash
-swash run --tty htop            # start htop and attach interactively
-swash start --tty -- htop       # start in background
-swash attach ABC123             # attach to running TTY session
-swash screen ABC123             # view current screen snapshot
+swash run -- make test
 ```
 
-When attached, press `Ctrl+\` to detach without killing the process. You can
-reattach later with `swash attach`. Multiple clients can attach to the same
-session - they all see the same screen, and the terminal size follows the
-smallest attached client.
+`run` shows output and returns the command's exit status if it finishes within
+three seconds. If it is still running, swash detaches and prints a session ID so
+you can come back to it. Change the wait with `--detach-after`:
 
 ```bash
-swash start --tty --rows 40 --cols 120 -- vim file.txt
+swash --detach-after 30s run -- ./slow-script
+swash --detach-after 0 run -- ./server       # detach immediately
+swash start -- ./server                      # shorthand for the above
 ```
 
-The `swash screen` command returns a snapshot of the terminal screen with ANSI
-color codes preserved. Here's what it looks like with htop:
+swash also detaches after 1920 bytes of output by default, so a noisy command
+does not monopolize its caller. Set `--detach-after-output 0` to disable that
+limit.
 
-```
-$ swash start --tty --rows 10 --cols 70 -- htop
-XYZ789 started
-
-$ swash screen XYZ789
-    0[|||  4.6%]   4[||   2.0%]   8[||   3.3%]  12[||   2.0%]
-    1[||   2.0%]   5[||   2.6%]   9[||   2.6%]  13[||   1.3%]
-  Mem[|||||||||||||||||||||||||||||||||12.5G/62.6G]
-  Swp[|                               520M/32.0G]
-
-    PID USER       PRI  NI  VIRT   RES S  CPU% Command
-1521271 mbrock      20   0 76.1G 4383M S  39.5 opencode
-3814634 mbrock      20   0  855M  110M S   3.3 emacs
-F1Help F2Setup F3Search F4Filter F5Tree F6SortBy F9Kill F10Quit
-```
-
-In TTY mode, output goes through libvterm before being logged. Lines are
-captured as they scroll off the screen, and the final screen state is saved
-to the journal when the process exits (as a `SWASH_EVENT=screen` entry).
-
-### Tags and Protocols
-
-You can attach custom metadata to sessions using tags, which become journal
-fields:
+### Inspect and control sessions
 
 ```bash
-swash run -t PROJECT=myapp -t ENV=staging -- ./deploy.sh
+swash                         # list running sessions
+swash poll KXO284             # print output collected so far
+swash follow KXO284           # stream output until the session exits
+swash send KXO284 "yes"       # write to the command's standard input
+swash stop KXO284             # request a graceful stop
+swash kill KXO284             # terminate immediately
+swash history                 # list completed sessions
 ```
 
-The `--protocol` flag controls how stdout is parsed. The default `shell`
-protocol treats each line as a separate journal entry. The `sse` protocol
-parses Server-Sent Events format, extracting the content from `data:` lines.
+Session output is stored independently of the client. Closing the terminal or
+interrupting `follow` does not discard it.
 
-### Semantic Events
+### Run interactive programs
 
-Processes and clients can append structured events independently of process
-output. Events use the same journal on both the systemd and POSIX backends:
+Use TTY mode for programs such as shells, editors, and process monitors:
 
 ```bash
-swash emit ABC123 --event slynk-ready \
-  --message "Slynk is ready" \
-  --field LUV_ROOT=/work/luv \
-  --field LUV_SLYNK_PORT=4172
+swash --tty run -- htop
 ```
 
-`SWASH_SESSION` and `SWASH_EVENT` identify the event and cannot be overridden
-with `--field`. Field names use the journal's uppercase `KEY=VALUE` convention.
-Semantic events are append-only application state: consumers can reconstruct a
-current view by folding the events for a session in timestamp order.
-
-Query the same events portably with exact field filters:
+Press `Ctrl+\` to detach without stopping the program. Reconnect or inspect its
+current screen later:
 
 ```bash
-swash events --session ABC123 --event slynk-ready
-swash events --field LUV_ROOT=/work/luv --last 10 --json
-swash events --session ABC123 --cursor 's=42;...' --follow --json
+swash attach KXO284
+swash screen KXO284
 ```
 
-`--json` emits one object per line, including the event cursor. `--cursor`
-resumes strictly after that event, and `--follow` continues waiting after
-existing matches have been printed. An unfiltered query requires explicit
-`--all`, since the systemd backend may otherwise expose the entire user journal.
+TTY sessions preserve terminal state between attachments. Multiple clients may
+attach to the same session.
 
-### Contexts
+### Add structured metadata
 
-Contexts group related sessions with a shared working directory. This is useful
-for isolating work on different projects or tasks.
+Tags attach application-specific fields to a session:
 
 ```bash
-swash context new               # create a new context, prints ID and directory
-swash context list              # list all contexts
-swash context dir ABC123        # print context directory path
-swash context shell ABC123      # enter a shell in the context
+swash --tag PROJECT=myapp --tag ENV=staging run -- ./deploy
 ```
 
-Inside a context shell, `SWASH_CONTEXT` is set automatically. All `swash run`
-and `swash start` commands inherit this, so sessions are grouped together.
-The prompt shows the context ID and number of running sessions.
+A process or another client can append semantic events to a session, then query
+them through the same backend-independent event log:
 
 ```bash
-$ swash context shell ABC123
-[swash context ABC123]
-~/.local/state/swash/contexts/ABC123$ swash start ./build.sh
-XYZ789 started
-[swash context ABC123; 1 running]
-~/.local/state/swash/contexts/ABC123$ swash
-# shows only sessions in this context
+swash emit KXO284 --event ready --field PORT=8080
+swash events --session KXO284 --event ready --json
+swash events --field PROJECT=myapp --follow
 ```
 
-Use `swash -a` or `swash history -a` to see all sessions regardless of context.
+Event field names use the uppercase `KEY=VALUE` journal convention. Unfiltered
+queries require the explicit `swash events --all` form.
 
-### HTTP API
+## Backends
 
-swash includes an HTTP server for web-based session management:
+swash provides the same CLI through two execution backends:
+
+- **POSIX** runs sessions as independent process groups, controls them over Unix
+  sockets, and stores events in a SQLite WAL database. It works without systemd
+  and is also the default integration-test backend.
+- **systemd** runs sessions as transient user units, controls them over D-Bus,
+  and stores output in the systemd journal. This adds cgroup-based lifecycle
+  management and compatibility with standard systemd tools.
+
+swash selects systemd when a user D-Bus and systemd user manager are available,
+and POSIX otherwise. Override detection with either form:
 
 ```bash
-swash http                      # run server (default: socket-activated or :8484)
-swash http install [port]       # install as systemd socket service
-swash http uninstall            # remove systemd units
-swash http status               # check service status
+swash --backend posix start -- ./server
+SWASH_BACKEND=systemd swash start -- ./server
 ```
 
-The server provides a web UI for listing sessions, viewing output, and attaching
-to TTY sessions via WebSocket. When installed as a socket service, systemd
-starts the server on-demand when connections arrive.
-
-## Components
-
-The CLI (`cmd/swash`) is the main entry point. It talks to systemd over D-Bus
-to start sessions and connects to running host services to send input or query
-status.
-
-The core library (`internal/`) is split into focused packages. The session host
-implementations live in `internal/host` (`Host`, pipe-based I/O) and
-`internal/tty` (`TTYHost`, PTY + libvterm). Both expose the same D-Bus surface,
-so the CLI doesn't need to know which mode a session is using.
-
-The vterm package (`pkg/vterm`) provides Go bindings to libvterm. It tracks
-screen state, handles scrollback callbacks, and can render the screen back to
-ANSI escape sequences for the `swash screen` command.
-
-The posix backend stores structured events in SQLite, so it needs neither a
-journal daemon nor systemd's journal format. Integration tests use this backend
-by default and run in isolation without root privileges or a real systemd.
-
-## Building
+On the systemd backend, the structured output is also directly queryable:
 
 ```bash
-# Option 1: Use the build wrapper (sets CGO_CFLAGS automatically)
-./build.sh ./cmd/swash/...
-
-# Option 2: Use make
-make build
-
-# Option 3: Set CGO_CFLAGS manually
-CGO_CFLAGS="-I$(pwd)/cvendor" go build ./cmd/swash/
-
-# Run tests
-make test                       # unit + integration tests
-make test-unit                  # just unit tests
-make test-integration           # integration tests (posix backend by default)
+journalctl --user SWASH_SESSION=KXO284
+journalctl --user SWASH_SESSION=KXO284 -o cat
 ```
 
-You'll need Go 1.24+, a C compiler (for libvterm via cgo). The systemd headers
-are vendored in `cvendor/`, so you don't need libsystemd-dev installed - just
-make sure to use `./build.sh` or `make` to set the include path correctly.
+## How it works
 
-## Journal Integration (systemd backend)
+Each session has a host process that owns the command's input, output, and
+lifecycle. Clients talk to the host rather than holding the command's pipes
+open themselves. The host continues recording output when no client is
+connected, which is what makes detach, follow, and reattach reliable.
 
-With the systemd backend, swash writes structured fields to the journal, making
-it easy to query session output:
+Pipe sessions record stdout and stderr as structured lines. TTY sessions use
+libvterm to preserve the screen and terminal state for later attachments.
+
+## Development
 
 ```bash
-journalctl --user SWASH_SESSION=ABC123          # all output from a session
-journalctl --user SWASH_SESSION=ABC123 -o cat   # just the message text
-journalctl --user SWASH_EVENT=exited            # all exit events
+make build              # build bin/swash
+make test-unit          # unit tests
+make test-integration   # isolated POSIX integration tests
+make test               # both
 ```
 
-The `SWASH_SESSION` field identifies the session. `SWASH_EVENT` marks lifecycle
-events (`started`, `exited`, `screen`). Regular output lines include `FD` (1 for
-stdout, 2 for stderr) and `MESSAGE` (the actual text).
-
-With the posix backend, output goes to a SQLite WAL database at
-`~/.local/state/swash/events.db`. Query it through swash's backend-independent
-commands:
-
-```bash
-swash events --session ABC123
-swash events --session ABC123 --follow
-```
-
-Use `swash poll` and `swash follow` to query output regardless of backend.
-
-## Design Rationale
-
-The core idea is that each session runs a "host" process that manages the actual
-command. The host provides a control interface (for input, kill, status) and
-writes output to a structured log. Clients can disconnect and reconnect because
-the host keeps running - the session isn't tied to a terminal.
-
-On Linux with systemd, swash uses transient units because systemd already solves
-process lifecycle management well. It handles starting, stopping, and killing
-processes, isolates resources via cgroups, cleans up automatically on exit, and
-integrates with standard tooling. D-Bus provides stable addressing - session
-ABC123 is always reachable at `sh.swa.Swash.ABC123` regardless of PIDs. The
-systemd journal provides structured fields, efficient queries, automatic
-rotation, and persistence across restarts.
-
-The posix backend provides the same session semantics without systemd
-dependencies. It uses Unix domain sockets for control and file-based event logs
-for output. This makes swash portable to macOS, BSD, and Linux systems without
-systemd.
-
-TTY mode uses libvterm because terminal emulation is surprisingly complex.
-Regex-based approaches break on edge cases; libvterm implements a proper state
-machine that handles all the escape sequences correctly. It also provides
-scrollback callbacks, which is how swash captures output as it scrolls off the
-screen rather than trying to diff screen states.
+Building through Make sets the include path for the vendored systemd headers.
+Set `SWASH_TEST_MODE=real` to run integration tests against the current user's
+real systemd instance.

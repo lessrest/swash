@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"swa.sh/internal/backend"
+	"swa.sh/internal/journal"
 	"swa.sh/internal/server"
 )
 
@@ -145,6 +146,35 @@ func cmdWebUIStop() {
 	}
 
 	fmt.Printf("stopped webui service (session %s)\n", sessionID)
+}
+
+func findServiceSession(ctx context.Context, bk backend.Backend, serviceType string) (string, error) {
+	entries, _, err := bk.PollEvents(ctx, []backend.EventFilter{
+		journal.FilterByEvent(journal.EventServiceType),
+		journal.FilterByService(serviceType),
+	}, "")
+	if err != nil {
+		return "", err
+	}
+
+	serviceSessions := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if id := entry.Fields[journal.FieldSession]; id != "" {
+			serviceSessions[id] = struct{}{}
+		}
+	}
+
+	sessions, err := bk.ListSessions(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, session := range sessions {
+		if _, ok := serviceSessions[session.ID]; ok {
+			return session.ID, nil
+		}
+	}
+
+	return "", fmt.Errorf("no running %s service found", serviceType)
 }
 
 // cmdWebUIStatus shows the status of the webui service.

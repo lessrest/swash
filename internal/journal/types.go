@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"swa.sh/pkg/oxigraph"
 )
 
 // EventRecord represents a single persisted event.
@@ -80,12 +78,10 @@ type EventLog interface {
 
 // Lifecycle event constants.
 const (
-	EventStarted        = "started"
-	EventExited         = "exited"
-	EventScreen         = "screen"          // Final screen state for TTY sessions
-	EventContextCreated = "context-created" // Context creation
-	EventSessionContext = "session-context" // Session-to-context relation
-	EventServiceType    = "service-type"    // Session declares its service type
+	EventStarted     = "started"
+	EventExited      = "exited"
+	EventScreen      = "screen"       // Final screen state for TTY sessions
+	EventServiceType = "service-type" // Session declares its service type
 )
 
 // Event field names for swash events.
@@ -94,7 +90,6 @@ const (
 	FieldSession  = "SWASH_SESSION"
 	FieldCommand  = "SWASH_COMMAND"
 	FieldExitCode = "SWASH_EXIT_CODE"
-	FieldContext  = "SWASH_CONTEXT"
 	FieldService  = "SWASH_SERVICE"
 )
 
@@ -140,26 +135,8 @@ func EmitScreen(log EventLog, sessionID string, screenText string, rows, cols in
 	})
 }
 
-// EmitContextCreated writes a context creation event to the log.
-func EmitContextCreated(log EventLog, contextID string, dir string) error {
-	return log.WriteSync("Context created", map[string]string{
-		FieldEvent:   EventContextCreated,
-		FieldContext: contextID,
-		"DIR":        dir,
-	})
-}
-
-// EmitSessionContext writes a session-to-context relation event.
-func EmitSessionContext(log EventLog, sessionID, contextID string) error {
-	return log.WriteSync("Session belongs to context", map[string]string{
-		FieldEvent:   EventSessionContext,
-		FieldSession: sessionID,
-		FieldContext: contextID,
-	})
-}
-
 // EmitServiceType writes an event declaring the session's service type.
-// This allows finding sessions by their role (e.g., "graph", "journald").
+// This allows finding daemon sessions by their role.
 func EmitServiceType(log EventLog, sessionID, serviceType string) error {
 	return log.WriteSync("Service type", map[string]string{
 		FieldEvent:   EventServiceType,
@@ -183,11 +160,6 @@ func FilterByService(serviceType string) EventFilter {
 	return EventFilter{Field: FieldService, Value: serviceType}
 }
 
-// FilterByContext creates a filter for a context's SWASH_CONTEXT field.
-func FilterByContext(contextID string) EventFilter {
-	return EventFilter{Field: FieldContext, Value: contextID}
-}
-
 // OutputEvent represents a parsed output event from the log.
 type OutputEvent struct {
 	Cursor    string
@@ -206,201 +178,4 @@ type HistorySession struct {
 	ExitCode *int
 	Command  string
 	Started  string
-}
-
-// -----------------------------------------------------------------------------
-// RDF representation of lifecycle events
-// -----------------------------------------------------------------------------
-
-// RDF namespace constants.
-const (
-	NSSwash = "https://swa.sh/ns#"
-	NSXSD   = "http://www.w3.org/2001/XMLSchema#"
-	NSRdf   = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
-)
-
-// Predicate IRIs for swash RDF vocabulary.
-var (
-	RdfType        = oxigraph.IRI(NSRdf + "type")
-	SwashSession   = oxigraph.IRI(NSSwash + "Session")
-	SwashContext   = oxigraph.IRI(NSSwash + "Context")
-	SwashCommand   = oxigraph.IRI(NSSwash + "command")
-	SwashStartedAt = oxigraph.IRI(NSSwash + "startedAt")
-	SwashExitedAt  = oxigraph.IRI(NSSwash + "exitedAt")
-	SwashExitCode  = oxigraph.IRI(NSSwash + "exitCode")
-	SwashDirectory = oxigraph.IRI(NSSwash + "directory")
-	SwashCreatedAt = oxigraph.IRI(NSSwash + "createdAt")
-	SwashInContext = oxigraph.IRI(NSSwash + "context")
-
-	// Service types
-	SwashGraphService = oxigraph.IRI(NSSwash + "GraphService")
-)
-
-// EventToQuads converts an EventRecord to RDF quads.
-// Returns nil if the event type is not a lifecycle event.
-func EventToQuads(e EventRecord) []oxigraph.Quad {
-	eventType := e.Fields[FieldEvent]
-	timestamp := e.Timestamp.Format("2006-01-02T15:04:05Z")
-
-	switch eventType {
-	case EventStarted:
-		return sessionStartedQuads(e, timestamp)
-	case EventExited:
-		return sessionExitedQuads(e, timestamp)
-	case EventContextCreated:
-		return contextCreatedQuads(e, timestamp)
-	case EventSessionContext:
-		return sessionContextQuads(e)
-	case EventServiceType:
-		return serviceTypeQuads(e)
-	default:
-		return nil
-	}
-}
-
-// sessionStartedQuads generates quads for a session started event.
-func sessionStartedQuads(e EventRecord, timestamp string) []oxigraph.Quad {
-	sessionID := e.Fields[FieldSession]
-	if sessionID == "" {
-		return nil
-	}
-
-	subject := SessionIRI(sessionID)
-	quads := []oxigraph.Quad{
-		{Subject: subject, Predicate: RdfType, Object: SwashSession},
-		{Subject: subject, Predicate: SwashStartedAt, Object: dateTimeLiteral(timestamp)},
-	}
-
-	if cmd := e.Fields[FieldCommand]; cmd != "" {
-		quads = append(quads, oxigraph.Quad{
-			Subject: subject, Predicate: SwashCommand, Object: oxigraph.StringLiteral(cmd),
-		})
-	}
-
-	return quads
-}
-
-// sessionExitedQuads generates quads for a session exited event.
-func sessionExitedQuads(e EventRecord, timestamp string) []oxigraph.Quad {
-	sessionID := e.Fields[FieldSession]
-	if sessionID == "" {
-		return nil
-	}
-
-	subject := SessionIRI(sessionID)
-	quads := []oxigraph.Quad{
-		{Subject: subject, Predicate: SwashExitedAt, Object: dateTimeLiteral(timestamp)},
-	}
-
-	if codeStr := e.Fields[FieldExitCode]; codeStr != "" {
-		if code, err := strconv.Atoi(codeStr); err == nil {
-			quads = append(quads, oxigraph.Quad{
-				Subject: subject, Predicate: SwashExitCode, Object: intLiteral(code),
-			})
-		}
-	}
-
-	return quads
-}
-
-// contextCreatedQuads generates quads for a context created event.
-func contextCreatedQuads(e EventRecord, timestamp string) []oxigraph.Quad {
-	contextID := e.Fields[FieldContext]
-	if contextID == "" {
-		return nil
-	}
-
-	subject := ContextIRI(contextID)
-	quads := []oxigraph.Quad{
-		{Subject: subject, Predicate: RdfType, Object: SwashContext},
-		{Subject: subject, Predicate: SwashCreatedAt, Object: dateTimeLiteral(timestamp)},
-	}
-
-	if dir := e.Fields["DIR"]; dir != "" {
-		quads = append(quads, oxigraph.Quad{
-			Subject: subject, Predicate: SwashDirectory, Object: oxigraph.StringLiteral(dir),
-		})
-	}
-
-	return quads
-}
-
-// sessionContextQuads generates quads linking a session to its context.
-func sessionContextQuads(e EventRecord) []oxigraph.Quad {
-	sessionID := e.Fields[FieldSession]
-	contextID := e.Fields[FieldContext]
-	if sessionID == "" || contextID == "" {
-		return nil
-	}
-
-	return []oxigraph.Quad{
-		{
-			Subject:   SessionIRI(sessionID),
-			Predicate: SwashInContext,
-			Object:    ContextIRI(contextID),
-		},
-	}
-}
-
-// serviceTypeQuads generates quads for a service type declaration.
-func serviceTypeQuads(e EventRecord) []oxigraph.Quad {
-	sessionID := e.Fields[FieldSession]
-	serviceType := e.Fields[FieldService]
-	if sessionID == "" || serviceType == "" {
-		return nil
-	}
-
-	// Map service type string to RDF class
-	var typeIRI oxigraph.NamedNode
-	switch serviceType {
-	case "graph":
-		typeIRI = SwashGraphService
-	default:
-		// Unknown service type - use a generic IRI
-		typeIRI = oxigraph.IRI(NSSwash + "Service/" + serviceType)
-	}
-
-	return []oxigraph.Quad{
-		{
-			Subject:   SessionIRI(sessionID),
-			Predicate: RdfType,
-			Object:    typeIRI,
-		},
-	}
-}
-
-// SessionIRI returns the URN for a session.
-func SessionIRI(id string) oxigraph.NamedNode {
-	return oxigraph.IRI("urn:swash:session:" + id)
-}
-
-// ContextIRI returns the URN for a context.
-func ContextIRI(id string) oxigraph.NamedNode {
-	return oxigraph.IRI("urn:swash:context:" + id)
-}
-
-func dateTimeLiteral(ts string) oxigraph.Literal {
-	return oxigraph.TypedLiteral(ts, NSXSD+"dateTime")
-}
-
-func intLiteral(n int) oxigraph.Literal {
-	return oxigraph.TypedLiteral(fmt.Sprintf("%d", n), NSXSD+"integer")
-}
-
-// IsLifecycleEvent returns true if the event has a SWASH_EVENT field.
-func IsLifecycleEvent(e EventRecord) bool {
-	return e.Fields[FieldEvent] != ""
-}
-
-// LifecycleEventFilters returns filters that match all lifecycle event types.
-// Multiple filters for the same field create an OR condition.
-func LifecycleEventFilters() []EventFilter {
-	return []EventFilter{
-		{Field: FieldEvent, Value: EventStarted},
-		{Field: FieldEvent, Value: EventExited},
-		{Field: FieldEvent, Value: EventScreen},
-		{Field: FieldEvent, Value: EventContextCreated},
-		{Field: FieldEvent, Value: EventSessionContext},
-		{Field: FieldEvent, Value: EventServiceType},
-	}
 }

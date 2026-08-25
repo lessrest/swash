@@ -17,10 +17,8 @@ import (
 	"time"
 
 	"swa.sh/internal/backend"
-	"swa.sh/internal/graph"
 	"swa.sh/internal/host"
 	"swa.sh/internal/journal"
-	"swa.sh/pkg/oxigraph"
 )
 
 const conservativeUnixSocketPathLimit = 100
@@ -367,14 +365,6 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		return "", err
 	}
 
-	// Emit session-context relation if context is set
-	if opts.ContextID != "" {
-		if err := b.emitSessionContext(ctx, sessionID, opts.ContextID); err != nil {
-			// Log but don't fail - session already started
-			fmt.Fprintf(os.Stderr, "warning: failed to emit session-context: %v\n", err)
-		}
-	}
-
 	// Emit service type if set
 	if opts.ServiceType != "" {
 		if err := b.emitServiceType(ctx, sessionID, opts.ServiceType); err != nil {
@@ -603,229 +593,12 @@ func (b *PosixBackend) ConnectTTYSession(sessionID string) (host.TTYClient, erro
 	return ConnectTTY(sessionID, sock)
 }
 
-// -----------------------------------------------------------------------------
-// Context management
-// -----------------------------------------------------------------------------
-
-func (b *PosixBackend) contextDir(contextID string) string {
-	return filepath.Join(b.cfg.StateDir, "contexts", contextID)
-}
-
-func (b *PosixBackend) CreateContext(ctx context.Context) (string, string, error) {
-	contextID := host.GenID()
-	dir := b.contextDir(contextID)
-
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", "", fmt.Errorf("creating context directory: %w", err)
-	}
-
-	el, err := b.ensureSharedLog(ctx)
-	if err != nil {
-		return "", "", fmt.Errorf("opening shared event log: %w", err)
-	}
-	// Don't close - kept open for future writes
-
-	if err := journal.EmitContextCreated(el, contextID, dir); err != nil {
-		return "", "", fmt.Errorf("emitting context-created event: %w", err)
-	}
-
-	return contextID, dir, nil
-}
-
-func (b *PosixBackend) ListContexts(ctx context.Context) ([]backend.Context, error) {
-	el, err := b.ensureSharedLog(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("opening shared event log: %w", err)
-	}
-	// Don't close - kept open
-
-	filters := []journal.EventFilter{journal.FilterByEvent(journal.EventContextCreated)}
-	entries, _, err := el.Poll(ctx, filters, "")
-	if err != nil {
-		return nil, err
-	}
-
-	var contexts []backend.Context
-	for _, e := range entries {
-		contexts = append(contexts, backend.Context{
-			ID:      e.Fields[journal.FieldContext],
-			Dir:     e.Fields["DIR"],
-			Created: e.Timestamp,
-		})
-	}
-	return contexts, nil
-}
-
-func (b *PosixBackend) GetContextDir(ctx context.Context, contextID string) (string, error) {
-	_ = ctx
-	dir := b.contextDir(contextID)
-	if _, err := os.Stat(dir); err != nil {
-		return "", fmt.Errorf("context %s not found", contextID)
-	}
-	return dir, nil
-}
-
-func (b *PosixBackend) ListContextSessions(ctx context.Context, contextID string) ([]string, error) {
-	el, err := b.ensureSharedLog(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("opening shared event log: %w", err)
-	}
-	// Don't close - kept open
-
-	filters := []journal.EventFilter{
-		journal.FilterByEvent(journal.EventSessionContext),
-		journal.FilterByContext(contextID),
-	}
-	entries, _, err := el.Poll(ctx, filters, "")
-	if err != nil {
-		return nil, err
-	}
-
-	var sessionIDs []string
-	for _, e := range entries {
-		if sid := e.Fields[journal.FieldSession]; sid != "" {
-			sessionIDs = append(sessionIDs, sid)
-		}
-	}
-	return sessionIDs, nil
-}
-
-func (b *PosixBackend) emitSessionContext(ctx context.Context, sessionID, contextID string) error {
-	el, err := b.ensureSharedLog(ctx)
-	if err != nil {
-		return fmt.Errorf("opening shared event log: %w", err)
-	}
-	// Don't close - kept open for future writes
-
-	return journal.EmitSessionContext(el, sessionID, contextID)
-}
-
 func (b *PosixBackend) emitServiceType(ctx context.Context, sessionID, serviceType string) error {
 	el, err := b.ensureSharedLog(ctx)
 	if err != nil {
 		return fmt.Errorf("opening shared event log: %w", err)
 	}
 	return journal.EmitServiceType(el, sessionID, serviceType)
-}
-
-// -----------------------------------------------------------------------------
-// Graph (RDF knowledge graph)
-// -----------------------------------------------------------------------------
-
-func (b *PosixBackend) graphSocketPath() string {
-	return filepath.Join(b.cfg.RuntimeDir, "graph.sock")
-}
-
-func (b *PosixBackend) graphClient() *graph.Client {
-	return graph.NewClient(b.graphSocketPath())
-}
-
-// ensureGraph starts "swash graph serve" if it's not already running.
-func (b *PosixBackend) ensureGraph(ctx context.Context) error {
-	socketPath := b.graphSocketPath()
-
-	// Check if service is already running and healthy
-	client := b.graphClient()
-	if err := client.Health(ctx); err == nil {
-		return nil // Already running
-	}
-
-	// Use the same swash binary with "graph serve" subcommand
-	swashBin := b.cfg.HostCommand[0]
-
-	cmd := osexec.CommandContext(ctx, swashBin, "graph", "serve",
-		"--socket", socketPath,
-	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	// Redirect output
-	devNull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	if devNull != nil {
-		cmd.Stdin = devNull
-		cmd.Stdout = devNull
-		cmd.Stderr = os.Stderr // Let errors show
-	}
-
-	if err := cmd.Start(); err != nil {
-		if devNull != nil {
-			devNull.Close()
-		}
-		return fmt.Errorf("starting swash graph serve: %w", err)
-	}
-	if devNull != nil {
-		devNull.Close()
-	}
-
-	// Wait for health check to pass
-	deadline := time.Now().Add(10 * time.Second) // Graph service takes longer to start (WASM)
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for graph service to start")
-		}
-		if err := client.Health(ctx); err == nil {
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func (b *PosixBackend) GraphQuery(ctx context.Context, sparql string) ([]oxigraph.Solution, error) {
-	if err := b.ensureGraph(ctx); err != nil {
-		return nil, fmt.Errorf("ensuring graph service: %w", err)
-	}
-
-	client := b.graphClient()
-	return client.Query(ctx, sparql)
-}
-
-func (b *PosixBackend) GraphSerialize(ctx context.Context, pattern oxigraph.Pattern, format oxigraph.Format) ([]byte, error) {
-	if err := b.ensureGraph(ctx); err != nil {
-		return nil, fmt.Errorf("ensuring graph service: %w", err)
-	}
-
-	client := b.graphClient()
-
-	// Map format to string for HTTP API
-	formatStr := ""
-	if format == oxigraph.NQuads {
-		formatStr = "nquads"
-	}
-
-	return client.Quads(ctx, pattern, formatStr)
-}
-
-func (b *PosixBackend) GraphLoad(ctx context.Context, data []byte, format oxigraph.Format) error {
-	if err := b.ensureGraph(ctx); err != nil {
-		return fmt.Errorf("ensuring graph service: %w", err)
-	}
-
-	client := b.graphClient()
-	return client.Load(ctx, data, format)
-}
-
-// -----------------------------------------------------------------------------
-// Lifecycle events (for graph population)
-// -----------------------------------------------------------------------------
-
-func (b *PosixBackend) PollLifecycleEvents(ctx context.Context, cursor string) ([]journal.EventRecord, string, error) {
-	log, err := b.ensureSharedLog(ctx)
-	if err != nil {
-		return nil, "", err
-	}
-	filters := journal.LifecycleEventFilters()
-	return log.Poll(ctx, filters, cursor)
-}
-
-func (b *PosixBackend) FollowLifecycleEvents(ctx context.Context) iter.Seq[journal.EventRecord] {
-	log, err := b.ensureSharedLog(ctx)
-	if err != nil {
-		return func(yield func(journal.EventRecord) bool) {}
-	}
-	filters := journal.LifecycleEventFilters()
-	return log.Follow(ctx, filters, "")
 }
 
 func (b *PosixBackend) EmitSessionEvent(ctx context.Context, sessionID, event, message string, fields map[string]string) error {

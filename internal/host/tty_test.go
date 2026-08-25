@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -691,12 +690,10 @@ func TestTTYHost_Attach_Basic(t *testing.T) {
 	host.vt.Write([]byte("Hello World"))
 
 	// Attach with client size matching the host
-	outputFD, inputFD, rows, cols, screenANSI, _, err := host.Attach(5, 40)
+	output, input, rows, cols, screenANSI, _, err := AttachIO(host, 5, 40)
 	if err != nil {
 		t.Fatalf("Attach failed: %v", err)
 	}
-	output := os.NewFile(uintptr(outputFD), "attach-output")
-	input := os.NewFile(uintptr(inputFD), "attach-input")
 	defer output.Close()
 	defer input.Close()
 
@@ -725,12 +722,10 @@ func TestTTYHost_Attach_MultiClient(t *testing.T) {
 	defer host.Close()
 
 	// First attach should succeed and set terminal size
-	outputFD1, inputFD1, rows1, cols1, _, clientID1, err := host.Attach(10, 80)
+	output1, input1, rows1, cols1, _, clientID1, err := AttachIO(host, 10, 80)
 	if err != nil {
 		t.Fatalf("First Attach failed: %v", err)
 	}
-	output1 := os.NewFile(uintptr(outputFD1), "output1")
-	input1 := os.NewFile(uintptr(inputFD1), "input1")
 	defer output1.Close()
 	defer input1.Close()
 
@@ -743,12 +738,10 @@ func TestTTYHost_Attach_MultiClient(t *testing.T) {
 	}
 
 	// Second attach with sufficient size should succeed
-	outputFD2, inputFD2, rows2, cols2, _, clientID2, err := host.Attach(12, 100)
+	output2, input2, rows2, cols2, _, clientID2, err := AttachIO(host, 12, 100)
 	if err != nil {
 		t.Fatalf("Second Attach (large enough) failed: %v", err)
 	}
-	output2 := os.NewFile(uintptr(outputFD2), "output2")
-	input2 := os.NewFile(uintptr(inputFD2), "input2")
 	defer output2.Close()
 	defer input2.Close()
 
@@ -761,7 +754,7 @@ func TestTTYHost_Attach_MultiClient(t *testing.T) {
 	}
 
 	// Third attach with too-small terminal should fail
-	_, _, _, _, _, _, err = host.Attach(5, 40)
+	_, _, _, _, _, _, err = AttachIO(host, 5, 40)
 	if err == nil {
 		t.Error("expected third Attach with small terminal to fail")
 	}
@@ -816,12 +809,10 @@ func TestTTYHost_Attach_StreamOutput(t *testing.T) {
 	<-ready
 
 	// Attach while process is running
-	outputFD, inputFD, _, _, _, _, err := host.Attach(5, 40)
+	output, input, _, _, _, _, err := AttachIO(host, 5, 40)
 	if err != nil {
 		t.Fatalf("Attach failed: %v", err)
 	}
-	output := os.NewFile(uintptr(outputFD), "output")
-	input := os.NewFile(uintptr(inputFD), "input")
 	defer output.Close()
 	defer input.Close()
 
@@ -862,12 +853,10 @@ func TestTTYHost_Attach_ReattachAfterDisconnect(t *testing.T) {
 	defer host.Close()
 
 	// First attach
-	outputFD1, inputFD1, _, _, _, _, err := host.Attach(10, 80)
+	output1, input1, _, _, _, _, err := AttachIO(host, 10, 80)
 	if err != nil {
 		t.Fatalf("First Attach failed: %v", err)
 	}
-	output1 := os.NewFile(uintptr(outputFD1), "output1")
-	input1 := os.NewFile(uintptr(inputFD1), "input1")
 
 	// Close the pipes (simulating client disconnect)
 	output1.Close()
@@ -877,12 +866,10 @@ func TestTTYHost_Attach_ReattachAfterDisconnect(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Second attach should succeed and can use a different size (no other clients)
-	outputFD2, inputFD2, rows, cols, _, _, err := host.Attach(20, 100)
+	output2, input2, rows, cols, _, _, err := AttachIO(host, 20, 100)
 	if err != nil {
 		t.Fatalf("Second Attach after disconnect failed: %v", err)
 	}
-	output2 := os.NewFile(uintptr(outputFD2), "output2")
-	input2 := os.NewFile(uintptr(inputFD2), "input2")
 	defer output2.Close()
 	defer input2.Close()
 
@@ -932,12 +919,10 @@ func TestTTYHost_Attach_SendInput(t *testing.T) {
 	<-ready
 
 	// Attach
-	outputFD, inputFD, _, _, _, _, err := host.Attach(5, 40)
+	output, input, _, _, _, _, err := AttachIO(host, 5, 40)
 	if err != nil {
 		t.Fatalf("Attach failed: %v", err)
 	}
-	output := os.NewFile(uintptr(outputFD), "output")
-	input := os.NewFile(uintptr(inputFD), "input")
 	defer output.Close()
 	defer input.Close()
 

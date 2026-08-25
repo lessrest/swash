@@ -233,7 +233,6 @@ func (e *testEnv) getEnvVars() []string {
 		// Explicitly request systemd backend in case DBUS_SESSION_BUS_ADDRESS
 		// isn't set in the CI environment (which would cause auto-detection
 		// to choose posix instead).
-		// Also isolate runtime dir so graph tests don't use system's graph service.
 		env = append(env,
 			"SWASH_BACKEND=systemd",
 			"SWASH_RUNTIME_DIR="+e.tmpDir,
@@ -823,77 +822,6 @@ func TestTTYScreenEvent(t *testing.T) {
 
 		if !strings.Contains(journalOut, "SCREEN_CAPTURE_TEST") {
 			t.Errorf("expected 'SCREEN_CAPTURE_TEST' in screen event, got: %s", journalOut)
-		}
-	})
-}
-
-// --- Context tests ---
-
-func TestContextNew(t *testing.T) {
-	runTest(t, func(t *testing.T, e *testEnv) {
-		stdout, stderr, err := e.runSwash("context", "new")
-		if err != nil {
-			t.Fatalf("swash context new failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
-		}
-
-		if !strings.Contains(stdout, "created") {
-			t.Errorf("expected 'created' in output, got: %s", stdout)
-		}
-
-		// Extract context ID (first word)
-		parts := strings.Fields(stdout)
-		if len(parts) == 0 {
-			t.Fatal("no context ID in output")
-		}
-		contextID := parts[0]
-
-		// Verify directory was created
-		lines := strings.Split(strings.TrimSpace(stdout), "\n")
-		if len(lines) < 2 {
-			t.Fatalf("expected directory path in output, got: %s", stdout)
-		}
-		contextDir := lines[1]
-
-		if _, err := os.Stat(contextDir); err != nil {
-			t.Errorf("context directory not created: %v", err)
-		}
-
-		// Verify context appears in list
-		listOut, _, err := e.runSwash("context", "list")
-		if err != nil {
-			t.Fatalf("swash context list failed: %v", err)
-		}
-		if !strings.Contains(listOut, contextID) {
-			t.Errorf("expected context %s in list, got: %s", contextID, listOut)
-		}
-	})
-}
-
-func TestContextWorkingDirectory(t *testing.T) {
-	runTest(t, func(t *testing.T, e *testEnv) {
-		// Create context
-		stdout, _, err := e.runSwash("context", "new")
-		if err != nil {
-			t.Fatalf("swash context new failed: %v", err)
-		}
-		parts := strings.Fields(stdout)
-		contextID := parts[0]
-
-		// Get context directory
-		dirOut, _, _ := e.runSwash("context", "dir", contextID)
-		contextDir := strings.TrimSpace(dirOut)
-
-		// Run pwd in context - should be context directory
-		env := map[string]string{"SWASH_CONTEXT": contextID}
-		stdout, _, err = e.runSwashEnv(env, "run", "pwd")
-		if err != nil {
-			t.Fatalf("swash run pwd failed: %v", err)
-		}
-		actualDir := strings.TrimSpace(stdout)
-		expectedInfo, expectedErr := os.Stat(contextDir)
-		actualInfo, actualErr := os.Stat(actualDir)
-		if expectedErr != nil || actualErr != nil || !os.SameFile(expectedInfo, actualInfo) {
-			t.Errorf("expected working dir %s, got: %s", contextDir, stdout)
 		}
 	})
 }
