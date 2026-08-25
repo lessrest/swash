@@ -207,13 +207,6 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 		return "", err
 	}
 
-	// Emit service type if set
-	if opts.ServiceType != "" {
-		if err := journal.EmitServiceType(b.events, sessionID, opts.ServiceType); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to emit service-type: %v\n", err)
-		}
-	}
-
 	return sessionID, nil
 }
 

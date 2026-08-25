@@ -77,12 +77,6 @@ func main() {
 		return
 	}
 
-	// Handle "webui" subcommand (has its own flags)
-	if len(os.Args) >= 2 && os.Args[1] == "webui" {
-		cmdWebUI(os.Args[2:])
-		return
-	}
-
 	// Register flags
 	flag.StringVar(&backendFlag, "backend", os.Getenv("SWASH_BACKEND"), "Backend: systemd, posix (overrides SWASH_BACKEND)")
 	flag.StringVarP(&protocolFlag, "protocol", "p", "shell", "Protocol: shell, sse")
@@ -110,9 +104,6 @@ Usage:
   swash history                      Show session history
   swash emit ID --event NAME         Append a semantic session event
   swash events [filters]             Query structured journal events
-  swash webui start                  Start the web UI service
-  swash webui stop                   Stop the web UI service
-  swash webui status                 Show web UI service status
   swash host                         (internal) Run as task host
 
 Flags:
@@ -184,8 +175,6 @@ Flags:
 		cmdAttach(cmdArgs[0])
 	case "host":
 		cmdHost()
-	case "webui":
-		cmdWebUI(cmdArgs)
 	default:
 		fatal("unknown command: %s", cmd)
 	}

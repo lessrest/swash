@@ -13,7 +13,6 @@ make build              # Build bin/swash
 make test               # Run all tests (unit + integration)
 make test-unit          # Run unit tests only: go test ./pkg/... ./internal/... ./vterm/...
 make test-integration   # Run integration tests: go test ./integration/... -v -timeout 120s
-make generate           # Run go generate for templ files
 make clean              # Remove bin/
 ```
 
@@ -78,7 +77,3 @@ Use `SWASH_TEST_MODE=real` to test with real systemd, or leave unset for isolate
 ## Journal Fields
 
 Sessions write structured fields: `SWASH_SESSION`, `SWASH_EVENT` (started/exited/screen), `FD` (1=stdout, 2=stderr). Query with: `journalctl --user SWASH_SESSION=<ID>`.
-
-## HTTP API
-
-`swash http` runs a web server with session listing, output viewing, and WebSocket TTY attach. Can be installed as a systemd socket-activated service via `swash http install`.

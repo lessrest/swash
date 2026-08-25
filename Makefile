@@ -12,14 +12,11 @@ export CGO_CFLAGS
 SWASH_TEST_MODE ?= posix
 export SWASH_TEST_MODE
 
-.PHONY: all build test test-unit test-integration test-all-backends install clean generate vterm-wasm coverage
+.PHONY: all build test test-unit test-integration test-all-backends install clean vterm-wasm coverage
 
 all: build
 
-generate:
-	go generate ./cmd/swash/templates/
-
-build: generate bin/swash
+build: bin/swash
 
 bin/swash: $(shell find . -name '*.go' -not -path './test/*')
 	go build -o $@ ./cmd/swash/
@@ -50,7 +47,7 @@ clean:
 
 # Coverage report from unit + integration tests (runs all backends)
 COVERAGE_DIR := $(CURDIR)/coverage
-coverage: generate
+coverage:
 	@rm -rf $(COVERAGE_DIR)
 	@mkdir -p $(COVERAGE_DIR)/unit $(COVERAGE_DIR)/integration $(COVERAGE_DIR)/merged
 	go build -cover -o bin/swash ./cmd/swash/

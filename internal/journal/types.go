@@ -78,10 +78,9 @@ type EventLog interface {
 
 // Lifecycle event constants.
 const (
-	EventStarted     = "started"
-	EventExited      = "exited"
-	EventScreen      = "screen"       // Final screen state for TTY sessions
-	EventServiceType = "service-type" // Session declares its service type
+	EventStarted = "started"
+	EventExited  = "exited"
+	EventScreen  = "screen" // Final screen state for TTY sessions
 )
 
 // Event field names for swash events.
@@ -90,7 +89,6 @@ const (
 	FieldSession  = "SWASH_SESSION"
 	FieldCommand  = "SWASH_COMMAND"
 	FieldExitCode = "SWASH_EXIT_CODE"
-	FieldService  = "SWASH_SERVICE"
 )
 
 // EmitStarted writes a session started event to the log.
@@ -135,16 +133,6 @@ func EmitScreen(log EventLog, sessionID string, screenText string, rows, cols in
 	})
 }
 
-// EmitServiceType writes an event declaring the session's service type.
-// This allows finding daemon sessions by their role.
-func EmitServiceType(log EventLog, sessionID, serviceType string) error {
-	return log.WriteSync("Service type", map[string]string{
-		FieldEvent:   EventServiceType,
-		FieldSession: sessionID,
-		FieldService: serviceType,
-	})
-}
-
 // EmitSessionEvent appends an application-defined semantic event. Arbitrary
 // fields describe the event, while Swash retains ownership of its identity.
 func EmitSessionEvent(log EventLog, sessionID, event, message string, extraFields map[string]string) error {
@@ -153,11 +141,6 @@ func EmitSessionEvent(log EventLog, sessionID, event, message string, extraField
 	fields[FieldEvent] = event
 	fields[FieldSession] = sessionID
 	return log.WriteSync(message, fields)
-}
-
-// FilterByService creates a filter for a service's SWASH_SERVICE field.
-func FilterByService(serviceType string) EventFilter {
-	return EventFilter{Field: FieldService, Value: serviceType}
 }
 
 // OutputEvent represents a parsed output event from the log.

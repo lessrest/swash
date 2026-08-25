@@ -365,13 +365,6 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		return "", err
 	}
 
-	// Emit service type if set
-	if opts.ServiceType != "" {
-		if err := b.emitServiceType(ctx, sessionID, opts.ServiceType); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to emit service-type: %v\n", err)
-		}
-	}
-
 	return sessionID, nil
 }
 
@@ -591,14 +584,6 @@ func (b *PosixBackend) ConnectTTYSession(sessionID string) (host.TTYClient, erro
 		return nil, err
 	}
 	return ConnectTTY(sessionID, sock)
-}
-
-func (b *PosixBackend) emitServiceType(ctx context.Context, sessionID, serviceType string) error {
-	el, err := b.ensureSharedLog(ctx)
-	if err != nil {
-		return fmt.Errorf("opening shared event log: %w", err)
-	}
-	return journal.EmitServiceType(el, sessionID, serviceType)
 }
 
 func (b *PosixBackend) EmitSessionEvent(ctx context.Context, sessionID, event, message string, fields map[string]string) error {

@@ -26,13 +26,12 @@ type Session struct {
 
 // SessionOptions configures a new session.
 type SessionOptions struct {
-	Protocol    protocol.Protocol // shell (default), sse
-	Tags        map[string]string // Extra journal fields
-	TTY         bool              // Use PTY mode with terminal emulation
-	Rows        int               // Terminal rows (for TTY mode)
-	Cols        int               // Terminal columns (for TTY mode)
-	WorkingDir  string            // Working directory for the session (optional, defaults to cwd)
-	ServiceType string            // Service type for daemon sessions
+	Protocol   protocol.Protocol // shell (default), sse
+	Tags       map[string]string // Extra journal fields
+	TTY        bool              // Use PTY mode with terminal emulation
+	Rows       int               // Terminal rows (for TTY mode)
+	Cols       int               // Terminal columns (for TTY mode)
+	WorkingDir string            // Working directory for the session (optional, defaults to cwd)
 }
 
 // EventFilter is a semantic event query filter.
