@@ -67,12 +67,6 @@ func main() {
 		return
 	}
 
-	// Handle "minijournald" subcommand (minimal journald daemon for posix backend)
-	if len(os.Args) >= 2 && os.Args[1] == "minijournald" {
-		cmdMinijournald()
-		return
-	}
-
 	// Handle "emit" before global flag parsing so it can have its own
 	// repeatable --field flags and a deliberately small command surface.
 	if len(os.Args) >= 2 && os.Args[1] == "emit" {

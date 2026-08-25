@@ -8,18 +8,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
-	"swa.sh/pkg/journalfile"
+	"swa.sh/internal/journal"
 )
 
 const testTimeout = 10 * time.Second
@@ -66,10 +64,8 @@ type testEnv struct {
 	rootSlice  string // unique slice for test isolation
 
 	// posix-specific
-	journaldCmd   *exec.Cmd
-	journalSocket string
-	stateDir      string
-	runtimeDir    string
+	stateDir   string
+	runtimeDir string
 }
 
 var (
@@ -132,12 +128,10 @@ func setupEnv() (*testEnv, error) {
 
 func (e *testEnv) setupPosix() error {
 	// Set up shared directories for posix mode
-	// - stateDir: persistent data (journal files)
+	// - stateDir: persistent data (SQLite event database)
 	// - runtimeDir: ephemeral data (sockets, session metadata)
 	e.stateDir = filepath.Join(e.tmpDir, "state")
 	e.runtimeDir = filepath.Join(e.tmpDir, "runtime")
-	e.journalSocket = filepath.Join(e.runtimeDir, "journal.socket")
-	e.journalDir = e.stateDir // journal file goes here
 
 	if err := os.MkdirAll(e.stateDir, 0755); err != nil {
 		return fmt.Errorf("creating state dir: %w", err)
@@ -145,36 +139,6 @@ func (e *testEnv) setupPosix() error {
 	if err := os.MkdirAll(e.runtimeDir, 0755); err != nil {
 		return fmt.Errorf("creating runtime dir: %w", err)
 	}
-
-	// Start "swash minijournald" daemon for the test suite (uses already-built swash binary)
-	journalPath := filepath.Join(e.stateDir, "swash.journal")
-	e.journaldCmd = exec.Command(e.swashBin, "minijournald",
-		"--socket", e.journalSocket,
-		"--journal", journalPath,
-	)
-	e.journaldCmd.Env = os.Environ()
-	e.journaldCmd.Stdout = os.Stdout
-	e.journaldCmd.Stderr = os.Stderr
-	e.journaldCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := e.journaldCmd.Start(); err != nil {
-		return fmt.Errorf("starting swash minijournald: %w", err)
-	}
-
-	// The helper may need a moment to start on a busy machine. Keep this below
-	// the suite's five-second timeout, but do not assume sub-second startup.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(e.journalSocket); err == nil {
-			return nil
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if _, err := os.Stat(e.journalSocket); err != nil {
-		_ = syscall.Kill(-e.journaldCmd.Process.Pid, syscall.SIGKILL)
-		_ = e.journaldCmd.Wait()
-		return fmt.Errorf("swash minijournald socket did not appear: %w", err)
-	}
-
 	return nil
 }
 
@@ -187,13 +151,6 @@ func (e *testEnv) cleanup() {
 			runCmd(3*time.Second, "systemctl", "--user", "reset-failed")
 		}
 
-		// Gracefully stop "swash minijournald" for posix mode
-		if e.journaldCmd != nil && e.journaldCmd.Process != nil {
-			syscall.Kill(e.journaldCmd.Process.Pid, syscall.SIGTERM)
-			time.Sleep(100 * time.Millisecond)
-			syscall.Kill(-e.journaldCmd.Process.Pid, syscall.SIGKILL)
-			e.journaldCmd.Wait()
-		}
 		if e.tmpDir != "" {
 			os.RemoveAll(e.tmpDir)
 		}
@@ -293,68 +250,16 @@ func (e *testEnv) getEnvVars() []string {
 	return env
 }
 
-// journalReaderMode determines how to read journal files in tests.
-// Set SWASH_TEST_JOURNAL_READER=journalctl to force journalctl,
-// SWASH_TEST_JOURNAL_READER=native to force pure Go reader,
-// or leave empty for auto-detect (journalctl if available, else native).
-func journalReaderMode() string {
-	mode := os.Getenv("SWASH_TEST_JOURNAL_READER")
-	if mode != "" {
-		return mode
-	}
-	// Auto-detect: use journalctl if available
-	if _, err := exec.LookPath("journalctl"); err == nil {
-		return "journalctl"
-	}
-	return "native"
-}
-
-// runJournalctl runs journalctl with the appropriate arguments for the mode,
-// or falls back to pure Go reader if journalctl is not available.
+// runJournalctl queries the real journal in systemd mode and the SQLite event
+// database in POSIX mode. It supports the journalctl arguments used by tests.
 func (e *testEnv) runJournalctl(args ...string) (string, error) {
-	readerMode := journalReaderMode()
-
-	// For "real" mode with system journal, we must use journalctl
-	if e.mode == "real" && readerMode == "native" {
-		return "", fmt.Errorf("native reader cannot read system journal; install journalctl or use SWASH_TEST_MODE=posix")
+	if e.mode == "real" {
+		out, err := runCmd(5*time.Second, "journalctl", append([]string{"--user"}, args...)...)
+		return string(out), err
 	}
 
-	// Collect journal files for posix mode
-	var journalFiles []string
-	if e.mode == "posix" {
-		// Posix mode uses a single shared journal file
-		sharedJournal := filepath.Join(e.tmpDir, "state", "swash.journal")
-		if _, err := os.Stat(sharedJournal); err != nil {
-			return "", fmt.Errorf("shared journal file not found: %s", sharedJournal)
-		}
-		journalFiles = []string{sharedJournal}
-	}
-
-	if readerMode == "native" && len(journalFiles) > 0 {
-		return e.readJournalNative(journalFiles, args...)
-	}
-
-	// Use journalctl
-	var baseArgs []string
-	switch e.mode {
-	case "posix":
-		for _, f := range journalFiles {
-			baseArgs = append(baseArgs, "--file="+f)
-		}
-	default:
-		baseArgs = []string{"--user"}
-	}
-	out, err := runCmd(5*time.Second, "journalctl", append(baseArgs, args...)...)
-	return string(out), err
-}
-
-// readJournalNative reads journal files using our pure Go reader.
-// Supports a subset of journalctl args: -o cat, FIELD=VALUE filters.
-func (e *testEnv) readJournalNative(files []string, args ...string) (string, error) {
-	// Parse args for output format and filters
 	outputFormat := "short"
-	var filters []struct{ field, value string }
-
+	var filters []journal.EventFilter
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "-o" && i+1 < len(args) {
@@ -362,45 +267,31 @@ func (e *testEnv) readJournalNative(files []string, args ...string) (string, err
 			i++
 		} else if strings.Contains(arg, "=") && !strings.HasPrefix(arg, "-") {
 			parts := strings.SplitN(arg, "=", 2)
-			filters = append(filters, struct{ field, value string }{parts[0], parts[1]})
+			filters = append(filters, journal.EventFilter{Field: parts[0], Value: parts[1]})
 		}
+	}
+
+	log, err := journal.OpenSQLite(filepath.Join(e.stateDir, "events.db"))
+	if err != nil {
+		return "", err
+	}
+	defer log.Close()
+	records, _, err := log.Poll(context.Background(), filters, "")
+	if err != nil {
+		return "", err
 	}
 
 	var lines []string
-	for _, path := range files {
-		r, err := journalfile.OpenRead(path)
-		if err != nil {
-			continue // skip unreadable files
+	for _, record := range records {
+		switch outputFormat {
+		case "cat":
+			lines = append(lines, record.Message)
+		case "short":
+			lines = append(lines, fmt.Sprintf("%s %s", record.Timestamp.Format("Jan 02 15:04:05"), record.Message))
+		default:
+			lines = append(lines, record.Message)
 		}
-
-		// Apply filters
-		for _, f := range filters {
-			r.AddMatch(f.field, f.value)
-		}
-
-		for {
-			entry, err := r.Next()
-			if err == io.EOF {
-				break
-			}
-			if err != nil {
-				break
-			}
-
-			switch outputFormat {
-			case "cat":
-				lines = append(lines, entry.Fields["MESSAGE"])
-			case "short":
-				lines = append(lines, fmt.Sprintf("%s %s",
-					entry.Realtime.Format("Jan 02 15:04:05"),
-					entry.Fields["MESSAGE"]))
-			default:
-				lines = append(lines, entry.Fields["MESSAGE"])
-			}
-		}
-		r.Close()
 	}
-
 	return strings.Join(lines, "\n"), nil
 }
 

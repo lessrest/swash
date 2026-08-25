@@ -61,7 +61,7 @@ The posix backend uses the same host process architecture but replaces
 systemd-specific components:
 
 - **Control**: Unix domain socket instead of D-Bus
-- **Output**: Single shared journal file via `swash minijournald` daemon (native systemd format, readable by `journalctl --file=...`)
+- **Output**: A shared SQLite database in WAL mode, written directly by hosts
 - **Process management**: Each task starts as a new POSIX session. On Linux and
   macOS, stop/restart/kill sweep every process still in that session, including
   descendants that created their own process groups. A descendant that calls
@@ -70,9 +70,10 @@ systemd-specific components:
 
 To use the posix backend explicitly: `SWASH_BACKEND=posix swash run ...`
 
-swash auto-detects by connecting to the D-Bus session bus and checking if
-`org.freedesktop.systemd1` is registered. This correctly handles non-systemd
-Linux systems that have D-Bus but use a different init system.
+swash auto-detects without a blocking probe: it selects systemd when the user
+D-Bus address and systemd user-manager runtime endpoint are present, and POSIX
+otherwise. If those endpoints are present but broken, the systemd backend fails
+loudly rather than silently changing execution models.
 
 ## Usage
 
@@ -244,12 +245,9 @@ The vterm package (`pkg/vterm`) provides Go bindings to libvterm. It tracks
 screen state, handles scrollback callbacks, and can render the screen back to
 ANSI escape sequences for the `swash screen` command.
 
-For testing, `swash minijournald` provides a minimal journald daemon for the
-posix backend. It implements the native journal socket protocol, using
-`pkg/journalfile` to write actual journal files that journalctl can read.
-This is built into the main swash binary as a subcommand, so no separate binary
-is needed. Integration tests use the posix backend by default, which runs in
-isolation without root privileges or a real systemd.
+The posix backend stores structured events in SQLite, so it needs neither a
+journal daemon nor systemd's journal format. Integration tests use this backend
+by default and run in isolation without root privileges or a real systemd.
 
 ## Building
 
@@ -288,12 +286,13 @@ The `SWASH_SESSION` field identifies the session. `SWASH_EVENT` marks lifecycle
 events (`started`, `exited`, `screen`). Regular output lines include `FD` (1 for
 stdout, 2 for stderr) and `MESSAGE` (the actual text).
 
-With the posix backend, output goes to a single shared journal file at
-`~/.local/state/swash/swash.journal`. This is a native systemd journal file -
-you can query it directly with journalctl:
+With the posix backend, output goes to a SQLite WAL database at
+`~/.local/state/swash/events.db`. Query it through swash's backend-independent
+commands:
 
 ```bash
-journalctl --file=~/.local/state/swash/swash.journal SWASH_SESSION=ABC123
+swash events --session ABC123
+swash events --session ABC123 --follow
 ```
 
 Use `swash poll` and `swash follow` to query output regardless of backend.

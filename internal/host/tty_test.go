@@ -421,6 +421,41 @@ func TestTTYHost_RunTask_WithFakePTY(t *testing.T) {
 	}
 }
 
+func TestTTYHostStopsTaskWhenOutputCannotBePersisted(t *testing.T) {
+	exec := NewFakeExecutor()
+	exited := make(chan struct{})
+	exec.RegisterCommand("output", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+		for i := range 20 {
+			fmt.Fprintf(stdout, "line %d\n", i)
+		}
+		<-ctx.Done()
+		close(exited)
+		return 1
+	})
+	host := mustNewTTYHost(t, TTYHostConfig{
+		SessionID: "TTYTEST1",
+		Command:   []string{"output"},
+		Rows:      2,
+		Cols:      40,
+		Events:    &outputFailEventLog{FakeJournal: journal.NewFakeJournal()},
+		Executor:  exec,
+		OpenPTY:   OpenFakePTY,
+	})
+	defer host.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := host.RunTask(ctx)
+	if err == nil || !strings.Contains(err.Error(), "persisting terminal output") {
+		t.Fatalf("RunTask error = %v, want output persistence failure", err)
+	}
+	select {
+	case <-exited:
+	default:
+		t.Fatal("task was not stopped after output persistence failed")
+	}
+}
+
 func TestTTYHost_RunTask_ColoredOutput(t *testing.T) {
 	exec, journal := NewTestFakes()
 

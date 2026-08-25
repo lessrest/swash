@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,6 +158,77 @@ func TestHost_LifecycleEvents(t *testing.T) {
 	}
 }
 
+type outputFailEventLog struct {
+	*journal.FakeJournal
+}
+
+func (l *outputFailEventLog) Write(string, map[string]string) error {
+	return fmt.Errorf("storage unavailable")
+}
+
+type syncFailEventLog struct {
+	*journal.FakeJournal
+}
+
+func (l *syncFailEventLog) WriteSync(string, map[string]string) error {
+	return fmt.Errorf("storage unavailable")
+}
+
+func TestHostStopsTaskWhenOutputCannotBePersisted(t *testing.T) {
+	exec := NewFakeExecutor()
+	exited := make(chan struct{})
+	exec.RegisterCommand("test-cmd", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+		fmt.Fprintln(stdout, "hello")
+		<-ctx.Done()
+		close(exited)
+		return 1
+	})
+	host := NewHost(HostConfig{
+		SessionID: "TEST01",
+		Command:   []string{"test-cmd"},
+		Protocol:  protocol.ProtocolShell,
+		Events:    &outputFailEventLog{FakeJournal: journal.NewFakeJournal()},
+		Executor:  exec,
+	})
+
+	err := host.RunTask(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "persisting process output") {
+		t.Fatalf("RunTask error = %v, want output persistence failure", err)
+	}
+	select {
+	case <-exited:
+	default:
+		t.Fatal("task was not stopped after output persistence failed")
+	}
+}
+
+func TestHostStopsTaskWhenStartedEventCannotBePersisted(t *testing.T) {
+	exec := NewFakeExecutor()
+	exited := make(chan struct{})
+	exec.RegisterCommand("test-cmd", func(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, args []string) int {
+		<-ctx.Done()
+		close(exited)
+		return 1
+	})
+	host := NewHost(HostConfig{
+		SessionID: "TEST01",
+		Command:   []string{"test-cmd"},
+		Protocol:  protocol.ProtocolShell,
+		Events:    &syncFailEventLog{FakeJournal: journal.NewFakeJournal()},
+		Executor:  exec,
+	})
+
+	err := host.RunTask(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "emitting started event") {
+		t.Fatalf("RunTask error = %v, want started-event failure", err)
+	}
+	select {
+	case <-exited:
+	default:
+		t.Fatal("task was not stopped after started event failed")
+	}
+}
+
 func TestHost_SendInput(t *testing.T) {
 	exec := NewFakeExecutor()
 	fj := journal.NewFakeJournal()
@@ -272,14 +344,14 @@ func TestHost_StartTaskProcess_NoFDLeakOnStartError(t *testing.T) {
 
 	// Run once and then use that as baseline. This avoids false positives if the
 	// runtime opens any one-time fds during the first call.
-	_, err := host.startTaskProcess()
+	_, _, err := host.startTaskProcess()
 	if err == nil {
 		t.Fatalf("expected startTaskProcess to fail, got nil error")
 	}
 
 	after1 := countOpenFDs(t)
 
-	_, err = host.startTaskProcess()
+	_, _, err = host.startTaskProcess()
 	if err == nil {
 		t.Fatalf("expected startTaskProcess to fail, got nil error (second call)")
 	}

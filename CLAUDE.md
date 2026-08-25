@@ -36,11 +36,11 @@ When you run `swash run echo hello`:
 
 The `Backend` interface abstracts over two complete implementations:
 - **systemd** (`internal/backend/systemd/`): D-Bus + transient units + journald
-- **posix** (`internal/backend/posix/`): Unix sockets + per-session journal files
+- **posix** (`internal/backend/posix/`): Unix sockets + a shared SQLite WAL database
 
-Both backends support all features (TTY mode, contexts, follow, etc.). The posix backend writes native systemd journal format files (via `pkg/journalfile`) that `journalctl --file=...` can read.
+Both backends support all features (TTY mode, contexts, follow, etc.). The posix backend writes structured events directly to SQLite without a journal daemon.
 
-Backend selection: `SWASH_BACKEND` env var, or auto-detect (probes D-Bus for `org.freedesktop.systemd1`).
+Backend selection: `SWASH_BACKEND` env var, or instant auto-detection from the user D-Bus address and systemd user-manager runtime endpoint.
 
 ### Key Internal Packages
 
@@ -65,7 +65,7 @@ This is a Go multi-module workspace (`go.work`):
 ### Testing
 
 Integration tests run in two modes:
-- **posix** (default): Isolated test environment using the posix backend with `swash minijournald`
+- **posix** (default): Isolated test environment using the SQLite-backed posix backend
 - **real**: Tests against real systemd (creates transient units in user systemd)
 
 Use `SWASH_TEST_MODE=real` to test with real systemd, or leave unset for isolated posix testing.

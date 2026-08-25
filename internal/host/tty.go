@@ -179,6 +179,7 @@ type TTYHost struct {
 	// Restart support
 	restartCh chan struct{}
 	doneCh    chan struct{}
+	eventErr  chan error
 }
 
 // TTYHostConfig holds the configuration for creating a TTYHost.
@@ -231,6 +232,7 @@ func NewTTYHost(cfg TTYHostConfig) (*TTYHost, error) {
 		maxScrollback:   10000,
 		openPTY:         openPTY,
 		attachedClients: make(map[string]*attachedClient),
+		eventErr:        make(chan error, 1),
 	}
 
 	// Create vterm instance
@@ -251,7 +253,12 @@ func NewTTYHost(cfg TTYHostConfig) (*TTYHost, error) {
 			}
 			// Write scrollback line to journal
 			if h.events != nil {
-				journal.WriteOutput(h.events, 1, line, h.tags)
+				if err := journal.WriteOutput(h.events, 1, line, h.tags); err != nil {
+					select {
+					case h.eventErr <- fmt.Errorf("persisting terminal output: %w", err):
+					default:
+					}
+				}
 			}
 		}
 		h.mu.Unlock()
@@ -628,13 +635,26 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 
 		// Emit lifecycle event
 		if err := journal.EmitStarted(h.events, h.sessionID, h.command, h.tags); err != nil {
+			h.Kill()
+			h.closePTYMaster()
+			<-doneChan
 			return fmt.Errorf("emitting started event: %w", err)
 		}
 
 		select {
 		case <-doneChan:
 			// Task exited normally
+			select {
+			case err := <-h.eventErr:
+				return err
+			default:
+			}
 			return nil
+		case err := <-h.eventErr:
+			h.Kill()
+			h.closePTYMaster()
+			<-doneChan
+			return err
 		case <-h.restartCh:
 			// Restart requested - kill current task and loop
 			fmt.Fprintf(os.Stderr, "Restart requested, killing task\n")
@@ -731,13 +751,19 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 			rows, cols := h.rows, h.cols
 			h.mu.Unlock()
 			if err := journal.EmitScreen(h.events, h.sessionID, screenANSI, rows, cols); err != nil {
-				fmt.Fprintf(os.Stderr, "error: failed to emit screen: %v\n", err)
+				select {
+				case h.eventErr <- fmt.Errorf("emitting screen event: %w", err):
+				default:
+				}
 			}
 		}
 
 		// Emit lifecycle event
 		if err := journal.EmitExited(h.events, h.sessionID, exitCode, h.command, h.tags); err != nil {
-			fmt.Fprintf(os.Stderr, "error: failed to emit exited event: %v\n", err)
+			select {
+			case h.eventErr <- fmt.Errorf("emitting exited event: %w", err):
+			default:
+			}
 		}
 
 		h.mu.Lock()

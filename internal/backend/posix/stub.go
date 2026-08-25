@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -46,12 +47,10 @@ func init() {
 type PosixBackend struct {
 	cfg backend.Config
 
-	// journaldConfig holds the socket and journal paths for "swash minijournald".
-	journaldConfig journal.Config
+	eventDBPath string
 
-	// sharedLog is the combined eventlog for the shared journal.
-	// Uses SocketSink for writing and JournalfileSource for reading.
-	// Lazily initialized on first use.
+	// sharedLog is lazily initialized on first use.
+	logMu     sync.Mutex
 	sharedLog journal.EventLog
 }
 
@@ -61,105 +60,35 @@ var _ backend.Backend = (*PosixBackend)(nil)
 func Open(ctx context.Context, cfg backend.Config) (backend.Backend, error) {
 	_ = ctx
 
-	// Configure journald paths:
-	// - Socket in RuntimeDir (ephemeral, cleared on reboot)
-	// - Journal file in StateDir (persistent)
-	jcfg := journal.Config{
-		SocketPath:  filepath.Join(cfg.RuntimeDir, "journal.socket"),
-		JournalPath: filepath.Join(cfg.StateDir, "swash.journal"),
-	}
-
 	return &PosixBackend{
-		cfg:            cfg,
-		journaldConfig: jcfg,
+		cfg:         cfg,
+		eventDBPath: filepath.Join(cfg.StateDir, "events.db"),
 	}, nil
 }
 
 func (b *PosixBackend) Close() error {
+	b.logMu.Lock()
+	defer b.logMu.Unlock()
 	if b.sharedLog != nil {
 		return b.sharedLog.Close()
 	}
 	return nil
 }
 
-// ensureJournald starts "swash minijournald" if it's not already running.
-// It returns when the daemon is ready to accept connections.
-func (b *PosixBackend) ensureJournald(ctx context.Context) error {
-	socketPath := b.journaldConfig.SocketPath
-
-	// Check if socket already exists and is accepting connections
-	if _, err := os.Stat(socketPath); err == nil {
-		// Socket exists, assume daemon is running
-		return nil
-	}
-
-	// Use the same swash binary with "minijournald" subcommand
-	swashBin := b.cfg.HostCommand[0]
-
-	cmd := osexec.CommandContext(ctx, swashBin, "minijournald",
-		"--socket", socketPath,
-		"--journal", b.journaldConfig.JournalPath,
-	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	// Redirect output to /dev/null - daemon logs to stderr
-	devNull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	if devNull != nil {
-		cmd.Stdin = devNull
-		cmd.Stdout = devNull
-		cmd.Stderr = os.Stderr // Let daemon errors show
-	}
-
-	if err := cmd.Start(); err != nil {
-		if devNull != nil {
-			devNull.Close()
-		}
-		return fmt.Errorf("starting swash minijournald: %w", err)
-	}
-	if devNull != nil {
-		devNull.Close()
-	}
-
-	// Wait for socket to appear
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("timeout waiting for swash minijournald socket")
-		}
-		if _, err := os.Stat(socketPath); err == nil {
-			return nil
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-}
-
-// ensureSharedLog lazily initializes the eventlog for reading and writing
-// to the shared journal. Uses SocketSink for writing and JournalfileSource for reading.
+// ensureSharedLog lazily opens the shared SQLite event database.
 func (b *PosixBackend) ensureSharedLog(ctx context.Context) (journal.EventLog, error) {
+	_ = ctx
+	b.logMu.Lock()
+	defer b.logMu.Unlock()
 	if b.sharedLog != nil {
 		return b.sharedLog, nil
 	}
 
-	// Make sure "swash minijournald" is running
-	if err := b.ensureJournald(ctx); err != nil {
-		return nil, fmt.Errorf("ensuring journald: %w", err)
-	}
-
-	// Create sink (write to socket)
-	snk := journal.NewSocketSink(b.journaldConfig.SocketPath)
-
-	// Create source (read from journal file)
-	src, err := journal.NewJournalfileSource(b.journaldConfig.JournalPath)
+	log, err := journal.OpenSQLite(b.eventDBPath)
 	if err != nil {
-		snk.Close()
-		return nil, fmt.Errorf("opening journal source: %w", err)
+		return nil, fmt.Errorf("opening event database: %w", err)
 	}
-
-	// Combine into full EventLog
-	b.sharedLog = journal.NewCombinedEventLog(snk, src)
+	b.sharedLog = log
 	return b.sharedLog, nil
 }
 
@@ -343,11 +272,6 @@ func (b *PosixBackend) ListHistory(ctx context.Context) ([]backend.HistorySessio
 }
 
 func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts backend.SessionOptions) (string, error) {
-	// Ensure "swash minijournald" is running
-	if err := b.ensureJournald(ctx); err != nil {
-		return "", fmt.Errorf("ensuring journald: %w", err)
-	}
-
 	sessionID := host.GenID()
 
 	sessionDir := b.sessionDir(sessionID)
@@ -391,11 +315,10 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		cmd.Dir = opts.WorkingDir
 	}
 
-	// Pass journal socket path to host via environment
+	// Every host writes directly to the shared WAL database.
 	cmd.Env = append(os.Environ(),
 		"SWASH_SESSION="+sessionID,
-		"SWASH_JOURNAL_SOCKET="+b.journaldConfig.SocketPath,
-		"SWASH_JOURNAL_PATH="+b.journaldConfig.JournalPath,
+		"SWASH_EVENT_DB="+b.eventDBPath,
 	)
 
 	devNull, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
@@ -433,7 +356,6 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		Rows:       opts.Rows,
 		Cols:       opts.Cols,
 		SocketPath: socketPath,
-		// EventLogPath removed - now using shared journal
 	}
 	_ = b.writeMeta(m)
 

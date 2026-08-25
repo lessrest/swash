@@ -37,7 +37,6 @@ func FilterByEvent(kind string) EventFilter {
 }
 
 // EventSink is a write-only interface for sending events.
-// Implementations use the native journald socket protocol.
 type EventSink interface {
 	// Write sends a structured entry (fire-and-forget).
 	// Use for high-volume streaming data like process output.
@@ -50,7 +49,7 @@ type EventSink interface {
 // EventSource is a read-only interface for querying events.
 // Implementations:
 //   - SDJournalSource: uses sdjournal (CGO, full libsystemd features)
-//   - JournalfileSource: uses journalfile (pure Go, portable)
+//   - SQLiteLog: uses SQLite in WAL mode for the portable backend
 type EventSource interface {
 	// Poll reads entries matching filters since cursor.
 	Poll(ctx context.Context, filters []EventFilter, cursor string) ([]EventRecord, string, error)

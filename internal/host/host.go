@@ -10,7 +10,6 @@ import (
 	"maps"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -259,7 +258,7 @@ func (h *Host) RunTask(ctx context.Context) error {
 
 	for {
 		slog.Debug("Host.RunTask starting task process", "session", h.sessionID)
-		doneChan, err := h.startTaskProcess()
+		doneChan, eventErrors, err := h.startTaskProcess()
 		if err != nil {
 			slog.Debug("Host.RunTask failed to start process", "session", h.sessionID, "error", err)
 			return fmt.Errorf("starting process: %w", err)
@@ -271,6 +270,7 @@ func (h *Host) RunTask(ctx context.Context) error {
 
 		// Emit lifecycle event
 		if err := journal.EmitStarted(h.events, h.sessionID, h.command, h.tags); err != nil {
+			h.terminateTask(doneChan)
 			return fmt.Errorf("emitting started event: %w", err)
 		}
 
@@ -279,7 +279,15 @@ func (h *Host) RunTask(ctx context.Context) error {
 		case <-doneChan:
 			// Task exited normally
 			slog.Debug("Host.RunTask task exited normally", "session", h.sessionID)
+			select {
+			case err := <-eventErrors:
+				return err
+			default:
+			}
 			return nil
+		case err := <-eventErrors:
+			h.terminateTask(doneChan)
+			return err
 		case <-h.restartCh:
 			// Restart requested - kill current task and loop
 			slog.Debug("Host.RunTask restart requested", "session", h.sessionID)
@@ -299,19 +307,19 @@ func (h *Host) RunTask(ctx context.Context) error {
 }
 
 // startTaskProcess starts the task subprocess via the
-func (srv *Host) startTaskProcess() (chan struct{}, error) {
+func (srv *Host) startTaskProcess() (chan struct{}, <-chan error, error) {
 	slog.Debug("Host.startTaskProcess", "session", srv.sessionID, "command", srv.command)
 
 	// Create pipes for stdio
 	stdinRead, stdinWrite, err := os.Pipe()
 	if err != nil {
-		return nil, fmt.Errorf("creating stdin pipe: %w", err)
+		return nil, nil, fmt.Errorf("creating stdin pipe: %w", err)
 	}
 	stdoutRead, stdoutWrite, err := os.Pipe()
 	if err != nil {
 		stdinRead.Close()
 		stdinWrite.Close()
-		return nil, fmt.Errorf("creating stdout pipe: %w", err)
+		return nil, nil, fmt.Errorf("creating stdout pipe: %w", err)
 	}
 	stderrRead, stderrWrite, err := os.Pipe()
 	if err != nil {
@@ -319,7 +327,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 		stdinWrite.Close()
 		stdoutRead.Close()
 		stdoutWrite.Close()
-		return nil, fmt.Errorf("creating stderr pipe: %w", err)
+		return nil, nil, fmt.Errorf("creating stderr pipe: %w", err)
 	}
 
 	closeAllPipes := func() {
@@ -335,7 +343,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 	proc, err := srv.executor.Start(srv.command, stdinRead, stdoutWrite, stderrWrite)
 	if err != nil {
 		closeAllPipes()
-		return nil, fmt.Errorf("starting process: %w", err)
+		return nil, nil, fmt.Errorf("starting process: %w", err)
 	}
 
 	// Close the child-facing ends of the pipes (child now owns them)
@@ -353,13 +361,22 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 	srv.mu.Unlock()
 
 	doneChan := make(chan struct{})
+	eventErrors := make(chan error, 1)
+	reportEventError := func(err error) {
+		select {
+		case eventErrors <- err:
+		default:
+		}
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	// Output handler that writes to journal with tags
 	outputHandler := func(fd int, text string, fields map[string]string) {
-		journal.WriteOutput(srv.events, fd, text, fields)
+		if err := journal.WriteOutput(srv.events, fd, text, fields); err != nil {
+			reportEventError(fmt.Errorf("persisting process output: %w", err))
+		}
 	}
 
 	// Read stdout and write to journal (protocol-aware)
@@ -403,13 +420,13 @@ func (srv *Host) startTaskProcess() (chan struct{}, error) {
 
 		// Emit lifecycle event
 		if err := journal.EmitExited(srv.events, srv.sessionID, exitCode, srv.command, srv.tags); err != nil {
-			slog.Debug("Host.startTaskProcess failed to emit exited event", "error", err)
+			reportEventError(fmt.Errorf("emitting exited event: %w", err))
 		}
 
 		close(doneChan)
 	}()
 
-	return doneChan, nil
+	return doneChan, eventErrors, nil
 }
 
 // RunHost is the entrypoint for the "swash host" command.
@@ -445,24 +462,14 @@ func RunHost() error {
 
 	// POSIX (unix socket) mode: run without systemd/journald/D-Bus.
 	if *unixSocketFlag != "" {
-		// Use socket-based eventlog via SWASH_JOURNAL_SOCKET.
-		socketPath := os.Getenv("SWASH_JOURNAL_SOCKET")
-		if socketPath == "" {
-			return fmt.Errorf("missing SWASH_JOURNAL_SOCKET for --unix-socket mode")
+		databasePath := os.Getenv("SWASH_EVENT_DB")
+		if databasePath == "" {
+			return fmt.Errorf("missing SWASH_EVENT_DB for --unix-socket mode")
 		}
-		journalPath := os.Getenv("SWASH_JOURNAL_PATH")
-		if journalPath == "" {
-			journalPath = filepath.Join(filepath.Dir(socketPath), "swash.journal")
-		}
-
-		// Create combined eventlog: SocketSink for writing, JournalfileSource for reading
-		snk := journal.NewSocketSink(socketPath)
-		src, err := journal.NewJournalfileSource(journalPath)
+		events, err := journal.OpenSQLite(databasePath)
 		if err != nil {
-			snk.Close()
-			return fmt.Errorf("opening journal source: %w", err)
+			return fmt.Errorf("opening event database: %w", err)
 		}
-		events := journal.NewCombinedEventLog(snk, src)
 		defer events.Close()
 
 		// Set up context that cancels on SIGTERM/SIGINT (like D-Bus mode).

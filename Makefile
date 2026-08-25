@@ -8,20 +8,9 @@ CGO_CFLAGS := -I$(CURDIR)/cvendor
 
 export CGO_CFLAGS
 
-# Detect platform for test defaults
-UNAME_S := $(shell uname -s)
-ifeq ($(UNAME_S),Darwin)
-  # macOS: use posix backend and native journal reader
-  SWASH_TEST_MODE ?= posix
-  SWASH_TEST_JOURNAL_READER ?= native
-else
-  # Linux: use posix backend (isolated) with journalctl
-  SWASH_TEST_MODE ?= posix
-  SWASH_TEST_JOURNAL_READER ?= journalctl
-endif
-
+# Tests use the isolated POSIX backend by default on every platform.
+SWASH_TEST_MODE ?= posix
 export SWASH_TEST_MODE
-export SWASH_TEST_JOURNAL_READER
 
 .PHONY: all build test test-unit test-integration test-all-backends install clean generate oxigraph-wasm vterm-wasm coverage
 
@@ -44,7 +33,7 @@ test-unit:
 	go test ./cmd/... ./pkg/... ./internal/... ./vterm/...
 
 test-integration: build
-	@echo "Test mode: $(SWASH_TEST_MODE), journal reader: $(SWASH_TEST_JOURNAL_READER)"
+	@echo "Test mode: $(SWASH_TEST_MODE)"
 	go test ./integration/... -v -timeout 120s
 
 test-all-backends: build

@@ -7,9 +7,8 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
-
-	"github.com/godbus/dbus/v5"
 
 	"swa.sh/internal/dirs"
 	"swa.sh/internal/host"
@@ -110,7 +109,8 @@ func Open(ctx context.Context, cfg Config) (Backend, error) {
 }
 
 // DetectKind returns the appropriate backend based on environment.
-// Returns systemd if the systemd user service is available on D-Bus, otherwise posix.
+// Returns systemd when the normal user D-Bus and systemd runtime endpoints are
+// present, otherwise posix.
 func DetectKind() Kind {
 	if hasSystemdUserService() {
 		return KindSystemd
@@ -118,24 +118,23 @@ func DetectKind() Kind {
 	return KindPosix
 }
 
-// hasSystemdUserService checks if systemd user session is available.
-// It connects to the D-Bus session bus and checks if org.freedesktop.systemd1
-// is registered. This correctly handles non-systemd Linux systems that still
-// have D-Bus (e.g., systems using other init systems with a D-Bus daemon).
+// hasSystemdUserService deliberately uses an instant heuristic instead of a
+// D-Bus round trip. A present-but-broken service is selected and then fails
+// loudly when opened; absence falls back to the portable backend immediately.
 func hasSystemdUserService() bool {
-	conn, err := dbus.ConnectSessionBus()
-	if err != nil {
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		runtimeDir = filepath.Join("/run/user", strconv.Itoa(os.Getuid()))
+	}
+	return hasSystemdRuntime(os.Getenv("DBUS_SESSION_BUS_ADDRESS"), runtimeDir)
+}
+
+func hasSystemdRuntime(busAddress, runtimeDir string) bool {
+	if busAddress == "" || runtimeDir == "" {
 		return false
 	}
-	defer conn.Close()
-
-	// Check if systemd is available by calling GetNameOwner
-	var owner string
-	err = conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus").
-		Call("org.freedesktop.DBus.GetNameOwner", 0, "org.freedesktop.systemd1").
-		Store(&owner)
-
-	return err == nil && owner != ""
+	_, err := os.Stat(filepath.Join(runtimeDir, "systemd", "private"))
+	return err == nil
 }
 
 // Default constructs the backend selected by environment variable SWASH_BACKEND,
