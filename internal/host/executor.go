@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -44,6 +45,9 @@ func (p *execProcess) Wait() (int, error) {
 	err := p.cmd.Wait()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
+			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				return 128 + int(status.Signal()), nil
+			}
 			return exitErr.ExitCode(), nil
 		}
 		return 1, err
@@ -76,6 +80,7 @@ func (e *ExecExecutor) Start(cmdArgs []string, stdin io.Reader, stdout, stderr i
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	cmd.Env = childEnvironment()
 	// A task is one killable ownership domain. Descendants inherit this new
 	// session even if they create additional process groups. Calling setsid
 	// deliberately escapes that domain.
@@ -94,7 +99,7 @@ func (e *ExecExecutor) Start(cmdArgs []string, stdin io.Reader, stdout, stderr i
 func (e *ExecExecutor) StartPTY(cmdArgs []string, slave *os.File) (Process, error) {
 	slog.Debug("ExecExecutor.StartPTY", "cmd", cmdArgs)
 	cmd := exec.Command(cmdArgs[0], cmdArgs[1:]...)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd.Env = append(childEnvironment(), "TERM=xterm-256color")
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
@@ -110,6 +115,16 @@ func (e *ExecExecutor) StartPTY(cmdArgs []string, slave *os.File) (Process, erro
 
 	slog.Debug("ExecExecutor.StartPTY success", "pid", cmd.Process.Pid)
 	return &execProcess{cmd: cmd, sid: cmd.Process.Pid}, nil
+}
+
+func childEnvironment() []string {
+	env := os.Environ()
+	for i, entry := range env {
+		if strings.HasPrefix(entry, "NOTIFY_SOCKET=") {
+			return append(env[:i:i], env[i+1:]...)
+		}
+	}
+	return env
 }
 
 // Default returns the default ExecExecutor.

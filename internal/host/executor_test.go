@@ -5,12 +5,54 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestChildEnvironmentOmitsSystemdNotifySocket(t *testing.T) {
+	t.Setenv("NOTIFY_SOCKET", "/run/systemd/notify")
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+
+	env := childEnvironment()
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "NOTIFY_SOCKET=") {
+			t.Fatalf("child environment contains %q", entry)
+		}
+	}
+	if !slices.Contains(env, "XDG_RUNTIME_DIR=/run/user/1000") {
+		t.Fatal("child environment lost XDG_RUNTIME_DIR")
+	}
+}
+
+func TestExecProcessWaitNormalizesSignalExitCode(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		sig  syscall.Signal
+	}{
+		{name: "term", sig: syscall.SIGTERM},
+		{name: "kill", sig: syscall.SIGKILL},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			proc, err := Default().Start(
+				[]string{"/bin/sh", "-c", "kill -" + strconv.Itoa(int(test.sig)) + " $$"},
+				strings.NewReader(""), io.Discard, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exitCode, err := proc.Wait()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := 128 + int(test.sig); exitCode != want {
+				t.Fatalf("exit code = %d, want %d", exitCode, want)
+			}
+		})
+	}
+}
 
 func TestExecProcessSignalTerminatesProcessSessionTree(t *testing.T) {
 	stdoutRead, stdoutWrite, err := os.Pipe()

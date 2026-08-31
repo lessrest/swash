@@ -162,15 +162,18 @@ type outputFailEventLog struct {
 	*journal.FakeJournal
 }
 
-func (l *outputFailEventLog) Write(string, map[string]string) error {
-	return fmt.Errorf("storage unavailable")
+func (l *outputFailEventLog) Write(message string, fields map[string]string) error {
+	if fields["FD"] != "" {
+		return fmt.Errorf("storage unavailable")
+	}
+	return l.FakeJournal.Write(message, fields)
 }
 
-type syncFailEventLog struct {
+type startedFailEventLog struct {
 	*journal.FakeJournal
 }
 
-func (l *syncFailEventLog) WriteSync(string, map[string]string) error {
+func (l *startedFailEventLog) Write(string, map[string]string) error {
 	return fmt.Errorf("storage unavailable")
 }
 
@@ -214,7 +217,7 @@ func TestHostStopsTaskWhenStartedEventCannotBePersisted(t *testing.T) {
 		SessionID: "TEST01",
 		Command:   []string{"test-cmd"},
 		Protocol:  protocol.ProtocolShell,
-		Events:    &syncFailEventLog{FakeJournal: journal.NewFakeJournal()},
+		Events:    &startedFailEventLog{FakeJournal: journal.NewFakeJournal()},
 		Executor:  exec,
 	})
 

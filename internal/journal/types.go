@@ -98,7 +98,7 @@ func EmitStarted(log EventLog, sessionID string, command []string, tags map[stri
 	fields[FieldEvent] = EventStarted
 	fields[FieldSession] = sessionID
 	fields[FieldCommand] = strings.Join(command, " ")
-	return log.WriteSync("Session started", fields)
+	return log.Write("Session started", fields)
 }
 
 // EmitExited writes a session exited event to the log.
@@ -109,7 +109,7 @@ func EmitExited(log EventLog, sessionID string, exitCode int, command []string, 
 	fields[FieldSession] = sessionID
 	fields[FieldExitCode] = strconv.Itoa(exitCode)
 	fields[FieldCommand] = strings.Join(command, " ")
-	return log.WriteSync("Session exited", fields)
+	return log.Write("Session exited", fields)
 }
 
 // WriteOutput writes process output to the log with FD and extra fields.
@@ -123,9 +123,8 @@ func WriteOutput(log EventLog, fd int, text string, extraFields map[string]strin
 
 // EmitScreen writes the final screen state to the log.
 // This preserves the visible screen content when a TTY session exits.
-// Uses WriteSync to ensure the screen is persisted before the host exits.
 func EmitScreen(log EventLog, sessionID string, screenText string, rows, cols int) error {
-	return log.WriteSync(screenText, map[string]string{
+	return log.Write(screenText, map[string]string{
 		FieldEvent:   EventScreen,
 		FieldSession: sessionID,
 		"ROWS":       strconv.Itoa(rows),

@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 
 	"swa.sh/internal/journal"
 	"swa.sh/internal/protocol"
+	"swa.sh/systemd/daemon"
 )
 
 const taskTerminationGrace = 2 * time.Second
@@ -140,17 +142,20 @@ func (h *Host) GracefulKill() {
 }
 
 func (h *Host) terminateTask(doneChan <-chan struct{}) {
-	h.GracefulKill()
+	terminateTask(h.sessionID, doneChan, h.GracefulKill, h.Kill, h.closePipes)
+}
+
+func terminateTask(sessionID string, doneChan <-chan struct{}, graceful func(), force func() error, closeIO func()) {
+	graceful()
 	select {
 	case <-doneChan:
 		return
 	case <-time.After(taskTerminationGrace):
 		slog.Warn("task ignored SIGTERM; sending SIGKILL to process session",
-			"session", h.sessionID)
-		_ = h.Kill()
-		// A deliberately escaped descendant may still hold an inherited pipe.
-		// Stop waiting for output after the owned process session has been killed.
-		h.closePipes()
+			"session", sessionID)
+		_ = force()
+		// A deliberately escaped descendant may still hold inherited I/O.
+		closeIO()
 		<-doneChan
 	}
 }
@@ -272,6 +277,10 @@ func (h *Host) RunTask(ctx context.Context) error {
 		if err := journal.EmitStarted(h.events, h.sessionID, h.command, h.tags); err != nil {
 			h.terminateTask(doneChan)
 			return fmt.Errorf("emitting started event: %w", err)
+		}
+		if _, err := daemon.SdNotify(true, daemon.SdNotifyReady); err != nil {
+			h.terminateTask(doneChan)
+			return fmt.Errorf("notifying systemd of readiness: %w", err)
 		}
 
 		slog.Debug("Host.RunTask waiting for task", "session", h.sessionID)
@@ -431,7 +440,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, <-chan error, error) {
 
 // RunHost is the entrypoint for the "swash host" command.
 // It parses flags, creates real implementations, and runs the server.
-func RunHost() error {
+func RunHost() (int, error) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	sessionIDFlag := fs.String("session", "", "Session ID")
 	commandJSONFlag := fs.String("command-json", "", "Command as JSON array")
@@ -445,18 +454,18 @@ func RunHost() error {
 	fs.Parse(os.Args[2:])
 
 	if *sessionIDFlag == "" || *commandJSONFlag == "" {
-		return fmt.Errorf("missing required flags")
+		return 0, fmt.Errorf("missing required flags")
 	}
 
 	var command []string
 	if err := json.Unmarshal([]byte(*commandJSONFlag), &command); err != nil {
-		return fmt.Errorf("parsing command: %w", err)
+		return 0, fmt.Errorf("parsing command: %w", err)
 	}
 
 	tags := make(map[string]string)
 	if *tagsJSONFlag != "" {
 		if err := json.Unmarshal([]byte(*tagsJSONFlag), &tags); err != nil {
-			return fmt.Errorf("parsing tags: %w", err)
+			return 0, fmt.Errorf("parsing tags: %w", err)
 		}
 	}
 
@@ -464,11 +473,11 @@ func RunHost() error {
 	if *unixSocketFlag != "" {
 		databasePath := os.Getenv("SWASH_EVENT_DB")
 		if databasePath == "" {
-			return fmt.Errorf("missing SWASH_EVENT_DB for --unix-socket mode")
+			return 0, fmt.Errorf("missing SWASH_EVENT_DB for --unix-socket mode")
 		}
 		events, err := journal.OpenSQLite(databasePath)
 		if err != nil {
-			return fmt.Errorf("opening event database: %w", err)
+			return 0, fmt.Errorf("opening event database: %w", err)
 		}
 		defer events.Close()
 
@@ -496,17 +505,17 @@ func RunHost() error {
 				Events:    events,
 			})
 			if err != nil {
-				return fmt.Errorf("NewTTYHost: %w", err)
+				return 0, fmt.Errorf("NewTTYHost: %w", err)
 			}
 			defer h.Close()
 
 			srv, err := ServeUnix(*unixSocketFlag, h, h)
 			if err != nil {
-				return err
+				return 0, err
 			}
 			defer srv.Close()
 
-			return h.RunTask(ctx)
+			return completedTaskResult(h, h.RunTask(ctx))
 		}
 
 		h := NewHost(HostConfig{
@@ -519,17 +528,17 @@ func RunHost() error {
 
 		srv, err := ServeUnix(*unixSocketFlag, h, nil)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		defer srv.Close()
 
-		return h.RunTask(ctx)
+		return completedTaskResult(h, h.RunTask(ctx))
 	}
 
 	// Systemd mode: use journald for events
 	events, err := journal.OpenSystemd()
 	if err != nil {
-		return fmt.Errorf("opening event log: %w", err)
+		return 0, fmt.Errorf("opening event log: %w", err)
 	}
 	defer events.Close()
 
@@ -544,10 +553,10 @@ func RunHost() error {
 			Events:    events,
 		})
 		if err != nil {
-			return fmt.Errorf("NewTTYHost: %w", err)
+			return 0, fmt.Errorf("NewTTYHost: %w", err)
 		}
 		defer host.Close()
-		return host.Run()
+		return completedTaskResult(host, host.Run())
 	}
 
 	host := NewHost(HostConfig{
@@ -558,5 +567,28 @@ func RunHost() error {
 		Events:    events,
 	})
 
-	return host.Run()
+	return completedTaskResult(host, host.Run())
+}
+
+type taskStatus interface {
+	Gist() (HostStatus, error)
+}
+
+func completedTaskResult(task taskStatus, runErr error) (int, error) {
+	if errors.Is(runErr, context.Canceled) {
+		// The service manager asked the host to stop. The task's normalized
+		// result is already in the lifecycle event; stopping the host succeeded.
+		return 0, nil
+	}
+	if runErr != nil {
+		return 0, runErr
+	}
+	status, err := task.Gist()
+	if err != nil {
+		return 0, err
+	}
+	if status.ExitCode == nil {
+		return 0, fmt.Errorf("task exited without a status")
+	}
+	return *status.ExitCode, nil
 }

@@ -22,13 +22,13 @@ Single test: `go test ./vterm -run TestVTerm -v`
 
 ## Architecture
 
-### Two-Process Model
+### Session Process Model
 
 When you run `swash run echo hello`:
 1. CLI asks systemd to start `swash-host-<ID>.service` (the host)
 2. Host owns D-Bus name `sh.swa.Swash.<ID>` for remote control
-3. Host starts `swash-task-<ID>.service` (the actual command)
-4. Both live in `swash-<ID>.slice` for resource grouping
+3. Host starts the command as a child in the same service cgroup
+4. All session services live in the shared `swash.slice`
 5. Output flows: task → host → systemd journal (with `SWASH_SESSION=<ID>`)
 
 ### Backend Abstraction (`internal/backend/`)

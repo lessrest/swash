@@ -15,14 +15,6 @@ func rootSlicePrefix() string {
 	return "swash"
 }
 
-// UnitType distinguishes swash unit kinds.
-type UnitType int
-
-const (
-	UnitTypeHost UnitType = iota // swash-host-*.service (D-Bus server)
-	UnitTypeTask                 // swash-task-*.service (actual command)
-)
-
 // UnitName is a typed systemd unit name with semantic methods.
 type UnitName string
 
@@ -31,27 +23,13 @@ func HostUnit(sessionID string) UnitName {
 	return UnitName(fmt.Sprintf("swash-host-%s.service", sessionID))
 }
 
-// TaskUnit returns the unit name for a session's task service.
-func TaskUnit(sessionID string) UnitName {
-	return UnitName(fmt.Sprintf("swash-task-%s.service", sessionID))
-}
-
 // SessionID extracts the session ID from a unit name.
 // e.g., "swash-host-ABC123.service" -> "ABC123"
 func (u UnitName) SessionID() string {
 	s := string(u)
 	s = strings.TrimSuffix(s, ".service")
 	s = strings.TrimPrefix(s, "swash-host-")
-	s = strings.TrimPrefix(s, "swash-task-")
 	return s
-}
-
-// Type returns whether this is a host or task unit.
-func (u UnitName) Type() UnitType {
-	if strings.HasPrefix(string(u), "swash-task-") {
-		return UnitTypeTask
-	}
-	return UnitTypeHost
 }
 
 // String returns the unit name as a string.
@@ -62,17 +40,9 @@ func (u UnitName) String() string {
 // SliceName is a typed systemd slice name.
 type SliceName string
 
-// SessionSlice returns the slice name for a session.
-func SessionSlice(sessionID string) SliceName {
-	return SliceName(fmt.Sprintf("%s-%s.slice", rootSlicePrefix(), sessionID))
-}
-
-// SessionID extracts the session ID from a slice name.
-func (s SliceName) SessionID() string {
-	str := string(s)
-	str = strings.TrimPrefix(str, "swash-")
-	str = strings.TrimSuffix(str, ".slice")
-	return str
+// RootSlice returns the shared slice containing all swash sessions.
+func RootSlice() SliceName {
+	return SliceName(rootSlicePrefix() + ".slice")
 }
 
 // String returns the slice name as a string.
@@ -84,10 +54,11 @@ func (s SliceName) String() string {
 type UnitState string
 
 const (
-	UnitStateActive     UnitState = "active"
-	UnitStateActivating UnitState = "activating"
-	UnitStateInactive   UnitState = "inactive"
-	UnitStateFailed     UnitState = "failed"
+	UnitStateActive       UnitState = "active"
+	UnitStateActivating   UnitState = "activating"
+	UnitStateDeactivating UnitState = "deactivating"
+	UnitStateInactive     UnitState = "inactive"
+	UnitStateFailed       UnitState = "failed"
 )
 
 // Unit represents a live systemd unit with its properties.
@@ -98,8 +69,7 @@ type Unit struct {
 	Started     time.Time
 	MainPID     uint32
 	WorkingDir  string
-	ExitStatus  int32
-	Slice       string // Parent slice name (e.g., "swash-ABC123.slice")
+	Slice       string
 }
 
 // TransientSpec defines properties for starting a transient unit.
@@ -113,20 +83,6 @@ type TransientSpec struct {
 	Environment map[string]string
 	Command     []string
 	Collect     bool // --collect: unload unit after it exits
-
-	// Stdio file descriptors - when set, passed directly to the unit
-	Stdin  *int // nil = default, set = pass this fd
-	Stdout *int // nil = journal, set = pass this fd
-	Stderr *int // nil = journal, set = pass this fd
-
-	// TTY support - when set, configures the unit to use a TTY
-	TTYPath string // e.g., /dev/pts/5
-
-	// Unit dependencies
-	BindsTo []UnitName // Hard dependencies - unit stops if any of these stop
-	After   []UnitName // Ordering - unit starts after these
-
-	// ExecStopPost commands to run after main process exits.
-	// Each element is a command with arguments (e.g., []string{"/usr/bin/swash", "notify-exit", "ABC123"})
-	ExecStopPost [][]string
+	KillMode    string
+	TimeoutStop time.Duration
 }

@@ -248,8 +248,12 @@ func findHostCommand() []string {
 // cmdHost runs as the task host (D-Bus server for a session).
 // This is launched by systemd, not by users directly.
 func cmdHost() {
-	if err := host.RunHost(); err != nil {
+	exitCode, err := host.RunHost()
+	if err != nil {
 		fatal("%v", err)
+	}
+	if exitCode != 0 {
+		os.Exit(exitCode)
 	}
 }
 
@@ -337,6 +341,9 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 	case backend.FollowCancelled:
 		fmt.Fprintf(os.Stderr, "swash: cancelled, killed session %s\n", sessionID)
 		os.Exit(130) // Standard exit code for SIGINT
+	case backend.FollowKilled:
+		fmt.Fprintf(os.Stderr, "swash: session %s was killed\n", sessionID)
+		os.Exit(128 + int(syscall.SIGKILL))
 	}
 }
 
@@ -408,6 +415,9 @@ func cmdFollow(sessionID string) {
 	exitCode, result := bk.FollowSession(context.Background(), sessionID, 0, 0)
 	if result == backend.FollowCancelled {
 		os.Exit(130)
+	}
+	if result == backend.FollowKilled {
+		os.Exit(128 + int(syscall.SIGKILL))
 	}
 	os.Exit(exitCode)
 }

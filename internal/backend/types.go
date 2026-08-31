@@ -55,4 +55,6 @@ const (
 	FollowCancelled
 	// FollowOutputLimit means output limit was reached while session was still running.
 	FollowOutputLimit
+	// FollowKilled means the session's host disappeared without recording an exit.
+	FollowKilled
 )

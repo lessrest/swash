@@ -6,8 +6,10 @@ import (
 	"iter"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"swa.sh/internal/backend"
@@ -72,28 +74,20 @@ func (b *SystemdBackend) Close() error {
 
 // ListSessions returns all running swash sessions.
 func (b *SystemdBackend) ListSessions(ctx context.Context) ([]backend.Session, error) {
-	statuses, err := b.processes.List(ctx, ProcessFilter{
-		Roles:  []ProcessRole{ProcessRoleHost},
-		States: []ProcessState{ProcessStateRunning, ProcessStateStarting},
-	})
+	statuses, err := b.processes.List(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	sessions := make([]backend.Session, 0, len(statuses))
 	for _, st := range statuses {
-		status := "running"
-		if st.ExitStatus != 0 {
-			status = "exited"
-		}
-
 		sessions = append(sessions, backend.Session{
-			ID:      st.Ref.SessionID,
+			ID:      st.SessionID,
 			Backend: string(backend.KindSystemd),
-			Handle:  unitNameStringForRef(st.Ref),
+			Handle:  HostUnit(st.SessionID).String(),
 			PID:     st.PID,
 			CWD:     st.WorkingDir,
-			Status:  status,
+			Status:  "running",
 			Command: st.Description,
 			Started: st.Started.Format("Mon 2006-01-02 15:04:05 MST"),
 		})
@@ -193,14 +187,13 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 	}
 
 	spec := ProcessSpec{
-		Ref:         HostProcess(sessionID),
+		SessionID:   sessionID,
 		WorkingDir:  cwd,
 		Description: cmdStr,
 		Environment: env,
 		Command:     serverCmd,
 		Collect:     true,
 		BusName:     dbusName,
-		LaunchKind:  LaunchKindService,
 	}
 
 	if err := b.processes.Start(ctx, spec); err != nil {
@@ -212,17 +205,12 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 
 // StopSession stops a session by ID.
 func (b *SystemdBackend) StopSession(ctx context.Context, sessionID string) error {
-	return b.processes.Stop(ctx, HostProcess(sessionID))
+	return b.processes.Stop(ctx, sessionID)
 }
 
-// KillSession sends SIGKILL to the process in a session.
+// KillSession sends SIGKILL to every process in the session's cgroup.
 func (b *SystemdBackend) KillSession(ctx context.Context, sessionID string) error {
-	client, err := b.ConnectSession(sessionID)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	return client.Kill()
+	return b.processes.Kill(ctx, sessionID, syscall.SIGKILL)
 }
 
 // SendInput sends input to the process via the swash control plane.
@@ -286,75 +274,174 @@ func (b *SystemdBackend) FollowSession(ctx context.Context, sessionID string, ti
 		defer cancel()
 	}
 
-	for e := range b.events.Follow(ctx, filters, "") {
-		// Check for exit event
-		if e.Fields[journal.FieldEvent] == journal.EventExited {
-			exitCode := 0
-			if codeStr := e.Fields[journal.FieldExitCode]; codeStr != "" {
-				exitCode, _ = strconv.Atoi(codeStr)
+	followCtx, stopFollowing := context.WithCancel(ctx)
+	defer stopFollowing()
+	events := make(chan journal.EventRecord)
+	go func() {
+		defer close(events)
+		for event := range b.events.Follow(followCtx, filters, "") {
+			select {
+			case events <- event:
+			case <-followCtx.Done():
+				return
 			}
-			return exitCode, backend.FollowCompleted
 		}
+	}()
 
-		// Print output (entries with FD field)
-		if e.Fields["FD"] != "" && e.Message != "" {
-			fmt.Println(e.Message)
+	const disappearanceGrace = 500 * time.Millisecond
+	checkUnit := time.NewTicker(100 * time.Millisecond)
+	defer checkUnit.Stop()
+	var missingSince time.Time
 
-			if outputLimit > 0 {
-				outputBytes += len(e.Message) + 1 // +1 for the newline added by Println
-				if outputBytes > outputLimit {
-					return 0, backend.FollowOutputLimit
+	for {
+		select {
+		case e, ok := <-events:
+			if !ok {
+				if ctx.Err() == context.DeadlineExceeded {
+					return 0, backend.FollowTimedOut
+				}
+				return 0, backend.FollowCancelled
+			}
+			if e.Fields[journal.FieldEvent] == journal.EventExited {
+				exitCode := 0
+				if codeStr := e.Fields[journal.FieldExitCode]; codeStr != "" {
+					exitCode, _ = strconv.Atoi(codeStr)
+				}
+				return exitCode, backend.FollowCompleted
+			}
+			if e.Fields["FD"] != "" && e.Message != "" {
+				fmt.Println(e.Message)
+				if outputLimit > 0 {
+					outputBytes += len(e.Message) + 1
+					if outputBytes > outputLimit {
+						return 0, backend.FollowOutputLimit
+					}
 				}
 			}
+		case <-checkUnit.C:
+			live, err := b.sessionIsLive(ctx, sessionID)
+			if err != nil || live {
+				missingSince = time.Time{}
+				continue
+			}
+			if missingSince.IsZero() {
+				missingSince = time.Now()
+			} else if time.Since(missingSince) >= disappearanceGrace {
+				return 0, backend.FollowKilled
+			}
+		case <-ctx.Done():
+			if ctx.Err() == context.DeadlineExceeded {
+				return 0, backend.FollowTimedOut
+			}
+			return 0, backend.FollowCancelled
 		}
 	}
+}
 
-	// Context was cancelled - distinguish timeout from explicit cancel
-	if ctx.Err() == context.DeadlineExceeded {
-		return 0, backend.FollowTimedOut
+func (b *SystemdBackend) sessionIsLive(ctx context.Context, sessionID string) (bool, error) {
+	sessions, err := b.ListSessions(ctx)
+	if err != nil {
+		return false, err
 	}
-	return 0, backend.FollowCancelled
+	for _, session := range sessions {
+		if session.ID == sessionID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ListHistory returns recently exited sessions by querying lifecycle events.
 func (b *SystemdBackend) ListHistory(ctx context.Context) ([]backend.HistorySession, error) {
-	// Query for exited events
-	filters := []journal.EventFilter{journal.FilterByEvent(journal.EventExited)}
-
-	entries, _, err := b.events.Poll(ctx, filters, "")
+	started, _, err := b.events.Poll(ctx, []journal.EventFilter{journal.FilterByEvent(journal.EventStarted)}, "")
+	if err != nil {
+		return nil, err
+	}
+	live, err := b.ListSessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	liveIDs := make(map[string]bool, len(live))
+	for _, session := range live {
+		liveIDs[session.ID] = true
+	}
+	exited, _, err := b.events.Poll(ctx, []journal.EventFilter{journal.FilterByEvent(journal.EventExited)}, "")
 	if err != nil {
 		return nil, err
 	}
 
-	// Build sessions from events (most recent last in entries, we want most recent first)
-	seen := make(map[string]bool)
-	var sessions []backend.HistorySession
-
-	// Iterate backwards to get most recent first and dedupe
-	for i := len(entries) - 1; i >= 0; i-- {
-		e := entries[i]
-		sessionID := e.Fields[journal.FieldSession]
-		if sessionID == "" || seen[sessionID] {
+	type lifecycle struct {
+		started    journal.EventRecord
+		exited     journal.EventRecord
+		hasStarted bool
+		hasExited  bool
+	}
+	bySession := make(map[string]lifecycle)
+	for _, event := range started {
+		id := event.Fields[journal.FieldSession]
+		if id == "" {
 			continue
 		}
-		seen[sessionID] = true
-
-		var exitCode *int
-		if codeStr := e.Fields[journal.FieldExitCode]; codeStr != "" {
-			if code, err := strconv.Atoi(codeStr); err == nil {
-				exitCode = &code
-			}
+		item := bySession[id]
+		item.started = event
+		item.hasStarted = true
+		bySession[id] = item
+	}
+	for _, event := range exited {
+		id := event.Fields[journal.FieldSession]
+		if id == "" {
+			continue
 		}
-
-		sessions = append(sessions, backend.HistorySession{
-			ID:       sessionID,
-			Status:   "exited",
-			ExitCode: exitCode,
-			Command:  e.Fields[journal.FieldCommand],
-			Started:  e.Timestamp.Format("Mon 2006-01-02 15:04:05 MST"),
-		})
+		item := bySession[id]
+		item.exited = event
+		item.hasExited = true
+		bySession[id] = item
 	}
 
+	type historyItem struct {
+		timestamp time.Time
+		session   backend.HistorySession
+	}
+	items := make([]historyItem, 0, len(bySession))
+	for id, item := range bySession {
+		if liveIDs[id] {
+			continue
+		}
+		status := "killed"
+		command := item.started.Fields[journal.FieldCommand]
+		startedAt := item.started.Timestamp
+		latest := startedAt
+		var exitCode *int
+		if item.hasExited && (!item.hasStarted || !item.exited.Timestamp.Before(item.started.Timestamp)) {
+			status = "exited"
+			latest = item.exited.Timestamp
+			if !item.hasStarted {
+				command = item.exited.Fields[journal.FieldCommand]
+				startedAt = item.exited.Timestamp
+			}
+			codeStr := item.exited.Fields[journal.FieldExitCode]
+			if codeStr != "" {
+				if code, err := strconv.Atoi(codeStr); err == nil {
+					exitCode = &code
+				}
+			}
+		}
+		items = append(items, historyItem{
+			timestamp: latest,
+			session: backend.HistorySession{
+				ID:       id,
+				Status:   status,
+				ExitCode: exitCode,
+				Command:  command,
+				Started:  startedAt.Format("Mon 2006-01-02 15:04:05 MST"),
+			},
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].timestamp.After(items[j].timestamp) })
+	sessions := make([]backend.HistorySession, len(items))
+	for i, item := range items {
+		sessions[i] = item.session
+	}
 	return sessions, nil
 }
 
@@ -364,15 +451,6 @@ func (b *SystemdBackend) ConnectSession(sessionID string) (host.Client, error) {
 
 func (b *SystemdBackend) ConnectTTYSession(sessionID string) (host.TTYClient, error) {
 	return ConnectTTY(sessionID)
-}
-
-func unitNameStringForRef(ref ProcessRef) string {
-	switch ref.Role {
-	case ProcessRoleHost:
-		return fmt.Sprintf("swash-host-%s.service", ref.SessionID)
-	default:
-		return fmt.Sprintf("swash-task-%s.service", ref.SessionID)
-	}
 }
 
 func (b *SystemdBackend) EmitSessionEvent(ctx context.Context, sessionID, event, message string, fields map[string]string) error {

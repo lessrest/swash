@@ -34,10 +34,18 @@ func withTimeout(name string, timeout time.Duration, f func()) {
 
 // runCmd runs a command with the given timeout, logging what it runs.
 func runCmd(timeout time.Duration, name string, args ...string) ([]byte, error) {
+	return runCmdEnv(timeout, nil, name, args...)
+}
+
+func runCmdEnv(timeout time.Duration, env []string, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	fmt.Fprintf(os.Stderr, "$ %s %s\n", name, strings.Join(args, " "))
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, name, args...)
+	if env != nil {
+		cmd.Env = env
+	}
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if len(out) > 0 {
 			fmt.Fprintf(os.Stderr, "%s", out)
@@ -145,10 +153,16 @@ func (e *testEnv) setupPosix() error {
 func (e *testEnv) cleanup() {
 	withTimeout("cleanup", 5*time.Second, func() {
 		// Stop the test slice and all children (real systemd mode)
-		// Use SIGKILL because SIGTERM doesn't reliably terminate host processes
 		if e.mode == "real" && e.rootSlice != "" {
-			runCmd(3*time.Second, "systemctl", "--user", "kill", "--signal=SIGKILL", e.rootSlice+".slice")
-			runCmd(3*time.Second, "systemctl", "--user", "reset-failed")
+			runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+			if runtimeDir == "" {
+				runtimeDir = fmt.Sprintf("/run/user/%d", os.Getuid())
+			}
+			cleanupEnv := setEnv(os.Environ(), "XDG_RUNTIME_DIR", runtimeDir)
+			cleanupEnv = setEnv(cleanupEnv, "DBUS_SESSION_BUS_ADDRESS", "unix:path="+filepath.Join(runtimeDir, "bus"))
+			runCmdEnv(3*time.Second, cleanupEnv, "systemctl", "--user", "kill", "--signal=SIGKILL", e.rootSlice+".slice")
+			runCmdEnv(3*time.Second, cleanupEnv, "systemctl", "--user", "stop", e.rootSlice+".slice")
+			runCmdEnv(3*time.Second, cleanupEnv, "systemctl", "--user", "reset-failed")
 		}
 
 		if e.tmpDir != "" {
@@ -543,6 +557,127 @@ func TestSwashRunExitCode(t *testing.T) {
 			}
 		} else {
 			t.Errorf("expected ExitError, got %T", err)
+		}
+	})
+}
+
+func TestSwashRunSignalExitCode(t *testing.T) {
+	runTest(t, func(t *testing.T, e *testEnv) {
+		for _, signal := range []struct {
+			name string
+			num  int
+		}{
+			{name: "TERM", num: 15},
+			{name: "KILL", num: 9},
+		} {
+			t.Run(signal.name, func(t *testing.T) {
+				_, _, err := e.runSwash("run", "--", "/bin/sh", "-c", fmt.Sprintf("kill -%d 0", signal.num))
+				exitErr, ok := err.(*exec.ExitError)
+				if !ok {
+					t.Fatalf("error = %v (%T), want ExitError", err, err)
+				}
+				if want := 128 + signal.num; exitErr.ExitCode() != want {
+					t.Fatalf("exit code = %d, want %d", exitErr.ExitCode(), want)
+				}
+			})
+		}
+	})
+}
+
+func TestSystemdFollowReturnsAfterHardKill(t *testing.T) {
+	runTest(t, func(t *testing.T, e *testEnv) {
+		if e.mode != "real" {
+			t.Skip("requires the systemd backend")
+		}
+		stdout, stderr, err := e.runSwash("start", "sleep", "60")
+		if err != nil {
+			t.Fatalf("starting session: %v\nstderr: %s", err, stderr)
+		}
+		sessionID := strings.Fields(stdout)[0]
+
+		follow := exec.Command(e.swashBin, "follow", sessionID)
+		follow.Env = e.getEnvVars()
+		if err := follow.Start(); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		if _, killErr, err := e.runSwash("kill", sessionID); err != nil {
+			t.Fatalf("killing session: %v\nstderr: %s", err, killErr)
+		}
+
+		waited := make(chan error, 1)
+		go func() { waited <- follow.Wait() }()
+		select {
+		case err := <-waited:
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok || exitErr.ExitCode() != 137 {
+				t.Fatalf("follow error = %v, want exit 137", err)
+			}
+		case <-time.After(3 * time.Second):
+			_ = follow.Process.Kill()
+			t.Fatal("follow remained blocked after hard kill")
+		}
+
+		history, historyErr, err := e.runSwash("history")
+		if err != nil {
+			t.Fatalf("reading history: %v\nstderr: %s", err, historyErr)
+		}
+		if !strings.Contains(history, sessionID) || !strings.Contains(history, "killed") {
+			t.Fatalf("history does not report killed session %s:\n%s", sessionID, history)
+		}
+	})
+}
+
+func TestSystemdStopAllowsTaskCleanup(t *testing.T) {
+	runTest(t, func(t *testing.T, e *testEnv) {
+		if e.mode != "real" {
+			t.Skip("requires the systemd backend")
+		}
+		for _, tty := range []bool{false, true} {
+			name := "pipe"
+			if tty {
+				name = "tty"
+			}
+			t.Run(name, func(t *testing.T) {
+				marker := filepath.Join(e.tmpDir, fmt.Sprintf("stop-%s-%d", name, time.Now().UnixNano()))
+				script := marker + ".sh"
+				content := "#!/bin/sh\n" +
+					"trap 'echo cleaned > \"$1.cleaned\"; exit 0' TERM\n" +
+					"echo ready > \"$1.ready\"\n" +
+					"while :; do sleep 1; done\n"
+				if err := os.WriteFile(script, []byte(content), 0755); err != nil {
+					t.Fatal(err)
+				}
+				args := []string{"start"}
+				if tty {
+					args = append(args, "--tty")
+				}
+				args = append(args, "--", script, marker)
+				stdout, stderr, err := e.runSwash(args...)
+				if err != nil {
+					t.Fatalf("starting session: %v\nstderr: %s", err, stderr)
+				}
+				sessionID := strings.Fields(stdout)[0]
+				defer e.runSwash("kill", sessionID)
+
+				deadline := time.Now().Add(2 * time.Second)
+				for {
+					if _, err := os.Stat(marker + ".ready"); err == nil {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatal("task did not become ready")
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+
+				if _, stopErr, err := e.runSwash("stop", sessionID); err != nil {
+					t.Fatalf("stopping session: %v\nstderr: %s", err, stopErr)
+				}
+				if _, err := os.Stat(marker + ".cleaned"); err != nil {
+					t.Fatalf("task did not handle SIGTERM: %v", err)
+				}
+			})
 		}
 	})
 }

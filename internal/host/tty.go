@@ -17,6 +17,7 @@ import (
 	"swa.sh/vterm"
 
 	"swa.sh/internal/journal"
+	"swa.sh/systemd/daemon"
 )
 
 // PTYPair represents a bidirectional connection for terminal I/O.
@@ -322,6 +323,20 @@ func (h *TTYHost) Kill() error {
 		return fmt.Errorf("no process running")
 	}
 	return proc.Kill()
+}
+
+// GracefulKill sends SIGTERM to the task process session.
+func (h *TTYHost) GracefulKill() {
+	h.mu.Lock()
+	proc := h.proc
+	h.mu.Unlock()
+	if proc != nil {
+		_ = proc.Signal(syscall.SIGTERM)
+	}
+}
+
+func (h *TTYHost) terminateTask(doneChan <-chan struct{}) {
+	terminateTask(h.sessionID, doneChan, h.GracefulKill, h.Kill, h.closePTYMaster)
 }
 
 // closePTYMaster closes the PTY master to unblock any readers.
@@ -640,6 +655,12 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 			<-doneChan
 			return fmt.Errorf("emitting started event: %w", err)
 		}
+		if _, err := daemon.SdNotify(true, daemon.SdNotifyReady); err != nil {
+			h.Kill()
+			h.closePTYMaster()
+			<-doneChan
+			return fmt.Errorf("notifying systemd of readiness: %w", err)
+		}
 
 		select {
 		case <-doneChan:
@@ -665,10 +686,7 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "Starting new task\n")
 			// Loop continues to start new task
 		case <-ctx.Done():
-			h.Kill()
-			// Close PTY to unblock reader
-			h.closePTYMaster()
-			<-doneChan
+			h.terminateTask(doneChan)
 			return ctx.Err()
 		}
 	}
