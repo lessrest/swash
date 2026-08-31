@@ -9,6 +9,10 @@ step() {
   printf '\n==> %s\n' "$1"
 }
 
+step "Enabling the systemd user manager"
+sudo loginctl enable-linger "$(id -un)"
+sudo systemctl start "user@$(id -u).service"
+
 step "Mounting the persistent Nix store"
 if [[ ! -e "$nix_image" ]]; then
   sudo truncate -s 32G "$nix_image"
@@ -45,6 +49,7 @@ fi
 
 # shellcheck source=/dev/null
 source /etc/profile.d/nix.sh
+export PATH="/nix/var/nix/profiles/default/bin:$PATH"
 
 step "Prewarming the development shell"
 nix develop "path:$repo_root" --command true

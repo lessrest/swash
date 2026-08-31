@@ -5,3 +5,4 @@ if ! mountpoint -q /nix; then
   sudo mount /nix
 fi
 sudo systemctl start nix-daemon.socket
+sudo systemctl start "user@$(id -u).service"

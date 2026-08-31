@@ -96,21 +96,42 @@ func Open(ctx context.Context, cfg Config) (Backend, error) {
 // Returns systemd when the normal user D-Bus and systemd runtime endpoints are
 // present, otherwise posix.
 func DetectKind() Kind {
-	if hasSystemdUserService() {
+	if prepareSystemdUserEnvironment() {
 		return KindSystemd
 	}
 	return KindPosix
 }
 
-// hasSystemdUserService deliberately uses an instant heuristic instead of a
-// D-Bus round trip. A present-but-broken service is selected and then fails
-// loudly when opened; absence falls back to the portable backend immediately.
-func hasSystemdUserService() bool {
+// prepareSystemdUserEnvironment deliberately uses an instant heuristic instead
+// of a D-Bus round trip. A present-but-broken service is selected and then
+// fails loudly when opened; absence falls back to the portable backend
+// immediately. This also supports service-launched callers which have access
+// to a user manager but did not pass through a login session.
+func prepareSystemdUserEnvironment() bool {
 	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
 	if runtimeDir == "" {
 		runtimeDir = filepath.Join("/run/user", strconv.Itoa(os.Getuid()))
 	}
-	return hasSystemdRuntime(os.Getenv("DBUS_SESSION_BUS_ADDRESS"), runtimeDir)
+
+	busAddress := os.Getenv("DBUS_SESSION_BUS_ADDRESS")
+	if busAddress == "" {
+		busPath := filepath.Join(runtimeDir, "bus")
+		if _, err := os.Stat(busPath); err != nil {
+			return false
+		}
+		busAddress = "unix:path=" + busPath
+	}
+
+	if !hasSystemdRuntime(busAddress, runtimeDir) {
+		return false
+	}
+	if os.Getenv("XDG_RUNTIME_DIR") == "" {
+		_ = os.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	}
+	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
+		_ = os.Setenv("DBUS_SESSION_BUS_ADDRESS", busAddress)
+	}
+	return true
 }
 
 func hasSystemdRuntime(busAddress, runtimeDir string) bool {
@@ -134,6 +155,9 @@ func Default(ctx context.Context) (Backend, error) {
 func withDefaults(cfg Config) Config {
 	if cfg.Kind == "" {
 		cfg.Kind = DetectKind()
+	}
+	if cfg.Kind == KindSystemd {
+		prepareSystemdUserEnvironment()
 	}
 	if cfg.StateDir == "" {
 		cfg.StateDir = defaultStateDir()

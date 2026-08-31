@@ -39,7 +39,7 @@ The `Backend` interface abstracts over two complete implementations:
 
 Both backends support TTY mode, session control, history, and structured events. The posix backend writes structured events directly to SQLite without a journal daemon.
 
-Backend selection: `SWASH_BACKEND` env var, or instant auto-detection from the user D-Bus address and systemd user-manager runtime endpoint.
+Backend selection: `SWASH_BACKEND` env var, or instant auto-detection from the systemd user-manager endpoints under `$XDG_RUNTIME_DIR` or `/run/user/$UID`. When login-session environment variables are absent, swash derives and exports them from those endpoints.
 
 ### Key Internal Packages
 
