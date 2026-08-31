@@ -2,54 +2,49 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$repo_root"
+nix_image=/nix.img
+nix_mount=/nix
 
 step() {
   printf '\n==> %s\n' "$1"
 }
 
-step "Checking system packages"
-packages=(build-essential ca-certificates curl systemd)
-missing=()
-for package in "${packages[@]}"; do
-  if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q '^install ok installed$'; then
-    missing+=("$package")
-  fi
-done
-if ((${#missing[@]})); then
-  sudo apt-get update
-  sudo apt-get install -y "${missing[@]}"
-else
-  echo "System packages are already installed"
+step "Mounting the persistent Nix store"
+if [[ ! -e "$nix_image" ]]; then
+  sudo truncate -s 32G "$nix_image"
+  sudo mkfs.ext4 -F "$nix_image"
+fi
+sudo mkdir -p "$nix_mount"
+fstab_entry="$nix_image $nix_mount ext4 loop,noatime,nofail 0 0"
+if ! grep -Fqx "$fstab_entry" /etc/fstab; then
+  printf '%s\n' "$fstab_entry" | sudo tee -a /etc/fstab >/dev/null
+fi
+if ! mountpoint -q "$nix_mount"; then
+  sudo mount "$nix_mount"
 fi
 
-step "Checking Go 1.25.5"
-go_version="go1.25.5"
-if [[ "$(command -v go >/dev/null 2>&1 && go version | awk '{print $3}')" != "$go_version" ]]; then
-  if [[ "$(uname -m)" != "x86_64" ]]; then
-    echo "Unsupported orb architecture: $(uname -m)" >&2
-    exit 1
-  fi
-
-  archive="$(mktemp)"
-  trap 'rm -f "$archive"' EXIT
-  curl -fsSL "https://go.dev/dl/${go_version}.linux-amd64.tar.gz" -o "$archive"
-  echo "9e9b755d63b36acf30c12a9a3fc379243714c1c6d3dd72861da637f336ebb35b  $archive" | sha256sum -c -
-  sudo rm -rf /usr/local/go
-  sudo tar -C /usr/local -xzf "$archive"
-  sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
-  sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
-  rm -f "$archive"
-  trap - EXIT
-else
-  go version
+step "Installing Nix"
+if [[ ! -x /nix/var/nix/profiles/default/bin/nix ]]; then
+  curl --proto '=https' --tlsv1.2 -fsSL https://install.determinate.systems/nix \
+    | sh -s -- install --no-confirm
 fi
 
-step "Downloading Go dependencies"
-GOWORK=off go mod download
-(
-  cd vterm
-  GOWORK=off go mod download
-)
+# Determinate Nix includes this file from its generated nix.conf.
+sudo mkdir -p /etc/nix
+sudo touch /etc/nix/nix.custom.conf
+sudo sed -i '/^auto-optimise-store[[:space:]]*=/d' /etc/nix/nix.custom.conf
+echo 'auto-optimise-store = false' | sudo tee -a /etc/nix/nix.custom.conf >/dev/null
+sudo rm -rf /nix/store/.links
+sudo systemctl start nix-daemon.socket
 
-step "Orb setup complete"
+profile_line='source /etc/profile.d/nix.sh'
+touch "$HOME/.bash_profile"
+if ! grep -Fqx "$profile_line" "$HOME/.bash_profile"; then
+  printf '%s\n' "$profile_line" >> "$HOME/.bash_profile"
+fi
+
+# shellcheck source=/dev/null
+source /etc/profile.d/nix.sh
+
+step "Prewarming the development shell"
+nix develop "path:$repo_root" --command true

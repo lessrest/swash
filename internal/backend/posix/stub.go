@@ -167,7 +167,7 @@ func pidAlive(pid int) bool {
 
 func (b *PosixBackend) ListSessions(ctx context.Context) ([]backend.Session, error) {
 	_ = ctx
-	root := filepath.Join(b.cfg.StateDir, "sessions")
+	root := filepath.Join(b.cfg.RuntimeDir, "sessions")
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if os.IsNotExist(err) {

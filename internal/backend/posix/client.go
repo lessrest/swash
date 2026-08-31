@@ -321,11 +321,12 @@ func (c *unixClient) doJSON(ctx context.Context, method, path string, in any, ou
 }
 
 func (c *unixClient) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	u := &url.URL{
-		Scheme: "http",
-		Host:   "unix",
-		Path:   path,
+	u, err := url.Parse(path)
+	if err != nil {
+		return nil, err
 	}
+	u.Scheme = "http"
+	u.Host = "unix"
 	return http.NewRequestWithContext(ctx, method, u.String(), body)
 }
 

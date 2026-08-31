@@ -126,7 +126,7 @@ Flags:
 		if len(cmdArgs) == 0 {
 			fatal("usage: swash run <command>")
 		}
-		if ttyFlag {
+		if shouldAttachTTY(ttyFlag, detachAfterFlag, flag.CommandLine.Changed("detach-after")) {
 			cmdRunTTY(cmdArgs)
 		} else {
 			cmdRun(cmdArgs, detachAfterFlag, detachAfterOutputFlag)
@@ -178,6 +178,10 @@ Flags:
 	default:
 		fatal("unknown command: %s", cmd)
 	}
+}
+
+func shouldAttachTTY(tty bool, detachAfter time.Duration, detachAfterSet bool) bool {
+	return tty && !(detachAfterSet && detachAfter == 0)
 }
 
 func fatal(format string, args ...any) {
@@ -341,6 +345,12 @@ func cmdRunTTY(command []string) {
 	defer bk.Close()
 
 	rows, cols := attach.GetContentSize()
+	if flag.CommandLine.Changed("rows") {
+		rows = rowsFlag
+	}
+	if flag.CommandLine.Changed("cols") {
+		cols = colsFlag
+	}
 	opts := backend.SessionOptions{
 		Protocol: protocol.Protocol(protocolFlag),
 		Tags:     parseTags(tagFlags),

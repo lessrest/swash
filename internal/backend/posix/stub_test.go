@@ -1,10 +1,39 @@
 package posix
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"swa.sh/internal/backend"
 )
+
+func TestListSessionsReadsRuntimeMetadata(t *testing.T) {
+	root := t.TempDir()
+	b := &PosixBackend{cfg: backend.Config{
+		StateDir:   filepath.Join(root, "state"),
+		RuntimeDir: filepath.Join(root, "runtime"),
+	}}
+	if err := b.writeMeta(meta{
+		ID:         "runtime-session",
+		Command:    []string{"sleep", "10"},
+		Started:    "now",
+		PID:        os.Getpid(),
+		SocketPath: "/tmp/runtime-session.sock",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := b.ListSessions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != "runtime-session" {
+		t.Fatalf("ListSessions() = %#v, want runtime-session", sessions)
+	}
+}
 
 func TestUnixSocketPathUsesRuntimeDirWhenItFits(t *testing.T) {
 	got := unixSocketPath("/tmp/swash", "ABC123.sock")
