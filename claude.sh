@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# claude.sh - minimal Claude API client using swash + journal
+# claude.sh - minimal Claude API client using swash
 #
-# All messages are stored in the systemd journal with CLAUDE_SESSION field.
-# No files needed - just query the journal to resume.
+# All messages are stored as Swash events. No files are needed, and the
+# conversation works with either the systemd or POSIX backend.
 #
 # Usage:
 #   claude.sh "Your prompt here"
@@ -13,43 +13,40 @@
 set -euo pipefail
 
 API_URL="https://api.anthropic.com/v1/messages"
-MODEL="${CLAUDE_MODEL:-claude-opus-4-5-20251101}"
+MODEL="${CLAUDE_MODEL:-claude-opus-5}"
+MESSAGE_EVENT="claude-message"
 
 die() { echo "error: $*" >&2; exit 1; }
 
 command -v jq >/dev/null || die "jq is required"
-command -v curl >/dev/null || die "curl is required"
 command -v swash >/dev/null || die "swash is required"
 
-[[ -n "${ANTHROPIC_API_KEY:-}" ]] || die "ANTHROPIC_API_KEY not set"
+new_session_id() {
+    LC_ALL=C od -An -N12 -tx1 /dev/urandom | tr -d ' \n'
+}
 
-new_session_id() { systemd-id128 new; }
-
-# Write a message to the journal with CLAUDE_SESSION tag
-journal_message() {
+# Store one conversation turn in Swash's backend-independent event log.
+emit_message() {
     local session="$1" role="$2" content="$3"
-    logger --journald <<EOF
-MESSAGE=$content
-CLAUDE_SESSION=$session
-CLAUDE_ROLE=$role
-EOF
+    swash emit "$session" \
+        --event "$MESSAGE_EVENT" \
+        --message "$content" \
+        --field "CLAUDE_ROLE=$role" >/dev/null
 }
 
-# Build messages array from journal entries for a session
-build_messages_from_journal() {
+# Build the Anthropic messages array from the conversation's Swash events.
+build_messages() {
     local session="$1"
-    # Query journal for entries with this session, extract role and content
-    journalctl --user CLAUDE_SESSION="$session" -o json --no-pager 2>/dev/null | \
-        jq -c 'select(.CLAUDE_ROLE) | {role: .CLAUDE_ROLE, content: .MESSAGE}' | \
-        jq -s '.'
+    swash events --session "$session" --event "$MESSAGE_EVENT" --json | \
+        jq -s '[.[] | {role: .fields.CLAUDE_ROLE, content: .message}]'
 }
 
-# List sessions from journal
+# List sessions in creation order, with the newest 20 at the bottom.
 list_sessions() {
-    echo "Recent sessions (from journal):"
-    journalctl --user -o json --no-pager 2>/dev/null | \
-        jq -r 'select(.CLAUDE_SESSION) | .CLAUDE_SESSION' | \
-        sort -u | tail -20
+    echo "Recent sessions:"
+    swash events --event "$MESSAGE_EVENT" --field CLAUDE_ROLE=user --json | \
+        jq -r '.fields.SWASH_SESSION' | \
+        awk '!seen[$0]++' | tail -20
 }
 
 SESSION_ID=""
@@ -63,10 +60,26 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         --resume|-r)
+            [[ $# -ge 2 ]] || die "$1 requires a session ID"
             RESUME="$2"
             shift 2
             ;;
+        --help|-h)
+            echo 'Usage: claude.sh [--resume ID] "prompt"'
+            echo '       claude.sh --list'
+            exit 0
+            ;;
+        --)
+            shift
+            [[ $# -eq 1 ]] || die "Expected one prompt after --"
+            PROMPT="$1"
+            shift
+            ;;
+        -*)
+            die "Unknown option: $1"
+            ;;
         *)
+            [[ -z "$PROMPT" ]] || die "Expected one prompt"
             PROMPT="$1"
             shift
             ;;
@@ -74,21 +87,25 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$PROMPT" ]] || die "No prompt provided. Usage: claude.sh [--resume ID] \"prompt\""
+command -v curl >/dev/null || die "curl is required"
+[[ -n "${ANTHROPIC_API_KEY:-}" ]] || die "ANTHROPIC_API_KEY not set"
 
 if [[ -n "$RESUME" ]]; then
     SESSION_ID="$RESUME"
-    # Verify session exists in journal
-    count=$(journalctl --user CLAUDE_SESSION="$SESSION_ID" -o json --no-pager 2>/dev/null | wc -l)
-    [[ "$count" -gt 0 ]] || die "Session not found in journal: $SESSION_ID"
+    # Verify that the ID belongs to a conversation, not merely a Swash task.
+    if ! swash events --session "$SESSION_ID" --event "$MESSAGE_EVENT" --json | \
+        jq -e -s 'length > 0' >/dev/null; then
+        die "Session not found: $SESSION_ID"
+    fi
 else
     SESSION_ID=$(new_session_id)
 fi
 
-# Write user message to journal
-journal_message "$SESSION_ID" "user" "$PROMPT"
+# Store the user message before making the request so failed turns can be resumed.
+emit_message "$SESSION_ID" "user" "$PROMPT"
 
-# Build messages array from journal
-messages=$(build_messages_from_journal "$SESSION_ID")
+# Build messages array from Swash events.
+messages=$(build_messages "$SESSION_ID")
 
 # Build request body
 body=$(jq -n \
@@ -101,17 +118,18 @@ body=$(jq -n \
         messages: $messages
     }')
 
-# Start API call via swash with session tag
-swash_output=$(swash run --tag "CLAUDE_SESSION=$SESSION_ID" --protocol sse -- \
-    curl -sN "$API_URL" \
-    -H "Content-Type: application/json" \
-    -H "x-api-key: $ANTHROPIC_API_KEY" \
-    -H "anthropic-version: 2023-06-01" \
-    -d "$body" 2>&1) || die "failed to start swash"
+# Start the request detached; swash follow below owns streaming the response.
+if ! swash_output=$(swash start --tag "CLAUDE_SESSION=$SESSION_ID" --protocol sse -- \
+        curl --silent --show-error --no-buffer --fail-with-body --max-time 600 "$API_URL" \
+        -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
+        -H "anthropic-version: 2023-06-01" \
+        -H "content-type: application/json" \
+        -d "$body" 2>&1); then
+    die "Failed to start Swash session: $swash_output"
+fi
+read -r swash_session start_status <<<"$swash_output"
 
-swash_session=$(echo "$swash_output" | grep -oE '[A-Z0-9]{6}' | head -1)
-
-if [[ -z "$swash_session" ]]; then
+if [[ -z "$swash_session" || "$start_status" != "started" ]]; then
     die "Failed to start swash session: $swash_output"
 fi
 
@@ -124,7 +142,10 @@ while IFS= read -r json; do
 
     case "$event_type" in
         content_block_delta)
-            text=$(echo "$json" | jq -r '.delta.text // empty' 2>/dev/null) || continue
+            # The marker prevents command substitution from stripping newlines
+            # that are part of the streamed text itself.
+            text=$(jq -jr '(.delta.text // empty), "__CLAUDE_SH_END__"' <<<"$json" 2>/dev/null) || continue
+            text=${text%__CLAUDE_SH_END__}
             if [[ -n "$text" ]]; then
                 printf '%s' "$text"
                 response+="$text"
@@ -140,9 +161,9 @@ while IFS= read -r json; do
     esac
 done < <(swash follow "$swash_session")
 
-# Write assistant response to journal
+# Store the completed assistant turn as another Swash event.
 if [[ -n "$response" ]]; then
-    journal_message "$SESSION_ID" "assistant" "$response"
+    emit_message "$SESSION_ID" "assistant" "$response"
 fi
 
 echo "Session: $SESSION_ID" >&2
