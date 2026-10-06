@@ -141,9 +141,9 @@ To add `io` on NixOS:
 systemd.services."user@".serviceConfig.Delegate = "pids memory cpu io";
 ```
 
-Elsewhere, use a drop-in for `user@.service` with `Delegate=pids memory cpu io`.
-Either way, it applies the next time the user manager starts, i.e. after
-logging out and in. With `io` delegated, the default `IOWeight=50` (or
+Elsewhere, use a drop-in for `user@.service` with `Delegate=pids memory cpu io`
+and run `systemctl daemon-reload`. No re-login is needed: the user manager
+picks up the change, and sessions started afterwards get `io.stat`. With `io` delegated, the default `IOWeight=50` (or
 `io-weight=` in `SWASH_LIMITS`) also takes effect, giving sessions lower disk
 priority than interactive programs under contention.
 
