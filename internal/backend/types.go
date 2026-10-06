@@ -32,6 +32,7 @@ type SessionOptions struct {
 	Rows       int               // Terminal rows (for TTY mode)
 	Cols       int               // Terminal columns (for TTY mode)
 	WorkingDir string            // Working directory for the session (optional, defaults to cwd)
+	Login      bool              // Use a fresh session environment and login shell instead of the caller's environment
 }
 
 // EventFilter is a semantic event query filter.

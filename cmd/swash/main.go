@@ -40,6 +40,7 @@ var (
 	protocolFlag          string
 	tagFlags              []string
 	ttyFlag               bool
+	loginFlag             bool
 	rowsFlag              int
 	colsFlag              int
 	detachAfterFlag       time.Duration
@@ -82,6 +83,7 @@ func main() {
 	flag.StringVarP(&protocolFlag, "protocol", "p", "shell", "Protocol: shell, sse")
 	flag.StringArrayVarP(&tagFlags, "tag", "t", nil, "Add journal field KEY=VALUE (can be repeated)")
 	flag.BoolVar(&ttyFlag, "tty", false, "Use PTY mode with terminal emulation")
+	flag.BoolVarP(&loginFlag, "login", "l", false, "Run in a fresh login session (session environment + login shell), keeping only the cwd")
 	flag.IntVar(&rowsFlag, "rows", 24, "Terminal rows (for --tty mode)")
 	flag.IntVar(&colsFlag, "cols", 80, "Terminal columns (for --tty mode)")
 	flag.DurationVarP(&detachAfterFlag, "detach-after", "d", 3*time.Second, "Detach after duration (0 = immediate)")
@@ -293,6 +295,7 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 		TTY:      ttyFlag,
 		Rows:     rowsFlag,
 		Cols:     colsFlag,
+		Login:    loginFlag,
 	}
 
 	sessionID, err := bk.StartSession(context.Background(), command, opts)
@@ -364,6 +367,7 @@ func cmdRunTTY(command []string) {
 		TTY:      true,
 		Rows:     rows,
 		Cols:     cols,
+		Login:    loginFlag,
 	}
 
 	sessionID, err := bk.StartSession(context.Background(), command, opts)

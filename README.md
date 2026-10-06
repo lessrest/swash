@@ -60,6 +60,22 @@ swash also detaches after 1920 bytes of output by default, so a noisy command
 does not monopolize its caller. Set `--detach-after-output 0` to disable that
 limit.
 
+### Environment
+
+By default a session gets the caller's environment, so `swash run -- $x`
+behaves like `$x`. With `--login` (`-l`) it gets a fresh login session
+instead: the user service manager's environment, run through your login
+shell, keeping only the working directory from the caller.
+
+```bash
+swash -l run -- nixos-rebuild switch
+```
+
+This is useful when the caller is itself sandboxed or carries a lot of
+private state, such as an agent harness running inside a bubblewrap
+container: the session runs outside that container, as a sibling of your
+other user services.
+
 ### Inspect and control sessions
 
 ```bash

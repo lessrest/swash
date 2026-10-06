@@ -450,6 +450,7 @@ func RunHost() (int, error) {
 	rowsFlag := fs.Int("rows", 24, "Terminal rows (for --tty mode)")
 	colsFlag := fs.Int("cols", 80, "Terminal columns (for --tty mode)")
 	unixSocketFlag := fs.String("unix-socket", "", "Serve control plane over a unix socket (posix backend)")
+	loginFlag := fs.Bool("login", false, "Run the command under the user's login shell")
 	// Skip "swash" (index 0) and "host" (index 1) to get to the flags
 	fs.Parse(os.Args[2:])
 
@@ -469,6 +470,10 @@ func RunHost() (int, error) {
 		}
 	}
 
+	if *loginFlag {
+		command = LoginCommand(command)
+	}
+
 	// POSIX (unix socket) mode: run without systemd/journald/D-Bus.
 	if *unixSocketFlag != "" {
 		databasePath := os.Getenv("SWASH_EVENT_DB")
@@ -480,6 +485,10 @@ func RunHost() (int, error) {
 			return 0, fmt.Errorf("opening event database: %w", err)
 		}
 		defer events.Close()
+
+		if err := resolveCommand(command); err != nil {
+			return failedStartResult(events, *sessionIDFlag, command, tags, err)
+		}
 
 		// Set up context that cancels on SIGTERM/SIGINT (like D-Bus mode).
 		ctx, cancel := context.WithCancel(context.Background())
@@ -542,6 +551,10 @@ func RunHost() (int, error) {
 	}
 	defer events.Close()
 
+	if err := resolveCommand(command); err != nil {
+		return failedStartResult(events, *sessionIDFlag, command, tags, err)
+	}
+
 	// Use TTYHost for --tty mode, otherwise use regular Host
 	if *ttyFlag {
 		host, err := NewTTYHost(TTYHostConfig{
@@ -568,6 +581,29 @@ func RunHost() (int, error) {
 	})
 
 	return completedTaskResult(host, host.Run())
+}
+
+// failedStartResult records a command that could not be started as a
+// session that printed an error and exited 127, like a shell would.
+func failedStartResult(events journal.EventLog, sessionID string, command []string, tags map[string]string, startErr error) (int, error) {
+	const exitCode = 127
+	fields := maps.Clone(tags)
+	fields[journal.FieldSession] = sessionID
+	if err := journal.EmitStarted(events, sessionID, command, tags); err != nil {
+		return 0, err
+	}
+	if err := journal.WriteOutput(events, 2, "swash: "+startErr.Error(), fields); err != nil {
+		return 0, err
+	}
+	if err := journal.EmitExited(events, sessionID, exitCode, command, tags); err != nil {
+		return 0, err
+	}
+	// Report readiness anyway so the service manager treats this as a
+	// session that ran and failed, not as a start job that failed.
+	if _, err := daemon.SdNotify(true, daemon.SdNotifyReady); err != nil {
+		return 0, err
+	}
+	return exitCode, nil
 }
 
 type taskStatus interface {

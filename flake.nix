@@ -20,17 +20,19 @@
             version = "0.1.0-unstable";
             src = self;
 
-            vendorHash = "sha256-uT/BAWjFhauqnf0KuaDf//YCF62setNh5x0c/TEjDrg=";
+            vendorHash = "sha256-q1YZecpbrLChbvaHfPzzCeMIuepuF+v+z7dAv1a89gM=";
             subPackages = [ "cmd/swash" ];
             env.GOWORK = "off";
 
-            nativeBuildInputs = [ pkgs.makeWrapper ];
+            nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.patchelf ];
             preBuild = ''
               export CGO_CFLAGS="-I$PWD/cvendor''${CGO_CFLAGS:+ $CGO_CFLAGS}"
             '';
-            postFixup = ''
-              wrapProgram $out/bin/swash \
-                --prefix LD_LIBRARY_PATH : ${pkgs.lib.makeLibraryPath [ pkgs.systemdLibs ]}
+            # libsystemd is dlopen'ed, so put it on the binary's own rpath
+            # rather than in LD_LIBRARY_PATH, which would leak into every
+            # session's environment and be missing in --login sessions.
+            postFixup = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              patchelf --add-rpath ${pkgs.lib.makeLibraryPath [ pkgs.systemd ]} $out/bin/swash
             '';
 
             meta = {

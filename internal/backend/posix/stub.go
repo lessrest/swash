@@ -297,6 +297,9 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	if len(opts.Tags) > 0 {
 		args = append(args, "--tags-json", host.MustJSON(opts.Tags))
 	}
+	if opts.Login {
+		args = append(args, "--login")
+	}
 	if opts.TTY {
 		args = append(args, "--tty")
 		if opts.Rows > 0 {
@@ -313,8 +316,14 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 		cmd.Dir = opts.WorkingDir
 	}
 
-	// Every host writes directly to the shared WAL database.
-	cmd.Env = append(os.Environ(),
+	// Every host writes directly to the shared WAL database. Without a
+	// service manager to supply a session environment, login mode starts
+	// from the bare identity variables and lets the login shell do the rest.
+	cmd.Env = os.Environ()
+	if opts.Login {
+		cmd.Env = loginEnvironment()
+	}
+	cmd.Env = append(cmd.Env,
 		"SWASH_SESSION="+sessionID,
 		"SWASH_EVENT_DB="+b.eventDBPath,
 	)
@@ -608,4 +617,14 @@ func (b *PosixBackend) FollowEvents(ctx context.Context, filters []backend.Event
 		return func(yield func(journal.EventRecord) bool) {}
 	}
 	return log.Follow(ctx, filters, cursor)
+}
+
+func loginEnvironment() []string {
+	var env []string
+	for _, name := range []string{"HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "XDG_RUNTIME_DIR"} {
+		if value, ok := os.LookupEnv(name); ok {
+			env = append(env, name+"="+value)
+		}
+	}
+	return append(env, "PATH=/usr/local/bin:/usr/bin:/bin")
 }

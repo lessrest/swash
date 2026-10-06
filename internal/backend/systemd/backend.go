@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"iter"
 	"os"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -138,23 +137,15 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 	dbusName := fmt.Sprintf("%s.%s", host.DBusNamePrefix, sessionID)
 	cmdStr := strings.Join(command, " ")
 
-	// Resolve command[0] to absolute path so systemd can find it
-	// (systemd uses its own PATH, not the inherited environment)
-	if len(command) > 0 && !strings.HasPrefix(command[0], "/") {
-		if absPath, err := exec.LookPath(command[0]); err == nil {
-			command = append([]string{absPath}, command[1:]...)
-		}
-	}
-
-	// Build environment map (excluding underscore-prefixed vars)
+	// The host resolves command[0] against the PATH it is given, not the
+	// caller's view of the filesystem, which may be a different mount
+	// namespace (e.g. an FHS sandbox with its own /usr/bin).
+	//
+	// In login mode the host gets no caller environment at all, so it
+	// inherits the user manager's session environment instead.
 	env := make(map[string]string)
-	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "_") {
-			continue
-		}
-		if idx := strings.Index(e, "="); idx > 0 {
-			env[e[:idx]] = e[idx+1:]
-		}
+	if !opts.Login {
+		env = host.ForwardedEnvironment(os.Environ())
 	}
 	env["SWASH_SESSION"] = sessionID
 
@@ -164,6 +155,10 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 		"--session", sessionID,
 		"--command-json", host.MustJSON(command),
 	)
+
+	if opts.Login {
+		serverCmd = append(serverCmd, "--login")
+	}
 
 	// Add protocol if not default (only for non-TTY mode)
 	if !opts.TTY && opts.Protocol != "" && opts.Protocol != protocol.ProtocolShell {
