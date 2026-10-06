@@ -3,6 +3,7 @@ package systemd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"syscall"
 	"time"
 
@@ -146,10 +147,21 @@ func (s *systemdConn) KillUnit(ctx context.Context, name UnitName, signal syscal
 	return nil
 }
 
+// escapeExecArgs protects arguments from systemd's ExecStart= variable
+// expansion, which would otherwise turn "$$" into "$" and substitute
+// "${VAR}" before the command ever sees them.
+func escapeExecArgs(args []string) []string {
+	escaped := make([]string, len(args))
+	for i, arg := range args {
+		escaped[i] = strings.ReplaceAll(arg, "$", "$$")
+	}
+	return escaped
+}
+
 // StartTransient creates and starts a transient unit via D-Bus API.
 func (s *systemdConn) StartTransient(ctx context.Context, spec TransientSpec) error {
 	props := []dbus.Property{
-		dbus.PropExecStart(spec.Command, false),
+		dbus.PropExecStart(escapeExecArgs(spec.Command), false),
 		dbus.PropDescription(spec.Description),
 	}
 

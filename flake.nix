@@ -57,10 +57,10 @@
               pkgs.gnumake
               pkgs.gcc
               pkgs.pkg-config
-              pkgs.systemdLibs
+              pkgs.systemd
             ];
             CGO_CFLAGS = "-I${self}/cvendor";
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.systemdLibs ];
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.systemd ];
           };
         });
     };
