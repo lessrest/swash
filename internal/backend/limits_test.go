@@ -3,13 +3,13 @@ package backend
 import "testing"
 
 func TestParseLimits(t *testing.T) {
-	base := Limits{CPUs: 14, CPUWeight: 50, MemoryHigh: 8 << 30, MemoryMax: 12 << 30, SwapMax: 4 << 30, TasksMax: 4096}
+	base := Limits{CPUs: 14, CPUWeight: 50, IOWeight: 50, MemoryHigh: 8 << 30, MemoryMax: 12 << 30, SwapMax: 4 << 30, TasksMax: 4096}
 
 	got, err := ParseLimits("cpus=2.5,mem=1G", base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Limits{CPUs: 2.5, CPUWeight: 50, MemoryHigh: (1 << 30) / 10 * 9, MemoryMax: 1 << 30, NoSwap: true, TasksMax: 4096}
+	want := Limits{CPUs: 2.5, CPUWeight: 50, IOWeight: 50, MemoryHigh: (1 << 30) / 10 * 9, MemoryMax: 1 << 30, NoSwap: true, TasksMax: 4096}
 	if got != want {
 		t.Fatalf("got %+v\nwant %+v", got, want)
 	}

@@ -113,9 +113,10 @@ func (s *Sampler) Sample() Stats {
 	self := os.Getpid()
 
 	var pids []int
+	cgroupIO := false
 	if s.cgroupDir != "" {
 		pids = readPids(filepath.Join(s.cgroupDir, "cgroup.procs"), self)
-		s.readCgroup(&st)
+		cgroupIO = s.readCgroup(&st)
 	} else if s.sid > 0 {
 		pids = sessionPids(s.sid)
 	}
@@ -177,9 +178,11 @@ func (s *Sampler) Sample() Stats {
 			}
 		}
 	}
-	for _, d := range s.disk {
-		st.DiskRead += d[0]
-		st.DiskWrite += d[1]
+	if !cgroupIO {
+		for _, d := range s.disk {
+			st.DiskRead += d[0]
+			st.DiskWrite += d[1]
+		}
 	}
 	for _, n := range s.net {
 		st.NetRx += n[0]
@@ -209,7 +212,10 @@ func (s *Sampler) Sample() Stats {
 	return st
 }
 
-func (s *Sampler) readCgroup(st *Stats) {
+// readCgroup fills in what the cgroup knows, and reports whether that
+// includes disk I/O, which needs the io controller delegated to the user
+// manager (Delegate=... io on user@.service).
+func (s *Sampler) readCgroup(st *Stats) bool {
 	file := func(name string) string {
 		data, _ := os.ReadFile(filepath.Join(s.cgroupDir, name))
 		return strings.TrimSpace(string(data))
@@ -243,6 +249,27 @@ func (s *Sampler) readCgroup(st *Stats) {
 	st.CPUPressure = psiSome(file("cpu.pressure"))
 	st.MemPressure = psiSome(file("memory.pressure"))
 	st.IOPressure = psiSome(file("io.pressure"))
+
+	// io.stat has one line per device: "259:0 rbytes=N wbytes=N rios=N ...".
+	// Unlike /proc/<pid>/io it includes processes that already exited and
+	// writeback charged to the cgroup after the fact.
+	stat, err := os.ReadFile(filepath.Join(s.cgroupDir, "io.stat"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(stat), "\n") {
+		for _, field := range strings.Fields(line) {
+			key, value, _ := strings.Cut(field, "=")
+			v, _ := strconv.ParseUint(value, 10, 64)
+			switch key {
+			case "rbytes":
+				st.DiskRead += v
+			case "wbytes":
+				st.DiskWrite += v
+			}
+		}
+	}
+	return true
 }
 
 // psiSome extracts avg10 from the "some" line of a pressure file.

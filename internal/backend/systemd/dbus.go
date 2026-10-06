@@ -161,6 +161,7 @@ func limitProperties(l backendpkg.Limits) []dbus.Property {
 		}
 	}
 	set("CPUWeight", l.CPUWeight)
+	set("IOWeight", l.IOWeight)
 	set("CPUQuotaPerSecUSec", uint64(l.CPUs*1e6))
 	set("MemoryHigh", l.MemoryHigh)
 	set("MemoryMax", l.MemoryMax)
@@ -243,6 +244,9 @@ func (s *systemdConn) StartTransient(ctx context.Context, spec TransientSpec) er
 		// record the exit (and the OOM kill) instead of the whole unit
 		// being stopped.
 		dbus.Property{Name: "OOMPolicy", Value: godbus.MakeVariant("continue")},
+		// Turns on io.stat where the io controller is delegated to the
+		// user manager; harmless where it isn't.
+		dbus.Property{Name: "IOAccounting", Value: godbus.MakeVariant(true)},
 	)
 
 	if spec.Collect {

@@ -119,12 +119,40 @@ Totals are also recorded on each session's `exited` event (`SWASH_CPU_USEC`,
 `SWASH_MEM_PEAK`, `SWASH_DISK_WRITE`, `SWASH_NET_RX`, `SWASH_OOM_KILLS`, ...).
 Network counters cover TCP only.
 
+#### Disk I/O and the io controller
+
+Disk totals come from the session cgroup's `io.stat` when available. That
+count includes processes that have already exited and writeback charged
+after the fact. Otherwise swash falls back to summing `/proc/<pid>/io` for
+live processes once a second, which misses short-lived processes between
+samples.
+
+`io.stat` needs the `io` cgroup controller delegated to your user manager.
+Upstream systemd's `user@.service` delegates only `pids memory cpu`, and most
+distributions, NixOS included, ship that unchanged. Check with:
+
+```bash
+systemctl show user@$UID.service -p DelegateControllers
+```
+
+To add `io` on NixOS:
+
+```nix
+systemd.services."user@".serviceConfig.Delegate = "pids memory cpu io";
+```
+
+Elsewhere, use a drop-in for `user@.service` with `Delegate=pids memory cpu io`.
+Either way, it applies the next time the user manager starts, i.e. after
+logging out and in. With `io` delegated, the default `IOWeight=50` (or
+`io-weight=` in `SWASH_LIMITS`) also takes effect, giving sessions lower disk
+priority than interactive programs under contention.
+
 ### Resource limits
 
 With the systemd backend, every session gets limits that keep one runaway
 command from taking over the machine while leaving ordinary heavy work alone:
 
-- all CPU cores but two, at half priority under contention
+- all CPU cores but two, at half CPU (and, where available, disk) priority under contention
 - memory throttled at 50% of RAM and OOM-killed at 75%, with at most half the
   swap space on top
 - 4096 processes and threads

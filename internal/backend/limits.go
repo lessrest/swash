@@ -13,6 +13,7 @@ import (
 type Limits struct {
 	CPUs       float64 // CPU time quota in cores (2.5 = 250%)
 	CPUWeight  uint64  // relative CPU priority (systemd default is 100)
+	IOWeight   uint64  // relative disk priority (needs the io controller)
 	MemoryHigh uint64  // bytes; above this the kernel throttles and reclaims
 	MemoryMax  uint64  // bytes; above this the session's processes are OOM-killed
 	SwapMax    uint64  // bytes of swap the session may use
@@ -29,7 +30,7 @@ func (l Limits) IsZero() bool { return l == Limits{} }
 // half of RAM and killed at three quarters (with at most half the swap
 // space on top), and a fork-bomb cap.
 func DefaultLimits() Limits {
-	l := Limits{CPUWeight: 50, TasksMax: 4096}
+	l := Limits{CPUWeight: 50, IOWeight: 50, TasksMax: 4096}
 	if n := runtime.NumCPU(); n > 2 {
 		l.CPUs = float64(n - 2)
 	}
@@ -90,6 +91,12 @@ func ParseLimits(spec string, base Limits) (Limits, error) {
 			} else {
 				l.CPUWeight, err = strconv.ParseUint(value, 10, 64)
 			}
+		case "io-weight":
+			if off {
+				l.IOWeight = 0
+			} else {
+				l.IOWeight, err = strconv.ParseUint(value, 10, 64)
+			}
 		case "mem", "memory":
 			if off {
 				l.MemoryMax, l.MemoryHigh = 0, 0
@@ -126,7 +133,7 @@ func ParseLimits(spec string, base Limits) (Limits, error) {
 				l.TasksMax, err = strconv.ParseUint(value, 10, 64)
 			}
 		default:
-			return l, fmt.Errorf("unknown limit %q (want cpus, weight, mem, high, swap, tasks)", key)
+			return l, fmt.Errorf("unknown limit %q (want cpus, weight, io-weight, mem, high, swap, tasks)", key)
 		}
 		if err != nil {
 			return l, fmt.Errorf("limit %s=%s: %w", key, value, err)
