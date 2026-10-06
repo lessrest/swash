@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	backendpkg "swa.sh/internal/backend"
 )
 
 // rootSlicePrefix returns the slice prefix from env or default "swash"
@@ -85,4 +87,5 @@ type TransientSpec struct {
 	Collect     bool // --collect: unload unit after it exits
 	KillMode    string
 	TimeoutStop time.Duration
+	Limits      backendpkg.Limits
 }

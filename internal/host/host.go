@@ -30,6 +30,8 @@ type Host struct {
 	command   []string
 	protocol  protocol.Protocol
 	tags      map[string]string
+	started   map[string]string // extra fields for the started event only
+	stats     *Sampler
 
 	events   journal.EventLog
 	executor Executor
@@ -55,6 +57,9 @@ type HostConfig struct {
 	Tags      map[string]string
 	Events    journal.EventLog
 	Executor  Executor // Optional; defaults to ExecExecutor if nil
+
+	// StartedFields are recorded on the started event only, e.g. provenance.
+	StartedFields map[string]string
 }
 
 // NewHost creates a new Host with the given configuration.
@@ -74,10 +79,15 @@ func NewHost(cfg HostConfig) *Host {
 		command:   cfg.Command,
 		protocol:  cfg.Protocol,
 		tags:      tags,
+		started:   cfg.StartedFields,
+		stats:     NewSampler(),
 		events:    cfg.Events,
 		executor:  execImpl,
 	}
 }
+
+// Stats returns the session's current resource usage as JSON.
+func (h *Host) Stats() (string, error) { return statsJSON(h.stats) }
 
 // Gist returns the current session status.
 func (h *Host) Gist() (HostStatus, error) {
@@ -261,6 +271,10 @@ func (h *Host) RunTask(ctx context.Context) error {
 	h.restartCh = make(chan struct{}, 1)
 	h.mu.Unlock()
 
+	sampleCtx, stopSampling := context.WithCancel(ctx)
+	defer stopSampling()
+	go h.stats.Run(sampleCtx)
+
 	for {
 		slog.Debug("Host.RunTask starting task process", "session", h.sessionID)
 		doneChan, eventErrors, err := h.startTaskProcess()
@@ -274,7 +288,7 @@ func (h *Host) RunTask(ctx context.Context) error {
 		h.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := journal.EmitStarted(h.events, h.sessionID, h.command, h.tags); err != nil {
+		if err := journal.EmitStarted(h.events, h.sessionID, h.command, mergeFields(h.tags, h.started)); err != nil {
 			h.terminateTask(doneChan)
 			return fmt.Errorf("emitting started event: %w", err)
 		}
@@ -363,6 +377,7 @@ func (srv *Host) startTaskProcess() (chan struct{}, <-chan error, error) {
 	// Store proc and stdin for SendInput/Kill
 	srv.mu.Lock()
 	srv.proc = proc
+	trackProcess(srv.stats, proc)
 	srv.stdin = stdinWrite
 	srv.stdoutRead = stdoutRead
 	srv.stderrRead = stderrRead
@@ -428,7 +443,8 @@ func (srv *Host) startTaskProcess() (chan struct{}, <-chan error, error) {
 		srv.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := journal.EmitExited(srv.events, srv.sessionID, exitCode, srv.command, srv.tags); err != nil {
+		usage := srv.stats.Sample().ExitFields()
+		if err := journal.EmitExited(srv.events, srv.sessionID, exitCode, srv.command, mergeFields(srv.tags, usage)); err != nil {
 			reportEventError(fmt.Errorf("emitting exited event: %w", err))
 		}
 
@@ -451,6 +467,7 @@ func RunHost() (int, error) {
 	colsFlag := fs.Int("cols", 80, "Terminal columns (for --tty mode)")
 	unixSocketFlag := fs.String("unix-socket", "", "Serve control plane over a unix socket (posix backend)")
 	loginFlag := fs.Bool("login", false, "Run the command under the user's login shell")
+	startedJSONFlag := fs.String("started-json", "", "Extra fields for the started event as JSON object")
 	// Skip "swash" (index 0) and "host" (index 1) to get to the flags
 	fs.Parse(os.Args[2:])
 
@@ -467,6 +484,13 @@ func RunHost() (int, error) {
 	if *tagsJSONFlag != "" {
 		if err := json.Unmarshal([]byte(*tagsJSONFlag), &tags); err != nil {
 			return 0, fmt.Errorf("parsing tags: %w", err)
+		}
+	}
+
+	started := make(map[string]string)
+	if *startedJSONFlag != "" {
+		if err := json.Unmarshal([]byte(*startedJSONFlag), &started); err != nil {
+			return 0, fmt.Errorf("parsing started fields: %w", err)
 		}
 	}
 
@@ -487,7 +511,7 @@ func RunHost() (int, error) {
 		defer events.Close()
 
 		if err := resolveCommand(command); err != nil {
-			return failedStartResult(events, *sessionIDFlag, command, tags, err)
+			return failedStartResult(events, *sessionIDFlag, command, tags, started, err)
 		}
 
 		// Set up context that cancels on SIGTERM/SIGINT (like D-Bus mode).
@@ -506,12 +530,13 @@ func RunHost() (int, error) {
 
 		if *ttyFlag {
 			h, err := NewTTYHost(TTYHostConfig{
-				SessionID: *sessionIDFlag,
-				Command:   command,
-				Rows:      *rowsFlag,
-				Cols:      *colsFlag,
-				Tags:      tags,
-				Events:    events,
+				SessionID:     *sessionIDFlag,
+				Command:       command,
+				Rows:          *rowsFlag,
+				Cols:          *colsFlag,
+				Tags:          tags,
+				StartedFields: started,
+				Events:        events,
 			})
 			if err != nil {
 				return 0, fmt.Errorf("NewTTYHost: %w", err)
@@ -528,11 +553,12 @@ func RunHost() (int, error) {
 		}
 
 		h := NewHost(HostConfig{
-			SessionID: *sessionIDFlag,
-			Command:   command,
-			Protocol:  protocol.Protocol(*protocolFlag),
-			Tags:      tags,
-			Events:    events,
+			SessionID:     *sessionIDFlag,
+			Command:       command,
+			Protocol:      protocol.Protocol(*protocolFlag),
+			Tags:          tags,
+			StartedFields: started,
+			Events:        events,
 		})
 
 		srv, err := ServeUnix(*unixSocketFlag, h, nil)
@@ -552,18 +578,19 @@ func RunHost() (int, error) {
 	defer events.Close()
 
 	if err := resolveCommand(command); err != nil {
-		return failedStartResult(events, *sessionIDFlag, command, tags, err)
+		return failedStartResult(events, *sessionIDFlag, command, tags, started, err)
 	}
 
 	// Use TTYHost for --tty mode, otherwise use regular Host
 	if *ttyFlag {
 		host, err := NewTTYHost(TTYHostConfig{
-			SessionID: *sessionIDFlag,
-			Command:   command,
-			Rows:      *rowsFlag,
-			Cols:      *colsFlag,
-			Tags:      tags,
-			Events:    events,
+			SessionID:     *sessionIDFlag,
+			Command:       command,
+			Rows:          *rowsFlag,
+			Cols:          *colsFlag,
+			Tags:          tags,
+			StartedFields: started,
+			Events:        events,
 		})
 		if err != nil {
 			return 0, fmt.Errorf("NewTTYHost: %w", err)
@@ -573,11 +600,12 @@ func RunHost() (int, error) {
 	}
 
 	host := NewHost(HostConfig{
-		SessionID: *sessionIDFlag,
-		Command:   command,
-		Protocol:  protocol.Protocol(*protocolFlag),
-		Tags:      tags,
-		Events:    events,
+		SessionID:     *sessionIDFlag,
+		Command:       command,
+		Protocol:      protocol.Protocol(*protocolFlag),
+		Tags:          tags,
+		StartedFields: started,
+		Events:        events,
 	})
 
 	return completedTaskResult(host, host.Run())
@@ -585,11 +613,11 @@ func RunHost() (int, error) {
 
 // failedStartResult records a command that could not be started as a
 // session that printed an error and exited 127, like a shell would.
-func failedStartResult(events journal.EventLog, sessionID string, command []string, tags map[string]string, startErr error) (int, error) {
+func failedStartResult(events journal.EventLog, sessionID string, command []string, tags, started map[string]string, startErr error) (int, error) {
 	const exitCode = 127
 	fields := maps.Clone(tags)
 	fields[journal.FieldSession] = sessionID
-	if err := journal.EmitStarted(events, sessionID, command, tags); err != nil {
+	if err := journal.EmitStarted(events, sessionID, command, mergeFields(tags, started)); err != nil {
 		return 0, err
 	}
 	if err := journal.WriteOutput(events, 2, "swash: "+startErr.Error(), fields); err != nil {

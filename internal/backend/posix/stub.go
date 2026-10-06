@@ -300,6 +300,9 @@ func (b *PosixBackend) StartSession(ctx context.Context, command []string, opts 
 	if opts.Login {
 		args = append(args, "--login")
 	}
+	if len(opts.Provenance) > 0 {
+		args = append(args, "--started-json", host.MustJSON(opts.Provenance))
+	}
 	if opts.TTY {
 		args = append(args, "--tty")
 		if opts.Rows > 0 {

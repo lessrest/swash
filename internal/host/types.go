@@ -74,6 +74,9 @@ type Controller interface {
 	// Gist returns session status.
 	Gist() (HostStatus, error)
 
+	// Stats returns the session's resource usage as a JSON-encoded Stats.
+	Stats() (string, error)
+
 	// SessionID returns the session ID.
 	SessionID() (string, error)
 }

@@ -159,6 +159,9 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 	if opts.Login {
 		serverCmd = append(serverCmd, "--login")
 	}
+	if len(opts.Provenance) > 0 {
+		serverCmd = append(serverCmd, "--started-json", host.MustJSON(opts.Provenance))
+	}
 
 	// Add protocol if not default (only for non-TTY mode)
 	if !opts.TTY && opts.Protocol != "" && opts.Protocol != protocol.ProtocolShell {
@@ -189,6 +192,7 @@ func (b *SystemdBackend) StartSession(ctx context.Context, command []string, opt
 		Command:     serverCmd,
 		Collect:     true,
 		BusName:     dbusName,
+		Limits:      opts.Limits,
 	}
 
 	if err := b.processes.Start(ctx, spec); err != nil {

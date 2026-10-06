@@ -51,6 +51,10 @@ func (f *fakeSystemd) StartTransient(_ context.Context, spec TransientSpec) erro
 	return nil
 }
 
+func (f *fakeSystemd) SetUnitLimits(context.Context, string, backendpkg.Limits) error {
+	return nil
+}
+
 func (f *fakeSystemd) Close() error { return nil }
 
 func TestProcessManagerStartsNotifyServiceInSharedSlice(t *testing.T) {

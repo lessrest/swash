@@ -33,6 +33,8 @@ type SessionOptions struct {
 	Cols       int               // Terminal columns (for TTY mode)
 	WorkingDir string            // Working directory for the session (optional, defaults to cwd)
 	Login      bool              // Use a fresh session environment and login shell instead of the caller's environment
+	Limits     Limits            // Resource limits (systemd backend only)
+	Provenance map[string]string // Journal fields describing who started the session, recorded on the started event
 }
 
 // EventFilter is a semantic event query filter.

@@ -181,6 +181,9 @@ type TTYHost struct {
 	restartCh chan struct{}
 	doneCh    chan struct{}
 	eventErr  chan error
+
+	started map[string]string // extra fields for the started event only
+	stats   *Sampler
 }
 
 // TTYHostConfig holds the configuration for creating a TTYHost.
@@ -191,6 +194,9 @@ type TTYHostConfig struct {
 	Tags       map[string]string
 	Events     journal.EventLog
 	Executor   Executor // Optional; defaults to ExecExecutor if nil
+
+	// StartedFields are recorded on the started event only, e.g. provenance.
+	StartedFields map[string]string
 
 	// OpenPTY is optional; defaults to OpenRealPTY if nil.
 	// Provide a custom implementation for testing.
@@ -234,6 +240,8 @@ func NewTTYHost(cfg TTYHostConfig) (*TTYHost, error) {
 		openPTY:         openPTY,
 		attachedClients: make(map[string]*attachedClient),
 		eventErr:        make(chan error, 1),
+		started:         cfg.StartedFields,
+		stats:           NewSampler(),
 	}
 
 	// Create vterm instance
@@ -373,6 +381,9 @@ func (h *TTYHost) Restart() error {
 }
 
 // Terminal-specific methods
+
+// Stats returns the session's current resource usage as JSON.
+func (h *TTYHost) Stats() (string, error) { return statsJSON(h.stats) }
 
 // GetScreenText returns the full screen content.
 func (h *TTYHost) GetScreenText() (string, error) {
@@ -638,6 +649,10 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 	h.restartCh = make(chan struct{}, 1)
 	h.mu.Unlock()
 
+	sampleCtx, stopSampling := context.WithCancel(ctx)
+	defer stopSampling()
+	go h.stats.Run(sampleCtx)
+
 	for {
 		doneChan, err := h.startTTYProcess()
 		if err != nil {
@@ -649,7 +664,7 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 		h.mu.Unlock()
 
 		// Emit lifecycle event
-		if err := journal.EmitStarted(h.events, h.sessionID, h.command, h.tags); err != nil {
+		if err := journal.EmitStarted(h.events, h.sessionID, h.command, mergeFields(h.tags, h.started)); err != nil {
 			h.Kill()
 			h.closePTYMaster()
 			<-doneChan
@@ -730,6 +745,7 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 	// Store proc and ptyPair for SendInput, Resize, Kill
 	h.mu.Lock()
 	h.proc = proc
+	trackProcess(h.stats, proc)
 	h.ptyPair = ptyPair
 	h.running = true
 	h.mu.Unlock()
@@ -785,7 +801,8 @@ func (h *TTYHost) startTTYProcess() (chan struct{}, error) {
 		}
 
 		// Emit lifecycle event
-		if err := journal.EmitExited(h.events, h.sessionID, exitCode, h.command, h.tags); err != nil {
+		usage := h.stats.Sample().ExitFields()
+		if err := journal.EmitExited(h.events, h.sessionID, exitCode, h.command, mergeFields(h.tags, usage)); err != nil {
 			select {
 			case h.eventErr <- fmt.Errorf("emitting exited event: %w", err):
 			default:

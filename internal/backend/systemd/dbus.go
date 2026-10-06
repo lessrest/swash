@@ -8,6 +8,8 @@ import (
 	"time"
 
 	godbus "github.com/godbus/dbus/v5"
+
+	backendpkg "swa.sh/internal/backend"
 	"swa.sh/systemd/dbus"
 )
 
@@ -24,6 +26,9 @@ type Systemd interface {
 
 	// StartTransient creates and starts a transient unit via D-Bus API.
 	StartTransient(ctx context.Context, spec TransientSpec) error
+
+	// SetUnitLimits sets resource limits on an existing unit at runtime.
+	SetUnitLimits(ctx context.Context, name string, limits backendpkg.Limits) error
 
 	// Close releases the D-Bus connection.
 	Close() error
@@ -147,6 +152,39 @@ func (s *systemdConn) KillUnit(ctx context.Context, name UnitName, signal syscal
 	return nil
 }
 
+// limitProperties translates resource limits into systemd unit properties.
+func limitProperties(l backendpkg.Limits) []dbus.Property {
+	var props []dbus.Property
+	set := func(name string, value uint64) {
+		if value > 0 {
+			props = append(props, dbus.Property{Name: name, Value: godbus.MakeVariant(value)})
+		}
+	}
+	set("CPUWeight", l.CPUWeight)
+	set("CPUQuotaPerSecUSec", uint64(l.CPUs*1e6))
+	set("MemoryHigh", l.MemoryHigh)
+	set("MemoryMax", l.MemoryMax)
+	set("TasksMax", l.TasksMax)
+	if l.NoSwap {
+		props = append(props, dbus.Property{Name: "MemorySwapMax", Value: godbus.MakeVariant(uint64(0))})
+	} else {
+		set("MemorySwapMax", l.SwapMax)
+	}
+	return props
+}
+
+// SetUnitLimits sets resource limits on an existing unit, for this boot only.
+func (s *systemdConn) SetUnitLimits(ctx context.Context, name string, limits backendpkg.Limits) error {
+	props := limitProperties(limits)
+	if len(props) == 0 {
+		return nil
+	}
+	if err := s.conn.SetUnitPropertiesContext(ctx, name, true, props...); err != nil {
+		return fmt.Errorf("setting limits on %s: %w", name, err)
+	}
+	return nil
+}
+
 // escapeExecArgs protects arguments from systemd's ExecStart= variable
 // expansion, which would otherwise turn "$$" into "$" and substitute
 // "${VAR}" before the command ever sees them.
@@ -201,6 +239,10 @@ func (s *systemdConn) StartTransient(ctx context.Context, spec TransientSpec) er
 	props = append(props,
 		dbus.Property{Name: "StandardOutput", Value: godbus.MakeVariant("journal")},
 		dbus.Property{Name: "StandardError", Value: godbus.MakeVariant("journal")},
+		// When the OOM killer hits the task, keep the host alive so it can
+		// record the exit (and the OOM kill) instead of the whole unit
+		// being stopped.
+		dbus.Property{Name: "OOMPolicy", Value: godbus.MakeVariant("continue")},
 	)
 
 	if spec.Collect {
@@ -223,6 +265,8 @@ func (s *systemdConn) StartTransient(ctx context.Context, spec TransientSpec) er
 			Value: godbus.MakeVariant(uint64(spec.TimeoutStop / time.Microsecond)),
 		})
 	}
+
+	props = append(props, limitProperties(spec.Limits)...)
 
 	resultChan := make(chan string, 1)
 	_, err := s.conn.StartTransientUnitContext(

@@ -93,6 +93,10 @@ func (c *unixClient) Gist() (host.HostStatus, error) {
 	return out, nil
 }
 
+func (c *unixClient) Stats() (string, error) {
+	return c.getText("/stats")
+}
+
 func (c *unixClient) Kill() error {
 	return c.doJSON(context.Background(), http.MethodPost, "/kill", nil, nil)
 }

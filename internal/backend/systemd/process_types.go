@@ -4,6 +4,8 @@ import (
 	"context"
 	"syscall"
 	"time"
+
+	backendpkg "swa.sh/internal/backend"
 )
 
 // ProcessStatus describes a workload.
@@ -24,6 +26,7 @@ type ProcessSpec struct {
 	Environment map[string]string
 	BusName     string
 	Collect     bool
+	Limits      backendpkg.Limits
 }
 
 // ProcessBackend is a semantic interface for running swash workloads.

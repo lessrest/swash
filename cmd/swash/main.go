@@ -88,6 +88,7 @@ func main() {
 	flag.IntVar(&colsFlag, "cols", 80, "Terminal columns (for --tty mode)")
 	flag.DurationVarP(&detachAfterFlag, "detach-after", "d", 3*time.Second, "Detach after duration (0 = immediate)")
 	flag.IntVar(&detachAfterOutputFlag, "detach-after-output", 80*24, "Detach after this many bytes of output (0 = unlimited)")
+	registerResourceFlags()
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `swash - Interactive process sessions over D-Bus
@@ -98,7 +99,8 @@ Usage:
   swash start [flags] -- <command>   Start command in background (same as run -d0)
   swash stop <session_id>            Stop session
   swash poll <session_id>            Get recent output
-  swash follow <session_id>          Follow output until exit
+  swash follow <session_id>          Follow output until exit (or -d / --detach-after-output, if given)
+  swash stats [session_id...]        Resource usage of sessions (all running if none given)
   swash send <session_id> <input>    Send input to process
   swash kill <session_id>            Kill process
   swash screen <session_id>          Show TTY session screen
@@ -107,6 +109,14 @@ Usage:
   swash emit ID --event NAME         Append a semantic session event
   swash events [filters]             Query structured journal events
   swash host                         (internal) Run as task host
+
+run, start and follow exit with the command's status, or 124 when swash
+stops waiting while the command is still running.
+
+Sessions get resource limits by default: all CPU cores but two at half
+priority, memory throttled at 50%% of RAM and killed at 75%%, 4096 tasks.
+Change them with --cpus/--mem/--tasks/--unlimited, or SWASH_LIMITS, e.g.
+SWASH_LIMITS="cpus=8,mem=16G" or SWASH_LIMITS=off.
 
 Flags:
 `)
@@ -165,6 +175,8 @@ Flags:
 		cmdKill(cmdArgs[0])
 	case "history":
 		cmdHistory()
+	case "stats":
+		cmdStats(cmdArgs)
 	case "screen":
 		if len(cmdArgs) == 0 {
 			fatal("usage: swash screen <session_id>")
@@ -290,12 +302,14 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 
 	// Build session options from flags
 	opts := backend.SessionOptions{
-		Protocol: protocol.Protocol(protocolFlag),
-		Tags:     parseTags(tagFlags),
-		TTY:      ttyFlag,
-		Rows:     rowsFlag,
-		Cols:     colsFlag,
-		Login:    loginFlag,
+		Protocol:   protocol.Protocol(protocolFlag),
+		Tags:       parseTags(tagFlags),
+		TTY:        ttyFlag,
+		Rows:       rowsFlag,
+		Cols:       colsFlag,
+		Login:      loginFlag,
+		Limits:     sessionLimits(),
+		Provenance: provenance(),
 	}
 
 	sessionID, err := bk.StartSession(context.Background(), command, opts)
@@ -309,7 +323,17 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 		return
 	}
 
-	// Set up signal handling to kill the process on Ctrl+C
+	waitSession(sessionID, detachAfter, outputLimit, true)
+}
+
+// detachedExit is the exit status when swash stops waiting for a session
+// that is still running, as timeout(1) does.
+const detachedExit = 124
+
+// waitSession streams a session's output until it exits, the wait limit
+// passes, or the output limit is reached, then exits with the session's
+// status (or detachedExit). killOnInterrupt makes Ctrl+C kill the session.
+func waitSession(sessionID string, detachAfter time.Duration, outputLimit int, killOnInterrupt bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -318,36 +342,53 @@ func cmdRun(command []string, detachAfter time.Duration, outputLimit int) {
 
 	go func() {
 		<-sigCh
-		// User pressed Ctrl+C - kill the background process
-		if err := bk.KillSession(context.Background(), sessionID); err != nil {
-			fmt.Fprintf(os.Stderr, "swash: failed to kill session: %v\n", err)
+		if killOnInterrupt {
+			if err := bk.KillSession(context.Background(), sessionID); err != nil {
+				fmt.Fprintf(os.Stderr, "swash: failed to kill session: %v\n", err)
+			}
 		}
 		cancel()
 	}()
 
-	// Follow with timeout
+	if statsFlag > 0 {
+		go reportStats(ctx, sessionID, statsFlag)
+	}
+
 	exitCode, result := bk.FollowSession(ctx, sessionID, detachAfter, outputLimit)
+	cancel()
 
 	switch result {
 	case backend.FollowCompleted:
+		if statsFlag > 0 {
+			if summary := exitSummary(sessionID); summary != "" {
+				fmt.Fprintf(os.Stderr, "swash: %s\n", summary)
+			}
+		}
 		os.Exit(exitCode)
 	case backend.FollowTimedOut:
 		fmt.Fprintf(os.Stderr, "swash: still running after %s, detaching\n", detachAfter)
-		fmt.Fprintf(os.Stderr, "swash: session ID: %s\n", sessionID)
-		fmt.Fprintf(os.Stderr, "swash: swash follow %s\n", sessionID)
-		os.Exit(1)
+		detached(sessionID)
 	case backend.FollowOutputLimit:
 		fmt.Fprintf(os.Stderr, "swash: output exceeded %d bytes, detaching\n", outputLimit)
-		fmt.Fprintf(os.Stderr, "swash: session ID: %s\n", sessionID)
-		fmt.Fprintf(os.Stderr, "swash: swash follow %s\n", sessionID)
-		os.Exit(1)
+		detached(sessionID)
 	case backend.FollowCancelled:
-		fmt.Fprintf(os.Stderr, "swash: cancelled, killed session %s\n", sessionID)
+		if killOnInterrupt {
+			fmt.Fprintf(os.Stderr, "swash: cancelled, killed session %s\n", sessionID)
+		}
 		os.Exit(130) // Standard exit code for SIGINT
 	case backend.FollowKilled:
 		fmt.Fprintf(os.Stderr, "swash: session %s was killed\n", sessionID)
 		os.Exit(128 + int(syscall.SIGKILL))
 	}
+}
+
+func detached(sessionID string) {
+	if st, err := sessionStats(sessionID); err == nil {
+		fmt.Fprintf(os.Stderr, "swash: %s\n", st.Line())
+	}
+	fmt.Fprintf(os.Stderr, "swash: session ID: %s\n", sessionID)
+	fmt.Fprintf(os.Stderr, "swash: swash follow %s\n", sessionID)
+	os.Exit(detachedExit)
 }
 
 func cmdRunTTY(command []string) {
@@ -362,12 +403,14 @@ func cmdRunTTY(command []string) {
 		cols = colsFlag
 	}
 	opts := backend.SessionOptions{
-		Protocol: protocol.Protocol(protocolFlag),
-		Tags:     parseTags(tagFlags),
-		TTY:      true,
-		Rows:     rows,
-		Cols:     cols,
-		Login:    loginFlag,
+		Protocol:   protocol.Protocol(protocolFlag),
+		Tags:       parseTags(tagFlags),
+		TTY:        true,
+		Rows:       rows,
+		Cols:       cols,
+		Login:      loginFlag,
+		Limits:     sessionLimits(),
+		Provenance: provenance(),
 	}
 
 	sessionID, err := bk.StartSession(context.Background(), command, opts)
@@ -416,14 +459,16 @@ func cmdFollow(sessionID string) {
 	initBackend()
 	defer bk.Close()
 
-	exitCode, result := bk.FollowSession(context.Background(), sessionID, 0, 0)
-	if result == backend.FollowCancelled {
-		os.Exit(130)
+	// follow waits indefinitely unless a limit is asked for explicitly.
+	var detachAfter time.Duration
+	var outputLimit int
+	if flag.CommandLine.Changed("detach-after") {
+		detachAfter = detachAfterFlag
 	}
-	if result == backend.FollowKilled {
-		os.Exit(128 + int(syscall.SIGKILL))
+	if flag.CommandLine.Changed("detach-after-output") {
+		outputLimit = detachAfterOutputFlag
 	}
-	os.Exit(exitCode)
+	waitSession(sessionID, detachAfter, outputLimit, false)
 }
 
 func cmdSend(sessionID, input string) {

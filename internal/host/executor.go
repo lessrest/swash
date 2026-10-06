@@ -55,6 +55,9 @@ func (p *execProcess) Wait() (int, error) {
 	return 0, nil
 }
 
+// PID returns the task's process ID, which is also its session ID.
+func (p *execProcess) PID() int { return p.sid }
+
 func (p *execProcess) Kill() error {
 	if p.sid <= 0 {
 		slog.Debug("execProcess.Kill no process")

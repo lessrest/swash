@@ -69,6 +69,14 @@ func (c *dbusClient) Gist() (host.HostStatus, error) {
 	return status, nil
 }
 
+func (c *dbusClient) Stats() (string, error) {
+	var stats string
+	if err := c.obj.Call(host.DBusNamePrefix+".Stats", 0).Store(&stats); err != nil {
+		return "", fmt.Errorf("calling Stats: %w", err)
+	}
+	return stats, nil
+}
+
 // ttyClientDBus implements host.TTYClient via D-Bus.
 type ttyClientDBus struct {
 	*dbusClient

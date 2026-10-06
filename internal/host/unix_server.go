@@ -16,6 +16,7 @@ import (
 
 type basicSession interface {
 	Gist() (HostStatus, error)
+	Stats() (string, error)
 	SendInput(data string) (int, error)
 	Kill() error
 	Restart() error
@@ -53,6 +54,17 @@ func ServeUnix(socketPath string, sess basicSession, ttyHost *TTYHost) (*UnixSer
 			return
 		}
 		writeJSON(w, st)
+	})
+
+	mux.HandleFunc("GET /stats", func(w http.ResponseWriter, r *http.Request) {
+		_ = r
+		st, err := sess.Stats()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, st)
 	})
 
 	mux.HandleFunc("POST /input", func(w http.ResponseWriter, r *http.Request) {

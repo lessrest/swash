@@ -4,6 +4,8 @@ import (
 	"context"
 	"syscall"
 	"time"
+
+	backendpkg "swa.sh/internal/backend"
 )
 
 // ProcessManager adapts the low-level Systemd interface to the semantic ProcessBackend.
@@ -32,7 +34,12 @@ func (b *ProcessManager) Start(ctx context.Context, spec ProcessSpec) error {
 		Collect:     spec.Collect,
 		KillMode:    "mixed",
 		TimeoutStop: 5 * time.Second,
+		Limits:      spec.Limits,
 	}
+
+	// The backstop on the shared slice is best effort: failing to set it
+	// shouldn't keep a session from starting.
+	_ = b.systemd.SetUnitLimits(ctx, RootSlice().String(), backendpkg.SliceLimits())
 
 	return b.systemd.StartTransient(ctx, tSpec)
 }
