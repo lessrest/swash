@@ -652,6 +652,7 @@ func (h *TTYHost) RunTask(ctx context.Context) error {
 	sampleCtx, stopSampling := context.WithCancel(ctx)
 	defer stopSampling()
 	go h.stats.Run(sampleCtx)
+	go recordStats(sampleCtx, h.stats, h.events, h.tags)
 
 	for {
 		doneChan, err := h.startTTYProcess()

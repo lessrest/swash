@@ -274,6 +274,7 @@ func (h *Host) RunTask(ctx context.Context) error {
 	sampleCtx, stopSampling := context.WithCancel(ctx)
 	defer stopSampling()
 	go h.stats.Run(sampleCtx)
+	go recordStats(sampleCtx, h.stats, h.events, h.tags)
 
 	for {
 		slog.Debug("Host.RunTask starting task process", "session", h.sessionID)

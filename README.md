@@ -103,10 +103,31 @@ processes, disk I/O, TCP traffic, and pressure stalls. That makes it easy to
 tell a quiet download or a busy compile from a hung process:
 
 ```bash
-swash stats                   # one line per running session
-swash stats KXO284            # live usage, or totals once it has exited
+swash stats                   # one line per running session, with a CPU sparkline
+swash stats KXO284            # charts of the session's whole history
 swash run --stats 30s -d 10m -- nix flake update
 swash follow --stats 10s KXO284
+```
+
+The host also writes a `stats` event to the journal every 5 seconds, so
+`swash stats ID` can chart a session's history, live or after it exited:
+
+```
+QRL559  exited 0 · cpu 46s · mem peak 1.1G · disk w 657M · net ↓57M ↑1.7K
+  11 samples over 51s, ~5s per column
+  cpu    ▁▁███▂▁▂▁▁▁  last 1%      peak 300% of 1400%
+  mem    ▁▁▁▁▁▂▂▆▆▇█  last 1.0G    peak 1.0G of 23G
+  disk w ▁▁▁▁▁▁▁██▁▁  last 0B/s    peak 100M/s
+  net ↓  ▁▁▁▁▁██▅▁▁▁  last 0B/s    peak 4.3M/s
+  procs  ▃▃███▃▃▃▃▃▃  last 2       peak 7
+```
+
+Idle metrics are left out. Long histories are squeezed into 60 columns:
+memory and process counts by maximum, rates by average. The samples are
+ordinary journal entries (`SWASH_EVENT=stats`, JSON in `SWASH_STATS`):
+
+```bash
+swash events --session KXO284 --event stats --json
 ```
 
 ```

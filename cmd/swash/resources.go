@@ -178,8 +178,17 @@ func reportStats(ctx context.Context, sessionID string, interval time.Duration) 
 	}
 }
 
-// cmdStats prints one line per session: live usage for running sessions,
-// totals for finished ones. With no IDs it covers all running sessions.
+// oneLine collapses whitespace and truncates s for a header line.
+func oneLine(s string, n int) string {
+	return truncate(strings.Join(strings.Fields(s), " "), n)
+}
+
+// chartWidth is the most sparkline columns swash stats draws.
+const chartWidth = 60
+
+// cmdStats with no IDs prints one line per running session, led by a CPU
+// sparkline of its last minute. With IDs it charts each session's whole
+// recorded history, live or finished.
 func cmdStats(ids []string) {
 	initBackend()
 	defer bk.Close()
@@ -188,33 +197,55 @@ func cmdStats(ids []string) {
 	if err != nil {
 		fatal("listing sessions: %v", err)
 	}
-	running := make(map[string]bool, len(sessions))
+	running := make(map[string]backend.Session, len(sessions))
 	for _, s := range sessions {
-		running[s.ID] = true
+		running[s.ID] = s
 	}
+
 	if len(ids) == 0 {
 		if len(sessions) == 0 {
 			fmt.Println("no sessions")
 			return
 		}
 		for _, s := range sessions {
-			ids = append(ids, s.ID)
-		}
-	}
-	for _, id := range ids {
-		st, err := sessionStats(id)
-		switch {
-		case err == nil:
-			fmt.Printf("%s  [%s] %s\n", id,
-				host.FormatDuration(time.Duration(st.Elapsed*float64(time.Second))), st.Line())
-		case running[id]:
-			fmt.Printf("%s  running, no stats (%v)\n", id, err)
-		default:
-			if summary := exitSummary(id); summary != "" {
-				fmt.Printf("%s  %s\n", id, summary)
-			} else {
-				fmt.Printf("%s  not running, no exit recorded (killed, or unknown)\n", id)
+			st, err := sessionStats(s.ID)
+			if err != nil {
+				fmt.Printf("%s  running, no stats (%v)\n", s.ID, err)
+				continue
 			}
+			history := append(statsHistory(s.ID), st)
+			fmt.Printf("%s  %-12s [%s] %s\n", s.ID, cpuSpark(history, 12),
+				host.FormatDuration(time.Duration(st.Elapsed*float64(time.Second))), st.Line())
 		}
+		return
+	}
+
+	for i, id := range ids {
+		if i > 0 {
+			fmt.Println()
+		}
+		history := statsHistory(id)
+		if st, err := sessionStats(id); err == nil {
+			history = append(history, st)
+			fmt.Printf("%s  running %s · %s\n", id,
+				host.FormatDuration(time.Duration(st.Elapsed*float64(time.Second))), oneLine(running[id].Command, 80))
+			renderChart(history, chartWidth, true)
+			fmt.Printf("  %s\n", st.Line())
+			continue
+		}
+		if s, ok := running[id]; ok {
+			fmt.Printf("%s  running, no stats (%v) · %s\n", id, err, oneLine(s.Command, 80))
+			continue
+		}
+		summary := exitSummary(id)
+		if summary == "" && len(history) == 0 {
+			fmt.Printf("%s  not running, no exit recorded (killed, or unknown)\n", id)
+			continue
+		}
+		if summary == "" {
+			summary = "not running, no exit recorded"
+		}
+		fmt.Printf("%s  %s\n", id, summary)
+		renderChart(history, chartWidth, false)
 	}
 }

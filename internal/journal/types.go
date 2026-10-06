@@ -81,6 +81,7 @@ const (
 	EventStarted = "started"
 	EventExited  = "exited"
 	EventScreen  = "screen" // Final screen state for TTY sessions
+	EventStats   = "stats"  // Periodic resource usage sample
 )
 
 // Event field names for swash events.
@@ -89,6 +90,7 @@ const (
 	FieldSession  = "SWASH_SESSION"
 	FieldCommand  = "SWASH_COMMAND"
 	FieldExitCode = "SWASH_EXIT_CODE"
+	FieldStats    = "SWASH_STATS" // JSON-encoded resource usage sample
 )
 
 // EmitStarted writes a session started event to the log.
